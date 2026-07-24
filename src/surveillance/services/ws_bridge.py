@@ -49,6 +49,17 @@ _FAST_FAILURE_THRESHOLD = 3.0  # seconds
 _MAX_CONSECUTIVE_FAST_FAILURES = 5
 _MAX_RECONNECT_DELAY = 2.0  # seconds
 
+# How long to wait for a message before treating the connection as silently
+# stalled. Disabling ping_interval (see the reconnect comment in _pump) fixed
+# the NAS's routine session drops being cut short prematurely, but it also
+# removed the one mechanism (ping_timeout) that would have caught a
+# connection that never sends a close frame at all and just stops delivering
+# data — confirmed happening against a real NAS: no exception, no clean
+# close, just nothing, forever. This is an application-level idle timeout on
+# recv(), not a protocol ping, so it doesn't reintroduce the premature-
+# disconnect problem.
+_IDLE_TIMEOUT = 10.0  # seconds
+
 
 def _ws_connect(url: str, **kwargs: Any) -> Any:
     """Open a WebSocket connection.
@@ -79,10 +90,14 @@ def _classify_error(exc: BaseException) -> str:
 class WebSocketBridge:
     """Bridge a WebSocket video stream to an in-memory pipe for mpv."""
 
-    def __init__(self, ws_url: str, verify_ssl: bool, sid: str) -> None:
+    def __init__(self, ws_url: str, verify_ssl: bool, sid: str, label: str = "") -> None:
         self._ws_url = ws_url
         self._verify_ssl = verify_ssl
         self._sid = sid
+        # Purely for logging — lets a "dropped"/"stalled"/"gave up" line be
+        # traced back to a specific camera after the fact, since the bridge
+        # itself only ever sees a bare URL.
+        self._label = label or ws_url
         self._read_fd: int = -1
         self._write_fd: int = -1
         self._fd_lock = threading.Lock()
@@ -110,20 +125,43 @@ class WebSocketBridge:
         if not self._error:
             self._error = "repeated connection failures"
         log.error(
-            "WebSocket failed to establish %d times in a row — giving up: %s",
+            "WebSocket for %s failed to establish %d times in a row — giving up: %s",
+            self._label,
             self._fast_failures,
             self._error,
         )
         return True
 
+    async def _read_messages(self, ws: Any) -> None:
+        """Read messages until the connection ends, writing video payloads.
+
+        Behaves like a bare `async for message in ws:` — raises whatever the
+        connection raises — except a stall (no message at all for
+        _IDLE_TIMEOUT) also raises, with self._error left set to a
+        distinctly greppable reason first.
+        """
+        while True:
+            try:
+                message = await asyncio.wait_for(ws.recv(), timeout=_IDLE_TIMEOUT)
+            except TimeoutError:
+                self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
+                raise
+            if isinstance(message, bytes):
+                payload = self._extract_payload(message)
+                if payload:
+                    await asyncio.to_thread(os.write, self._write_fd, payload)
+
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:
             log.debug(
-                "WebSocket closed cleanly after %.0fs — reconnecting on the same pipe", self.uptime
+                "WebSocket for %s closed cleanly after %.0fs — reconnecting on the same pipe",
+                self._label,
+                self.uptime,
             )
         else:
             log.warning(
-                "WebSocket dropped after %.0fs (%s) — reconnecting on the same pipe",
+                "WebSocket for %s dropped after %.0fs (%s) — reconnecting on the same pipe",
+                self._label,
                 self.uptime,
                 self._error,
             )
@@ -188,6 +226,8 @@ class WebSocketBridge:
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = ssl.CERT_NONE
 
+        from websockets.exceptions import ConnectionClosedOK  # noqa: PLC0415
+
         headers = {"Cookie": f"id={self._sid}"}
         delay = 0.0
 
@@ -197,7 +237,7 @@ class WebSocketBridge:
                 connected = False
                 attempt_start = time.monotonic()
                 try:
-                    log.debug("WebSocket connecting: %s", self._ws_url)
+                    log.debug("WebSocket connecting for %s: %s", self._label, self._ws_url)
 
                     async with _ws_connect(
                         self._ws_url,
@@ -208,20 +248,20 @@ class WebSocketBridge:
                         close_timeout=2,
                         ping_interval=None,
                     ) as ws:
-                        log.debug("WebSocket connected")
+                        log.debug("WebSocket connected for %s", self._label)
                         connected = True
                         self._connected_at = time.monotonic()
                         delay = 0.0
-                        async for message in ws:
-                            if isinstance(message, bytes):
-                                payload = self._extract_payload(message)
-                                if payload:
-                                    await asyncio.to_thread(os.write, self._write_fd, payload)
+                        await self._read_messages(ws)
                     # Reached with no exception: the server closed the
                     # WebSocket cleanly (confirmed via a real NAS capture —
                     # this is the COMMON case, e.g. code 1005/"no status
                     # received", not an error path).
                     clean_close = True
+                except ConnectionClosedOK:
+                    clean_close = True
+                except TimeoutError:
+                    pass  # already logged above, with the distinct "stalled" message
                 except Exception as exc:
                     self._error = _classify_error(exc)
 

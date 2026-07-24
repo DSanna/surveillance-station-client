@@ -38,7 +38,11 @@ from surveillance.services.ws_bridge import WebSocketBridge
 
 
 class _FakeWS:
-    """Stand-in for a websockets client connection."""
+    """Stand-in for a websockets client connection.
+
+    _pump() calls recv() directly (not the async-iterator protocol), so this
+    only needs to implement that.
+    """
 
     def __init__(self, messages: list[bytes], hang: bool = False) -> None:
         self._messages = list(messages)
@@ -50,15 +54,14 @@ class _FakeWS:
     async def __aexit__(self, *exc: object) -> bool:
         return False
 
-    def __aiter__(self) -> _FakeWS:
-        return self
-
-    async def __anext__(self) -> bytes:
+    async def recv(self) -> bytes:
         if self._messages:
             return self._messages.pop(0)
         if self._hang:
             await asyncio.sleep(3600)
-        raise StopAsyncIteration
+        from websockets.exceptions import ConnectionClosedOK
+
+        raise ConnectionClosedOK(None, None)
 
 
 def _frame(header: bytes, payload: bytes) -> bytes:
@@ -125,6 +128,21 @@ class TestWaitClosed:
         assert not bridge._pump_task.done()
         await bridge.stop()
         assert await bridge.wait_closed() == ""
+
+    async def test_reconnects_on_a_silent_stall(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No exception, no close frame — just no data at all — must still be
+        detected and reconnected, not left hanging forever. This is distinct
+        from ping_timeout (disabled) since it's an application-level read
+        timeout, not a protocol ping."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.1)
+        connect(_FakeWS([], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        reason = await bridge.wait_closed()
+        assert "stalled" in reason
+        await bridge.stop()
 
     async def test_silent_when_we_stop_it(self, connect: Any) -> None:
         connect(_FakeWS([], hang=True))
