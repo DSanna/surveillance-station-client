@@ -298,12 +298,18 @@ class SnapshotsView(Gtk.Box):
                 self._camera_id = int(active) if active else None
             except ValueError:
                 self._camera_id = None
+        # A quick pick takes precedence over a prior Advanced Search
+        # multi-camera selection, the same way picking a date preset
+        # overwrites a prior custom range — otherwise this combo silently
+        # does nothing until Reset is used.
+        self._search_camera_ids = None
         self._page = 0
         self._load_snapshots()
 
     def _on_camera_filter_clicked(self, btn: Gtk.Button, camera_id: int) -> None:
         self._ensure_camera_in_combo(camera_id, btn.get_label() or "")
         self._camera_id = camera_id
+        self._search_camera_ids = None
         self._page = 0
         self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera_id))
@@ -740,6 +746,7 @@ class SnapshotsView(Gtk.Box):
         """Handle camera selection from sidebar."""
         self._ensure_camera_in_combo(camera.id, camera.name)
         self._camera_id = camera.id
+        self._search_camera_ids = None
         self._page = 0
         self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera.id))
