@@ -88,6 +88,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_placeholder("events", "Events", "Connect to view events")
         self._add_placeholder("timelapse", "Time Lapse", "Connect to browse time lapse recordings")
         self._add_placeholder("licenses", "Licenses", "Connect to manage licenses")
+        self._add_placeholder("about", "About", "Connect to view app info")
 
         self.stack.set_visible_child_name("live")
         self.headerbar.set_page("live")
@@ -190,6 +191,43 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.refresh(on_complete=self._restore_live_session)
         self.sidebar.start_polling()
         self._start_polling()
+        self._check_for_update()
+
+    def _check_for_update(self) -> None:
+        """Check GitHub once per launch for a release newer than this build.
+
+        Best-effort only: get_latest_release() never raises, so no
+        error_callback is needed here.
+        """
+        from surveillance import __version__
+        from surveillance.services.update_check import get_latest_release, is_newer
+        from surveillance.util.async_bridge import run_async
+
+        async def _check() -> tuple[str, str] | None:
+            release = await get_latest_release()
+            if release and is_newer(release[0], __version__):
+                return release
+            return None
+
+        run_async(_check(), callback=self._on_update_check_result)
+
+    def _on_update_check_result(self, release: tuple[str, str] | None) -> None:
+        if not release:
+            return
+        self.app.latest_release = release
+        tag, _url = release
+        show_dot = tag != self.app.config.dismissed_update_version
+        self.sidebar.set_update_available(show_dot)
+        self.headerbar.set_update_available(show_dot)
+
+        # This check runs async and can finish after About was already
+        # shown (e.g. it's the restored last_page at startup) — that
+        # on_page_shown() call ran with no release known yet, so its
+        # banner needs a nudge now rather than waiting for the next visit.
+        if self.stack.get_visible_child_name() == "about":
+            about_page = self.stack.get_child_by_name("about")
+            if about_page and hasattr(about_page, "on_page_shown"):
+                about_page.on_page_shown()
 
     def _restore_live_session(self, cameras: list[Camera]) -> None:
         """Restore live view camera assignments and refresh other pages' camera filters.
@@ -212,6 +250,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _setup_content_pages(self) -> None:
         """Replace placeholders with real content widgets."""
+        from surveillance.ui.about import AboutView
         from surveillance.ui.events import EventsView
         from surveillance.ui.licenses import LicensesView
         from surveillance.ui.liveview import LiveView
@@ -227,6 +266,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("events", EventsView),
             ("timelapse", TimeLapseView),
             ("licenses", LicensesView),
+            ("about", AboutView),
         ]:
             old = self.stack.get_child_by_name(name)
             if old:

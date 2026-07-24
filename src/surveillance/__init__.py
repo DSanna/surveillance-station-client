@@ -25,4 +25,11 @@
 
 """Synology Surveillance Station Linux client."""
 
-__version__ = "0.1.1"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("surveillance")
+except PackageNotFoundError:
+    # Running from source without an installed distribution (e.g. a
+    # fresh checkout never pip-installed) — no version metadata to read.
+    __version__ = "0.0.0"

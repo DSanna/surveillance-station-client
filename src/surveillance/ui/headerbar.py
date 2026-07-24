@@ -51,6 +51,7 @@ PAGE_TITLES: dict[str, str] = {
     "events": "Events",
     "timelapse": "Time Lapse",
     "licenses": "Licenses",
+    "about": "About",
 }
 
 
@@ -63,6 +64,7 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.app: SurveillanceApp = window.get_application()  # type: ignore[assignment]
         self._page = "live"
         self._connected = False
+        self._update_available = False
 
         # Title, updated with the current page name by set_page()
         self.title_label = Gtk.Label(label="Surveillance Station")
@@ -75,7 +77,26 @@ class AppHeaderBar(Gtk.HeaderBar):
         self.sidebar_btn.set_active(self.app.config.sidebar_visible)
         self._update_sidebar_tooltip(self.app.config.sidebar_visible)
         self.sidebar_btn.connect("toggled", self._on_sidebar_toggled)
-        self.pack_start(self.sidebar_btn)
+
+        # Update-available dot: only shown while the sidebar is hidden, since
+        # the About nav row shows its own copy of this dot whenever the
+        # sidebar itself is visible (see CameraSidebar.set_update_available).
+        self.sidebar_overlay = Gtk.Overlay()
+        self.sidebar_overlay.set_child(self.sidebar_btn)
+        self.sidebar_update_dot = Gtk.Box()
+        self.sidebar_update_dot.add_css_class("status-dot")
+        self.sidebar_update_dot.set_size_request(10, 10)
+        self.sidebar_update_dot.set_halign(Gtk.Align.END)
+        self.sidebar_update_dot.set_valign(Gtk.Align.START)
+        # The button has its own internal padding around the icon glyph, so
+        # START/END alignment alone lands the dot above-and-right of the
+        # icon's actual corner rather than on it. Nudged in by measuring
+        # the real rendered gap.
+        self.sidebar_update_dot.set_margin_top(11)
+        self.sidebar_update_dot.set_margin_end(5)
+        self.sidebar_update_dot.set_visible(False)
+        self.sidebar_overlay.add_overlay(self.sidebar_update_dot)
+        self.pack_start(self.sidebar_overlay)
 
         # Home mode toggle (left side)
         self.home_btn = Gtk.ToggleButton()
@@ -137,6 +158,19 @@ class AppHeaderBar(Gtk.HeaderBar):
         visible = btn.get_active()
         self._update_sidebar_tooltip(visible)
         self.window.toggle_sidebar(visible)
+        self._refresh_update_dot()
+
+    def set_update_available(self, available: bool) -> None:
+        """Track whether a new release is available; visibility is also
+        gated on the sidebar being hidden (see _refresh_update_dot)."""
+        self._update_available = available
+        self._refresh_update_dot()
+
+    def _refresh_update_dot(self) -> None:
+        # Only shown while the sidebar's own About row is out of view —
+        # no need to duplicate the indicator when it's already visible there.
+        show = self._update_available and not self.app.config.sidebar_visible
+        self.sidebar_update_dot.set_visible(show)
 
     def _on_home_toggled(self, btn: Gtk.ToggleButton) -> None:
         if not self.app.api:

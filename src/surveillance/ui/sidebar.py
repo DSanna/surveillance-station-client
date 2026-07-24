@@ -116,6 +116,7 @@ class CameraSidebar(Gtk.Box):
             ("dialog-warning-symbolic", "Events", "events"),
             ("camera-video-symbolic", "Time Lapse", "timelapse"),
             ("emblem-system-symbolic", "Licenses", "licenses"),
+            ("help-about-symbolic", "About", "about"),
         ]:
             # A shared toggle group makes these behave like radio buttons —
             # exactly one active at a time — using the system theme's own
@@ -133,6 +134,15 @@ class CameraSidebar(Gtk.Box):
             btn_label.set_hexpand(True)
             btn_content.append(btn_icon)
             btn_content.append(btn_label)
+            if page_name == "about":
+                # Update-available indicator — cleared once About is
+                # actually visited (see AboutView.on_page_shown).
+                self._about_update_dot = Gtk.Box()
+                self._about_update_dot.add_css_class("status-dot")
+                self._about_update_dot.set_size_request(10, 10)
+                self._about_update_dot.set_valign(Gtk.Align.CENTER)
+                self._about_update_dot.set_visible(False)
+                btn_content.append(self._about_update_dot)
             btn.set_child(btn_content)
             btn.connect("toggled", self._on_nav_toggled, page_name)
             nav_box.append(btn)
@@ -140,6 +150,10 @@ class CameraSidebar(Gtk.Box):
 
         self.append(Gtk.Separator())
         self.append(nav_box)
+
+    def set_update_available(self, available: bool) -> None:
+        """Show/hide the update dot on the About nav row."""
+        self._about_update_dot.set_visible(available)
 
     def refresh(self, on_complete: Any = None) -> None:
         """Refresh the camera list."""
