@@ -48,6 +48,7 @@ from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.ui.ptz_controls import PtzControls
+from surveillance.ui.rtsp_health import RtspHealthMonitor
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -127,6 +128,12 @@ class CameraSlot(Gtk.Box):
         self.player.add_controller(player_right_click)
 
         self._ws_bridge: WebSocketBridge | None = None
+        self._rtsp_monitor: RtspHealthMonitor | None = None
+        # Set when a stream gives up while the camera is still reported
+        # ENABLED (a transport-level failure, not a status change) — there's
+        # no future status transition to retry on, so sync_camera_statuses()
+        # retries this slot on every poll instead, until it recovers.
+        self._stream_lost = False
         self._click_callback: object = None
         self._status = ""  # stream state shown after the camera name
         self._snapshot_callback: object = None
@@ -243,7 +250,7 @@ class CameraSlot(Gtk.Box):
         self._header.set_label(self._camera_label())
 
     def stop_stream(self) -> None:
-        """Stop playback, then tear down the WebSocket bridge.
+        """Stop playback, then tear down the WebSocket bridge / RTSP monitor.
 
         mpv has to let go of the pipe before the bridge closes it. The next
         bridge calls os.pipe() and gets the very same descriptor numbers
@@ -251,6 +258,9 @@ class CameraSlot(Gtk.Box):
         stream out from under it and never decode a frame.
         """
         self.player.stop()
+        if self._rtsp_monitor is not None:
+            self._rtsp_monitor.stop()
+            self._rtsp_monitor = None
         if self._ws_bridge is not None:
             bridge = self._ws_bridge
             self._ws_bridge = None
@@ -261,6 +271,7 @@ class CameraSlot(Gtk.Box):
         self.stop_stream()
         self.camera = None
         self._status = ""
+        self._stream_lost = False
         self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -606,11 +617,20 @@ class LiveView(Gtk.Box):
         stream automatically once the camera is ENABLED again.
         """
         slot = self._slots[slot_idx]
+        was_lost = slot._stream_lost
+        slot._stream_lost = False
         if camera.status != CameraStatus.ENABLED:
             slot.stop_stream()
             slot.set_status("offline")
             slot.player.play(OFFLINE_PLACEHOLDER_URL)
             return
+
+        if was_lost:
+            # Retrying after a previous give-up, not a fresh selection —
+            # show that something is happening rather than a silent black
+            # screen while it reconnects (cleared once actually confirmed:
+            # _on_ready for WebSocket, _on_stream_recovered for RTSP).
+            slot.set_status("attempting reconnect")
 
         if not self.app.api:
             return
@@ -642,8 +662,7 @@ class LiveView(Gtk.Box):
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
-                slot.set_status("")
-                slot.player.play(url)
+                self._start_rtsp_monitor(slot, url)
 
     def _start_ws_bridge(self, slot: CameraSlot, url: str) -> None:
         """Start a WebSocket bridge and play the resulting pipe in mpv."""
@@ -680,16 +699,58 @@ class LiveView(Gtk.Box):
             callback=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, bridge, reason),
         )
 
-    def _on_stream_gave_up(
-        self, slot_idx: int, cam_id: int, bridge: WebSocketBridge, reason: str
-    ) -> None:
-        """Show a slot whose WebSocket bridge gave up after repeated failures."""
+    def _start_rtsp_monitor(self, slot: CameraSlot, url: str) -> None:
+        """Play a plain RTSP URL and watch it with an RtspHealthMonitor.
+
+        Unlike WebSocket streams (bridged through WebSocketBridge, which
+        already detects and recovers from a dead connection), mpv talks to
+        an RTSP camera directly with nothing watching for the demuxer
+        dying silently mid-stream — this is what fills that gap.
+        """
+        slot.player.play(url)
+        cam_id = slot.camera.id if slot.camera else -1
+        slot_idx = slot.index
+        label = slot.camera.name if slot.camera else ""
+
+        monitor = RtspHealthMonitor(
+            slot.player,
+            url,
+            label,
+            on_gave_up=lambda reason: self._on_stream_gave_up(slot_idx, cam_id, monitor, reason),
+            on_recovered=lambda: self._on_stream_recovered(slot_idx, cam_id, monitor),
+        )
+        slot._rtsp_monitor = monitor
+
+    def _on_stream_recovered(self, slot_idx: int, cam_id: int, monitor: RtspHealthMonitor) -> None:
+        """Clear the "attempting reconnect" status once a retried RTSP
+        stream is confirmed advancing again."""
         slot = self._slots[slot_idx]
-        if not reason or slot._ws_bridge is not bridge:
+        if slot._rtsp_monitor is not monitor:
+            return  # slot moved on to something else
+        if not slot.get_visible() or not slot.camera or slot.camera.id != cam_id:
+            return
+        slot.set_status("")
+
+    def _on_stream_gave_up(
+        self, slot_idx: int, cam_id: int, source: WebSocketBridge | RtspHealthMonitor, reason: str
+    ) -> None:
+        """Show a slot whose stream gave up after repeated failures.
+
+        *source* is whichever object reported the failure — compared
+        against the slot's current bridge/monitor so a stale notification
+        from one the slot has since moved on from is ignored.
+        """
+        slot = self._slots[slot_idx]
+        if not reason or (slot._ws_bridge is not source and slot._rtsp_monitor is not source):
             return  # we stopped it ourselves, or the slot moved on
         if not slot.get_visible() or not slot.camera or slot.camera.id != cam_id:
             return
         log.error("Stream for %s gave up (%s)", slot.camera.name, reason)
+        # The camera may still be reported ENABLED (this is a transport-
+        # level failure, not necessarily a status change) — mark it so
+        # sync_camera_statuses() keeps retrying on the next poll even
+        # without seeing a status transition to react to.
+        slot._stream_lost = True
         # Swap to the placeholder rather than leaving the wedged mpv state
         # on screen: this is a normal stop()/play() cycle (same as any
         # camera-to-camera switch), just targeting a local synthetic
@@ -725,6 +786,11 @@ class LiveView(Gtk.Box):
         Called after every sidebar camera-list refresh (including the
         periodic poll), so a camera that comes back online has its real
         feed restored automatically, without the user re-selecting it.
+
+        Also retries any slot whose stream gave up (slot._stream_lost) while
+        its camera is still ENABLED, even without a status transition — a
+        transport-level RTSP failure has no status change to react to
+        otherwise, so it would be stuck on the placeholder forever.
         """
         self._cameras = cameras
         cam_map = {c.id: c for c in cameras}
@@ -733,7 +799,11 @@ class LiveView(Gtk.Box):
             if not slot.camera:
                 continue
             fresh = cam_map.get(slot.camera.id)
-            if fresh is None or fresh.status == slot.camera.status:
+            if fresh is None:
+                continue
+            status_changed = fresh.status != slot.camera.status
+            retry_lost_stream = slot._stream_lost and fresh.status == CameraStatus.ENABLED
+            if not status_changed and not retry_lost_stream:
                 continue
             slot.update_camera(fresh)
             self._start_stream(i, fresh)

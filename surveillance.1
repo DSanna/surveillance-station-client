@@ -20,9 +20,16 @@ grid menu after a confirmation prompt.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with
-no visible interruption. The slot header only reports a state
+no visible interruption. A camera reported disabled or disconnected shows
+an
+.RI ( offline )
+placeholder instead of freezing, and a stream that stops responding
+mid-session shows
 .RI ( "stream lost" )
-if a camera cannot be reached at all after repeated attempts.
+or
+.RI ( "attempting reconnect" )
+while retrying. Both recover automatically once the camera is reachable
+again.
 .TP
 .B Camera Sidebar
 Lists the cameras alphabetically and switches between pages.
