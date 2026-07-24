@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import gi
@@ -60,6 +61,10 @@ class CameraSidebar(Gtk.Box):
         self.app: SurveillanceApp = window.get_application()  # type: ignore[assignment]
         self.cameras: list[Camera] = []
         self._poll_id: int = 0
+        self._restoring_selection = False
+        # Set by the live view page so it can swap slots between their
+        # real stream and the offline placeholder as camera status changes.
+        self.on_cameras_updated: Callable[[list[Camera]], None] | None = None
 
         self.add_css_class("sidebar")
         self.set_size_request(220, -1)
@@ -143,6 +148,8 @@ class CameraSidebar(Gtk.Box):
 
         def _on_loaded(cameras: list[Camera]) -> None:
             self._update_camera_list(cameras)
+            if self.on_cameras_updated:
+                self.on_cameras_updated(cameras)
             if on_complete:
                 on_complete(cameras)
 
@@ -177,12 +184,20 @@ class CameraSidebar(Gtk.Box):
                 break
             self.listbox.remove(row)
 
-        # Add camera rows and restore selection
-        for cam in cameras:
-            row = self._create_camera_row(cam)
-            self.listbox.append(row)
-            if cam.id == selected_id:
-                self.listbox.select_row(row)
+        # Add camera rows and restore selection. Rebuilding always creates
+        # fresh row objects, so restoring the highlight still fires
+        # "row-selected" like a real click would — guarded here so a status
+        # change elsewhere in the list can't silently reassign/zoom to
+        # whatever camera the user last happened to click.
+        self._restoring_selection = True
+        try:
+            for cam in cameras:
+                row = self._create_camera_row(cam)
+                self.listbox.append(row)
+                if cam.id == selected_id:
+                    self.listbox.select_row(row)
+        finally:
+            self._restoring_selection = False
 
         # Action row at the end: clears the currently selected grid slot
         self.listbox.append(self._create_clear_slot_row())
@@ -435,7 +450,7 @@ class CameraSidebar(Gtk.Box):
         return row
 
     def _on_row_selected(self, listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
-        if row is None:
+        if row is None or self._restoring_selection:
             return
         cam = row.camera  # type: ignore[attr-defined]
         self.window.on_camera_selected(cam)

@@ -233,6 +233,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.stack.remove(old)
             widget = widget_class(self)
             self.stack.add_named(widget, name)
+            if name == "live" and hasattr(widget, "sync_camera_statuses"):
+                self.sidebar.on_cameras_updated = widget.sync_camera_statuses
 
         # Restore last active page
         last_page = self.app.config.last_page

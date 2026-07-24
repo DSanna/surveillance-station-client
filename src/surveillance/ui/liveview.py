@@ -40,9 +40,9 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera
+from surveillance.api.models import Camera, CameraStatus
 from surveillance.config import save_config_now
-from surveillance.services.live import get_live_view_path
+from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_path
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -235,6 +235,12 @@ class CameraSlot(Gtk.Box):
         self._header.set_label(camera.name)
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
+
+    def update_camera(self, camera: Camera) -> None:
+        """Refresh this slot's camera data (e.g. a status change) without
+        resetting stream state or selection UI, unlike assign()."""
+        self.camera = camera
+        self._header.set_label(self._camera_label())
 
     def stop_stream(self) -> None:
         """Stop playback, then tear down the WebSocket bridge.
@@ -589,7 +595,23 @@ class LiveView(Gtk.Box):
     # ------------------------------------------------------------------
 
     def _start_stream(self, slot_idx: int, camera: Camera) -> None:
-        """Start streaming a camera in a slot."""
+        """Start streaming a camera in a slot.
+
+        A camera the server reports as not ENABLED (disabled, or
+        disconnected/offline) never gets a real RTSP/WebSocket URL handed
+        to mpv — playing a placeholder instead avoids ever calling play()
+        on a stream that may never resolve, which is what wedges a slot's
+        render context with no way back (see git history for the
+        investigation). sync_camera_statuses() swaps back to the real
+        stream automatically once the camera is ENABLED again.
+        """
+        slot = self._slots[slot_idx]
+        if camera.status != CameraStatus.ENABLED:
+            slot.stop_stream()
+            slot.set_status("offline")
+            slot.player.play(OFFLINE_PLACEHOLDER_URL)
+            return
+
         if not self.app.api:
             return
 
@@ -628,7 +650,8 @@ class LiveView(Gtk.Box):
         slot.stop_stream()
         verify_ssl = self.app.api.profile.verify_ssl if self.app.api else True
         sid = self.app.api.sid if self.app.api else ""
-        bridge = WebSocketBridge(url, verify_ssl, sid)
+        label = slot.camera.name if slot.camera else ""
+        bridge = WebSocketBridge(url, verify_ssl, sid, label=label)
         slot._ws_bridge = bridge
         cam_id = slot.camera.id if slot.camera else -1
         slot_idx = slot.index
@@ -667,7 +690,13 @@ class LiveView(Gtk.Box):
         if not slot.get_visible() or not slot.camera or slot.camera.id != cam_id:
             return
         log.error("Stream for %s gave up (%s)", slot.camera.name, reason)
+        # Swap to the placeholder rather than leaving the wedged mpv state
+        # on screen: this is a normal stop()/play() cycle (same as any
+        # camera-to-camera switch), just targeting a local synthetic
+        # stream instead of the dead network one, so it can't wedge.
+        slot.stop_stream()
         slot.set_status("stream lost")
+        slot.player.play(OFFLINE_PLACEHOLDER_URL)
 
     # ------------------------------------------------------------------
     # Session persistence
@@ -688,6 +717,26 @@ class LiveView(Gtk.Box):
         """Restore camera assignments from config."""
         self._cameras = cameras
         self._restore_layout_cameras()
+
+    def sync_camera_statuses(self, cameras: list[Camera]) -> None:
+        """Swap a visible slot between its real stream and the offline
+        placeholder as its camera's reported status changes.
+
+        Called after every sidebar camera-list refresh (including the
+        periodic poll), so a camera that comes back online has its real
+        feed restored automatically, without the user re-selecting it.
+        """
+        self._cameras = cameras
+        cam_map = {c.id: c for c in cameras}
+        for i in self._active:
+            slot = self._slots[i]
+            if not slot.camera:
+                continue
+            fresh = cam_map.get(slot.camera.id)
+            if fresh is None or fresh.status == slot.camera.status:
+                continue
+            slot.update_camera(fresh)
+            self._start_stream(i, fresh)
 
     def restart_camera(self, camera_id: int) -> None:
         """Restart the stream for a camera if it is currently displayed."""
