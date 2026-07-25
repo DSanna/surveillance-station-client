@@ -412,12 +412,18 @@ class SnapshotsView(Gtk.Box):
     def _load_snapshots(self) -> None:
         """Query the server for the current page.
 
-        Server-side filtering (camId/from/to/start — see
-        services.snapshot.list_snapshots) is used whenever at most one
-        camera is selected. A multi-camera Advanced Search selection falls
-        back to fetching everything in the time range once and
-        filtering/paginating client-side (see _on_multi_camera_loaded),
-        since camId only accepts a single value.
+        Any camera filter (quick pick or Advanced Search) is applied
+        client-side: fetch everything in the time range once and
+        filter/paginate locally (see _on_multi_camera_loaded). This covers
+        a single camera too, not just multiple — SnapShot::List's
+        camIdList param (which matches the official client) was found to
+        not actually filter on at least one real NAS, silently returning
+        every camera's snapshots instead. A single-camera selection still
+        passes camIdList as a hint in case the server does honor it there
+        (smaller response, one page fetched instead of up to
+        _FETCH_ALL_LIMIT), but never relies on it for correctness. With no
+        camera filter at all, the server does the (trivial) filtering and
+        pagination itself.
         """
         if not self.app.api or self._loading:
             return
@@ -435,11 +441,12 @@ class SnapshotsView(Gtk.Box):
         if camera_ids is None and self._camera_id is not None:
             camera_ids = [self._camera_id]
 
-        if camera_ids is not None and len(camera_ids) > 1:
+        if camera_ids:
             self._multi_camera_filter = set(camera_ids)
             run_async(
                 list_snapshots(
                     self.app.api,
+                    camera_id=camera_ids[0] if len(camera_ids) == 1 else None,
                     from_time=self._search_from_time,
                     to_time=self._search_to_time,
                     offset=0,
@@ -450,11 +457,9 @@ class SnapshotsView(Gtk.Box):
             )
         else:
             self._multi_camera_filter = None
-            single_camera_id = camera_ids[0] if camera_ids else None
             run_async(
                 list_snapshots(
                     self.app.api,
-                    camera_id=single_camera_id,
                     from_time=self._search_from_time,
                     to_time=self._search_to_time,
                     offset=self._page * _PAGE_SIZE,
@@ -476,10 +481,11 @@ class SnapshotsView(Gtk.Box):
             snap.camera_id = by_name.get(snap.camera_name, 0)
 
     def _on_multi_camera_loaded(self, result: tuple[list[Snapshot], int]) -> None:
-        """Client-side fallback for a multi-camera selection: cache the
-        full (time-range-filtered) fetch and render the current page from
-        it — see _render_multi_camera_page(), also used by _on_prev/_on_next
-        so paging doesn't re-fetch."""
+        """Client-side filtering path for any camera selection (one camera
+        or several — see _load_snapshots): cache the full
+        (time-range-filtered) fetch and render the current page from it —
+        see _render_multi_camera_page(), also used by _on_prev/_on_next so
+        paging doesn't re-fetch."""
         self._loading = False
         snapshots, _total = result
         self._resolve_camera_ids(snapshots)
