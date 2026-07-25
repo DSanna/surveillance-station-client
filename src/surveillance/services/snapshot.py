@@ -71,21 +71,15 @@ async def list_snapshots(
 ) -> tuple[list[Snapshot], int]:
     """List saved snapshots, optionally filtered by camera and time range.
 
-    Confirmed against Synology's official Surveillance Station Web API
-    reference (and verified against a real NAS): the pagination param is
-    `start`, not `offset` — an earlier version of this function used
-    `offset`, which DSM silently ignored (harmless in practice, since it
-    always defaulted to page 1). Time-range filtering uses `from`/`to`
-    (not fromTime/toTime), and camera filtering uses `camId` (not
-    cameraId/cameraIds) — earlier guesses at these names also had zero
-    effect, wrongly suggesting SnapShot::List didn't support filtering at
-    all.
+    Confirmed against the official Synology client (SrvSnapshotListTask):
+    the pagination param is `start`, not `offset`, time-range filtering
+    uses `from`/`to` (not fromTime/toTime), and camera filtering uses
+    `camIdList` (not camId/cameraId), which the official client sends with
+    a single value.
 
-    camId only accepts a single value, unlike Recording::List's cameraIds
-    — there is no documented or working way to filter by multiple cameras
-    server-side. Callers needing multi-camera filtering must fetch
-    unfiltered (by time range only) and filter client-side — see
-    ui/snapshots.py.
+    The official client only ever filters by one camera, so multi-camera
+    filtering is done client-side: callers fetch unfiltered (by time range
+    only) and filter the results, see ui/snapshots.py.
 
     Returns (snapshots, total_count).
     """
@@ -94,7 +88,7 @@ async def list_snapshots(
         "limit": str(limit),
     }
     if camera_id is not None:
-        params["camId"] = str(camera_id)
+        params["camIdList"] = str(camera_id)
     if from_time is not None:
         params["from"] = str(from_time)
     if to_time is not None:

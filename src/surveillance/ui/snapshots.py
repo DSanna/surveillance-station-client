@@ -93,16 +93,6 @@ def _truncate_label(text: str, max_len: int = _COMBO_LABEL_MAX_LEN) -> str:
     return text[: max_len - 1] + "…"
 
 
-def _format_size(num_bytes: int) -> str:
-    """Human-readable file size, matching DSM's own KB/MB display."""
-    size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
-
-
 class SnapshotsView(Gtk.Box):
     """Snapshot browser with camera filter and snapshot list."""
 
@@ -462,6 +452,17 @@ class SnapshotsView(Gtk.Box):
                 error_callback=self._on_load_error,
             )
 
+    def _resolve_camera_ids(self, snapshots: list[Snapshot]) -> None:
+        """Fill in each snapshot's camera_id from its name.
+
+        SnapShot::List identifies the camera by name only, so camera_id
+        arrives as 0; per-camera filtering needs the numeric id, which the
+        camera list provides.
+        """
+        by_name = {cam.name: cam.id for cam in self.window.sidebar.cameras}
+        for snap in snapshots:
+            snap.camera_id = by_name.get(snap.camera_name, 0)
+
     def _on_multi_camera_loaded(self, result: tuple[list[Snapshot], int]) -> None:
         """Client-side fallback for a multi-camera selection: cache the
         full (time-range-filtered) fetch and render the current page from
@@ -469,6 +470,7 @@ class SnapshotsView(Gtk.Box):
         so paging doesn't re-fetch."""
         self._loading = False
         snapshots, _total = result
+        self._resolve_camera_ids(snapshots)
         self._snapshots = snapshots
         self._render_multi_camera_page()
 
@@ -546,6 +548,7 @@ class SnapshotsView(Gtk.Box):
         """Server already filtered and paginated this page — just render it."""
         self._loading = False
         snapshots, total = result
+        self._resolve_camera_ids(snapshots)
         self._snapshots = snapshots
         self._render_page(snapshots, total)
 
@@ -599,13 +602,6 @@ class SnapshotsView(Gtk.Box):
         time_label.add_css_class("dim-label")
         time_label.add_css_class("caption")
         info_box.append(time_label)
-
-        if snap.file_size:
-            size_label = Gtk.Label(label=_format_size(snap.file_size))
-            size_label.set_xalign(0)
-            size_label.add_css_class("dim-label")
-            size_label.add_css_class("caption")
-            info_box.append(size_label)
 
         box.append(info_box)
 

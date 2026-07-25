@@ -100,30 +100,27 @@ class TestRecording:
 
 class TestSnapshot:
     def test_from_api(self) -> None:
-        """Field names confirmed against a real SnapShot::List response —
-        NOT the (wrong) names this test used before, which happened to
-        pass despite Snapshot.from_api() reading fields the real API
-        never sends (see ui/snapshots.py showing "(no name)" and epoch
-        timestamps for every row until this was caught)."""
+        """Field names confirmed against the official client's List value
+        object (SrvSnapshotListVo.SnapshotVo): id, camName, createdTm and
+        imageData. There is no camId or byteSize in the List response, so
+        camera_id defaults to 0 and is filled in later from the camera list.
+        """
         data = {
             "id": 50,
-            "camId": 2,
             "camName": "Garage",
             "createdTm": 1700001000,
-            "byteSize": 102400,
             "imageData": "Zm9v",
         }
         snap = Snapshot.from_api(data)
         assert snap.id == 50
-        assert snap.camera_id == 2
+        assert snap.camera_id == 0
         assert snap.camera_name == "Garage"
         assert snap.create_time == 1700001000
-        assert snap.file_size == 102400
         assert snap.image_data == "Zm9v"
 
     def test_from_api_falls_back_to_display_time(self) -> None:
         """createdTm is preferred, but displayTm covers responses without it."""
-        data = {"id": 51, "camId": 3, "camName": "Yard", "displayTm": 1700002000}
+        data = {"id": 51, "camName": "Yard", "displayTm": 1700002000}
         snap = Snapshot.from_api(data)
         assert snap.create_time == 1700002000
 

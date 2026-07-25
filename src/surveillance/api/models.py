@@ -126,11 +126,13 @@ class Snapshot:
     """A camera snapshot."""
 
     id: int
-    camera_id: int
     camera_name: str
     create_time: int
-    file_size: int = 0
-    # Base64-encoded JPEG, already sized for a list thumbnail — included
+    # SnapShot::List identifies the camera by name only, so camera_id is
+    # not in the response; the snapshots page fills it in from the camera
+    # list to drive per-camera filtering.
+    camera_id: int = 0
+    # Base64-encoded JPEG, already sized for a list thumbnail, included
     # inline in SnapShot::List's response, so browsing the list doesn't
     # need a separate per-row download the way Recording thumbnails do.
     image_data: str = ""
@@ -139,10 +141,8 @@ class Snapshot:
     def from_api(cls, data: dict) -> Snapshot:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
-            camera_id=data.get("camId", 0),
             camera_name=data.get("camName", ""),
             create_time=data.get("createdTm", data.get("displayTm", 0)),
-            file_size=data.get("byteSize", 0),
             image_data=data.get("imageData", ""),
         )
 

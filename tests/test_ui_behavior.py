@@ -49,6 +49,34 @@ def api(profile: ConnectionProfile) -> SurveillanceAPI:
     return client
 
 
+class TestSnapshotFilterParams:
+    """list_snapshots sends the params the official client uses."""
+
+    @pytest.mark.asyncio
+    async def test_camera_filter_uses_cam_id_list(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.snapshot import list_snapshots
+
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"snapshots": [], "total": 0}
+        ) as mock:
+            await list_snapshots(api, camera_id=5)
+            params = mock.call_args[1]["extra_params"]
+            assert params["camIdList"] == "5"
+            assert "camId" not in params
+
+    @pytest.mark.asyncio
+    async def test_no_camera_filter_omits_param(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.snapshot import list_snapshots
+
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"snapshots": [], "total": 0}
+        ) as mock:
+            await list_snapshots(api)
+            params = mock.call_args[1]["extra_params"]
+            assert "camIdList" not in params
+            assert "camId" not in params
+
+
 class TestRecordingFilterParams:
     """list_recordings sends the correct query params for filter combinations."""
 
