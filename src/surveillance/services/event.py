@@ -172,8 +172,10 @@ async def list_granular_events(
                         event_type=flag,
                         start_time=run_start,
                         stop_time=run_stop,
-                        mount_id=parent.get("mountId", 0),
-                        arch_id=parent.get("archId", 0),
+                        # mountId/archId sit on the camera object, not the
+                        # individual event entry, so they must come from cam.
+                        mount_id=cam.get("mountId", 0),
+                        arch_id=cam.get("archId", 0),
                         seek_offset=max(0, run_start - parent.get("start", run_start)),
                     )
                 )

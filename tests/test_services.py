@@ -218,13 +218,13 @@ class TestEventService:
                 [
                     {
                         "camera_id": 1,
+                        "mountId": 7,
+                        "archId": 3,
                         "event": [
                             {
                                 "id": 555,
                                 "start": from_time,
                                 "stop": from_time + 100,
-                                "mountId": 7,
-                                "archId": 3,
                             }
                         ],
                         "event_map": [
