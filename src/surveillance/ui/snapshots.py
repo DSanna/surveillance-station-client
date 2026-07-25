@@ -274,8 +274,14 @@ class SnapshotsView(Gtk.Box):
         self._load_snapshots()
 
     def refresh_camera_filter(self) -> None:
-        """Populate camera filter from sidebar camera list."""
-        self._known_camera_ids: set[int] = set()
+        """Populate camera filter from sidebar camera list.
+
+        Only appends cameras not already in the combo, so calling it again
+        after the async camera list loads (or after a re-login, when the
+        combo already holds rows) does not duplicate every entry.
+        """
+        if not hasattr(self, "_known_camera_ids"):
+            self._known_camera_ids: set[int] = set()
         for cam in self.window.sidebar.cameras:
             if cam.id not in self._known_camera_ids:
                 self.camera_combo.append(str(cam.id), _truncate_label(cam.name))
