@@ -52,6 +52,13 @@ PRESET_YESTERDAY = "yesterday"
 PRESET_LAST24H = "last24h"
 PRESET_LAST7D = "last7d"
 
+# Recording.Download by recording id needs version 6 or later. Version 5
+# returns a 400 "Execution failed" with no file. The official client uses
+# version 4 for its own download, but with a different, event-based param
+# set (eventId/mountId/archId), so version 4 does not apply to the id-based
+# call this client makes.
+RECORDING_DOWNLOAD_VERSION = 6
+
 
 def preset_range(preset: str) -> tuple[int, int]:
     """Return (from_time, to_time) unix timestamps for a named time preset."""
@@ -222,12 +229,7 @@ async def download_recording(
     data = await api.download(
         api="SYNO.SurveillanceStation.Recording",
         method="Download",
-        # Confirmed against Synology's official Web API reference: this API
-        # only ever shipped versions 1/3/4/6 (never 5) and Download's id
-        # param is documented as "6 and onward" — the previous version=5
-        # here silently produced a server-side "Execution failed" (code
-        # 400) for every download instead of an actual video file.
-        version=6,
+        version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id)},
     )
 

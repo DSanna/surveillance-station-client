@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Recording, TimeLapseRecording, TimeLapseTask
+from surveillance.services.recording import RECORDING_DOWNLOAD_VERSION
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
@@ -159,12 +160,7 @@ async def download_recording(
     data = await api.download(
         api="SYNO.SurveillanceStation.Recording",
         method="Download",
-        # Confirmed against Synology's official Web API reference: this API
-        # only ever shipped versions 1/3/4/6 (never 5) and Download's id
-        # param is documented as "6 and onward" — the previous version=5
-        # here silently produced a server-side "Execution failed" (code
-        # 400) for every download instead of an actual video file.
-        version=6,
+        version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id), "recEvtType": "3"},
     )
     if not data:
