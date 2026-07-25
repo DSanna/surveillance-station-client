@@ -25,9 +25,9 @@
 - **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A slot only shows a header status ("stream lost") if a camera genuinely can't be reached at all.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
-- **Snapshots** &mdash; Take live snapshots from any camera, browse saved snapshots, download or delete.
+- **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy.
 - **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
-- **Events & Alerts** &mdash; View motion detection and alarm events with smart detection labels. Notification bell with unread badge and alert popover, polled every 30 seconds.
+- **Events & Alerts** &mdash; Browse real motion and person-detected events with their type and time, filter by event type (quick filter plus a multi-select in advanced search) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
 - **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
 - **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
 - **Session Persistence** &mdash; Grid layout, active page, camera assignments, sidebar visibility, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
@@ -105,14 +105,16 @@ On launch, a login dialog asks for your NAS connection details:
 After connecting, the camera list appears in the sidebar. Click a camera to
 start its live stream. Use the navigation buttons at the bottom of the sidebar
 to switch between **Live View**, **Recordings**, **Snapshots**, **Events**,
-**Time Lapse**, and **Licenses**. The header bar shows the current page name
-and holds the panel toggle on the left, which hides or shows the whole sidebar.
+**Time Lapse**, and **Licenses**; the button for the current page stays
+highlighted. The header bar shows the current page name and holds the panel
+toggle on the left, which hides or shows the whole sidebar.
 
 On **Live View**, the grid button in the header bar selects the layout and can
 clear the current one. Click a slot to select it, then click a camera to fill
 it, or click **Empty Slot** at the bottom of the camera list to empty it again.
 Clicking a camera with no slot selected switches to 1&times;1 and shows only
-that camera.
+that camera. Right-click a slot for **Take Snapshot**, **Open in 1x1 Layout**,
+and **Clear Slot**.
 
 ### Keyboard shortcuts
 
@@ -423,7 +425,8 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 | `SYNO.SurveillanceStation.Camera` | Camera list, snapshots, live view paths |
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download recordings |
-| `SYNO.SurveillanceStation.SnapShot` | List, download, delete snapshots |
+| `SYNO.SurveillanceStation.RecordingPicker` | Motion/person event intervals for the Events page |
+| `SYNO.SurveillanceStation.SnapShot` | List, take, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |
 | `SYNO.SurveillanceStation.TimeLapse.Recording` | Time lapse recording management |
 | `SYNO.SurveillanceStation.Event` | Motion and alarm event history |
