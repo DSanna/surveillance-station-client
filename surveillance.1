@@ -17,6 +17,9 @@ selected from the grid button in the header bar.
 Each layout remembers its own camera arrangement independently.
 A single slot is emptied from the camera sidebar, the whole layout from the
 grid menu after a confirmation prompt.
+Scroll the mouse wheel over a slot to zoom in, centered on the cursor;
+click and drag to pan. Zoom resets when switching layouts or leaving the
+page.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with
@@ -41,12 +44,16 @@ Browse, play back, and download recordings filtered by camera and date.
 Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering,
 plus advanced search by camera(s) and custom time range. Reset button clears all filters.
 Active filter summary always visible. Per-event thumbnails are shown for each recording.
+The playback window supports scroll-to-zoom (centered on the cursor) and
+click-and-drag panning, same as Live View.
 .TP
 .B PTZ Control
 Control pan-tilt-zoom cameras with direction pad, zoom, preset positions, and patrol routes. Controls appear automatically below the live view when a PTZ-capable camera is active.
 .TP
 .B Snapshots
 Take live snapshots, browse saved snapshots, download and delete.
+The full-size viewer supports scroll-to-zoom (centered on the cursor) and
+click-and-drag panning.
 .TP
 .B Time Lapse
 Browse, play back, download, and manage Smart Time Lapse recordings.

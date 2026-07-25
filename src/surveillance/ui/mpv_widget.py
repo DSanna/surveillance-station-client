@@ -31,6 +31,7 @@ import contextlib
 import ctypes
 import ctypes.util
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import gi
@@ -67,6 +68,14 @@ def _load_gl_get_proc() -> ctypes.CDLL | None:
 
 _gl_lib = _load_gl_get_proc()
 
+# video-zoom is mpv's own log2 scale (0 = 100%, 1 = 200%, ...). Zooming out
+# below 100% would just letterbox the video within the widget for no
+# benefit, so the range only goes up from there.
+_ZOOM_MIN = 0.0
+_ZOOM_MAX = 3.0  # 2**3 = 800%
+# Clamp so scrolling can't pan the video entirely out of view.
+_PAN_MAX = 0.8
+
 
 def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
     """Get OpenGL procedure address via native GL library.
@@ -102,6 +111,9 @@ class MpvGLArea(Gtk.GLArea):
         self._tls_verify = tls_verify
         self._low_latency = False
         self._start_offset: float = 0
+        self._zoom: float = 0.0
+        self._pan_x: float = 0.0
+        self._pan_y: float = 0.0
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -298,6 +310,82 @@ class MpvGLArea(Gtk.GLArea):
             with contextlib.suppress(Exception):
                 self._mpv.pause = not self._mpv.pause
 
+    def zoom_at(self, delta: float, cursor_x: float, cursor_y: float) -> None:
+        """Zoom in/out by *delta* (mpv's own log2 video-zoom units — e.g.
+        0.15 per scroll tick), nudging the pan toward (cursor_x, cursor_y)
+        — widget-relative pixel coordinates — so zooming feels centered on
+        the cursor rather than the video's own center.
+
+        Deliberately incremental (nudge pan by a fraction of the zoom
+        step) rather than solving for an exact fixed point: simpler, and
+        any small per-step error self-corrects as the user keeps
+        scrolling near the same spot on screen.
+        """
+        if not self._mpv or not self._initialized:
+            return
+
+        width = self.get_width()
+        height = self.get_height()
+        if width <= 0 or height <= 0:
+            return
+
+        new_zoom = max(_ZOOM_MIN, min(_ZOOM_MAX, self._zoom + delta))
+
+        if new_zoom <= _ZOOM_MIN:
+            # Back at (or already at) 1:1 — pan is meaningless with no
+            # extra zoomed content to shift around, and leaving it nonzero
+            # would show the video pushed off into a corner instead of
+            # filling the slot. Reset it here unconditionally, even if the
+            # zoom level itself isn't changing — e.g. scrolling out
+            # further while already at the floor after panning around at
+            # 1:1, which would otherwise never reach this branch at all.
+            if self._zoom == new_zoom and self._pan_x == 0.0 and self._pan_y == 0.0:
+                return  # genuinely nothing to do
+            self._zoom = new_zoom
+            self._pan_x = 0.0
+            self._pan_y = 0.0
+        else:
+            actual_delta = new_zoom - self._zoom
+            if actual_delta == 0:
+                return
+            # Cursor position relative to widget center, normalized to
+            # [-0.5, 0.5].
+            nx = cursor_x / width - 0.5
+            ny = cursor_y / height - 0.5
+            self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x - nx * actual_delta))
+            self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y - ny * actual_delta))
+            self._zoom = new_zoom
+
+        with contextlib.suppress(Exception):
+            self._mpv.video_zoom = self._zoom
+            self._mpv.video_pan_x = self._pan_x
+            self._mpv.video_pan_y = self._pan_y
+
+    def pan_by(self, dx_fraction: float, dy_fraction: float) -> None:
+        """Pan by an incremental amount, as fractions of the widget's own
+        size — same normalized units zoom_at() nudges pan in. Allowed even
+        at 1:1 zoom (scrolling back out already re-centers via
+        reset-on-floor in zoom_at(), so panning off-center at 1:1 is
+        always one scroll-out away from being undone)."""
+        if not self._mpv or not self._initialized:
+            return
+        self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x + dx_fraction))
+        self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y + dy_fraction))
+        with contextlib.suppress(Exception):
+            self._mpv.video_pan_x = self._pan_x
+            self._mpv.video_pan_y = self._pan_y
+
+    def reset_zoom(self) -> None:
+        """Reset zoom/pan to the default 1:1 view."""
+        self._zoom = 0.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        if self._mpv:
+            with contextlib.suppress(Exception):
+                self._mpv.video_zoom = 0.0
+                self._mpv.video_pan_x = 0.0
+                self._mpv.video_pan_y = 0.0
+
     def set_volume(self, volume: int) -> None:
         """Set volume (0-100)."""
         if self._mpv:
@@ -349,3 +437,77 @@ class MpvGLArea(Gtk.GLArea):
             except Exception:
                 return False
         return False
+
+
+# video-zoom units (mpv's own log2 scale) applied per scroll wheel tick.
+_ZOOM_STEP = 0.15
+# A drag shorter than this (pixels, either axis) is still treated as a
+# plain click rather than a pan.
+_DRAG_CLICK_THRESHOLD = 4
+
+
+def attach_zoom_pan_controls(player: MpvGLArea, on_click: Callable[[], None] | None = None) -> None:
+    """Wire up scroll-to-zoom (centered on the cursor) and click-and-drag
+    panning on an MpvGLArea. Shared by Live View slots and the recording
+    player dialog so both behave identically.
+
+    If `on_click` is given, a drag shorter than _DRAG_CLICK_THRESHOLD is
+    treated as a plain click and calls it with no arguments — used by Live
+    View slots, which select the slot on click. Pass None (the default)
+    where the video area has no click behavior to preserve, so every drag
+    is treated as a pan from the first pixel.
+    """
+    # EventControllerScroll's "scroll" signal has no position, so a motion
+    # controller tracks the last-known pointer position for it to use.
+    pointer = {"x": 0.0, "y": 0.0}
+
+    def on_motion(controller: Gtk.EventControllerMotion, x: float, y: float) -> None:
+        pointer["x"] = x
+        pointer["y"] = y
+
+    motion = Gtk.EventControllerMotion()
+    motion.connect("motion", on_motion)
+    player.add_controller(motion)
+
+    def on_scroll(controller: Gtk.EventControllerScroll, dx: float, dy: float) -> bool:
+        # Scroll up (dy negative — "away from the user") zooms in, matching
+        # the near-universal convention (maps, image viewers, etc.).
+        player.zoom_at(-dy * _ZOOM_STEP, pointer["x"], pointer["y"])
+        return True  # handled — don't let it bubble past the widget
+
+    scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+    scroll.connect("scroll", on_scroll)
+    player.add_controller(scroll)
+
+    # drag-update/drag-end report the offset cumulative from drag-begin,
+    # not incrementally — pan_by() wants an increment, so track how much
+    # of that cumulative offset has already been applied.
+    drag_last = {"x": 0.0, "y": 0.0}
+
+    def on_drag_begin(gesture: Gtk.GestureDrag, start_x: float, start_y: float) -> None:
+        drag_last["x"] = 0.0
+        drag_last["y"] = 0.0
+
+    def on_drag_update(gesture: Gtk.GestureDrag, offset_x: float, offset_y: float) -> None:
+        width = player.get_width()
+        height = player.get_height()
+        if width <= 0 or height <= 0:
+            return
+        dx = (offset_x - drag_last["x"]) / width
+        dy = (offset_y - drag_last["y"]) / height
+        drag_last["x"] = offset_x
+        drag_last["y"] = offset_y
+        # Content should follow the cursor (grab-and-drag feel): dragging
+        # right/down reveals what was previously off to the left/top.
+        player.pan_by(dx, dy)
+
+    def on_drag_end(gesture: Gtk.GestureDrag, offset_x: float, offset_y: float) -> None:
+        moved = abs(offset_x) >= _DRAG_CLICK_THRESHOLD or abs(offset_y) >= _DRAG_CLICK_THRESHOLD
+        if not moved and on_click is not None:
+            on_click()
+
+    drag = Gtk.GestureDrag(button=1)
+    drag.connect("drag-begin", on_drag_begin)
+    drag.connect("drag-update", on_drag_update)
+    drag.connect("drag-end", on_drag_end)
+    player.add_controller(drag)

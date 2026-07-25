@@ -46,7 +46,7 @@ from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_pa
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
-from surveillance.ui.mpv_widget import MpvGLArea
+from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 from surveillance.ui.ptz_controls import PtzControls
 from surveillance.ui.rtsp_health import RtspHealthMonitor
 from surveillance.util.async_bridge import run_async
@@ -91,9 +91,12 @@ class CameraSlot(Gtk.Box):
         header_click.connect("pressed", self._on_click)
         self._header.add_controller(header_click)
 
-        player_click = Gtk.GestureClick(button=1)
-        player_click.connect("pressed", self._on_click)
-        self.player.add_controller(player_click)
+        # Scroll-to-zoom (centered on the cursor) and click-and-drag pan,
+        # shared with the recording player dialog. The player uses a drag
+        # gesture instead of a plain click, so a left-button drag can pan a
+        # zoomed-in video — a small movement below the threshold is still
+        # treated as a click (slot selection).
+        attach_zoom_pan_controls(self.player, on_click=self._invoke_click_callback)
 
         # Right-click context menu — same header/player dual-gesture reason
         # as the left-click handlers above.
@@ -203,7 +206,11 @@ class CameraSlot(Gtk.Box):
             self._clear_slot_callback(self.index)
 
     def _on_click(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
-        if n_press == 1 and self._click_callback and callable(self._click_callback):
+        if n_press == 1:
+            self._invoke_click_callback()
+
+    def _invoke_click_callback(self) -> None:
+        if self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
     def set_display_index(self, display_idx: int) -> None:
@@ -340,8 +347,13 @@ class LiveView(Gtk.Box):
         new_active = list(LAYOUT_VISIBLE[self._current_layout])
         self._select_slot(None)
 
-        # Stop streams on slots that are becoming hidden
+        # Stop streams on slots that are becoming hidden. Zoom is reset for
+        # every slot on every layout switch, not just ones changing camera —
+        # deliberately not "remembered per camera" across layouts (unlike
+        # DSM's own Monitor Center) since a slot showing the same camera in
+        # two layouts wouldn't otherwise get a fresh stream to reset it on.
         for i, slot in enumerate(self._slots):
+            slot.player.reset_zoom()
             if i in new_active:
                 slot.set_visible(True)
                 display_idx = new_active.index(i)
@@ -816,8 +828,13 @@ class LiveView(Gtk.Box):
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:
-        """Stop all mpv playback but keep camera assignments."""
+        """Stop all mpv playback but keep camera assignments.
+
+        Also resets zoom — leaving the Live View page shouldn't leave a
+        slot zoomed in when the user comes back to it.
+        """
         for slot in self._slots:
+            slot.player.reset_zoom()
             if slot.camera:
                 slot.stop_stream()
 

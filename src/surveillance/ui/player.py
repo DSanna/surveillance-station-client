@@ -39,7 +39,7 @@ from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Recording
 from surveillance.services.recording import get_stream_url
-from surveillance.ui.mpv_widget import MpvGLArea
+from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 
 if TYPE_CHECKING:
     from surveillance.app import SurveillanceApp
@@ -80,6 +80,12 @@ class PlayerDialog(Gtk.Window):
         self.player = MpvGLArea(tls_verify=verify_ssl)
         self.player.set_vexpand(True)
         main_box.append(self.player)
+
+        # Scroll-to-zoom (centered on the cursor) and drag-to-pan — same
+        # behavior as Live View slots (see CameraSlot in ui/liveview.py).
+        # No existing click behavior on the player here to preserve, so
+        # every drag pans from the first pixel (no click-vs-drag threshold).
+        attach_zoom_pan_controls(self.player)
 
         # Status line shown while loading or on failure
         self._status_label = Gtk.Label(label="Loading…")
