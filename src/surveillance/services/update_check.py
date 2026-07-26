@@ -81,12 +81,14 @@ async def get_latest_release() -> tuple[str, str] | None:
             )
             resp.raise_for_status()
             data = resp.json()
+        # Inside the try: a response whose JSON body is not an object makes
+        # data.get(...) raise, and this function must never raise.
+        tag = data.get("tag_name") or ""
+        html_url = data.get("html_url") or RELEASES_PAGE_URL
     except Exception as e:
         log.debug("Update check failed (non-fatal): %s", e)
         return None
 
-    tag = data.get("tag_name") or ""
     if not tag:
         return None
-    html_url = data.get("html_url") or RELEASES_PAGE_URL
     return tag, html_url
