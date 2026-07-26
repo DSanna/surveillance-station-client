@@ -721,6 +721,7 @@ class LiveView(Gtk.Box):
         an RTSP camera directly with nothing watching for the demuxer
         dying silently mid-stream — this is what fills that gap.
         """
+        slot.set_status("")  # clear any leftover "offline"/"reconnect" label
         slot.player.play(url)
         cam_id = slot.camera.id if slot.camera else -1
         slot_idx = slot.index
