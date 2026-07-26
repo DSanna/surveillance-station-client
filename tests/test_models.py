@@ -58,6 +58,8 @@ class TestCamera:
             "resolution": "3840x2160",
             "fps": 25,
             "channel": 0,
+            "audioCodec": 2,
+            "audioOut": True,
         }
         cam = Camera.from_api(data)
         assert cam.id == 1
@@ -65,6 +67,8 @@ class TestCamera:
         assert cam.status == CameraStatus.ENABLED
         assert cam.is_ptz is True
         assert cam.vendor == "Hikvision"
+        assert cam.has_audio is True
+        assert cam.has_speaker is True
 
     def test_from_api_fallback_name(self) -> None:
         data = {"id": 2, "name": "Back Yard", "status": 0}
@@ -78,6 +82,15 @@ class TestCamera:
         assert cam.name == ""
         assert cam.status == CameraStatus.DISABLED
         assert cam.is_ptz is False
+        assert cam.has_audio is False
+        assert cam.has_speaker is False
+
+    def test_from_api_no_audio_codec(self) -> None:
+        # audioCodec 0 means no audio track — distinct from audioOut,
+        # the camera's own speaker capability for two-way audio.
+        cam = Camera.from_api({"audioCodec": 0, "audioOut": False})
+        assert cam.has_audio is False
+        assert cam.has_speaker is False
 
 
 class TestRecording:
@@ -179,9 +192,18 @@ class TestPtzPreset:
 
 class TestPtzPatrol:
     def test_from_api(self) -> None:
-        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
+        patrol = PtzPatrol.from_api(
+            {"id": 1, "name": "Perimeter", "sequence": [6, 7, 11, 14], "stayTime": 10}
+        )
         assert patrol.id == 1
         assert patrol.name == "Perimeter"
+        assert patrol.sequence == [6, 7, 11, 14]
+        assert patrol.stay_time == 10
+
+    def test_from_api_defaults(self) -> None:
+        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
+        assert patrol.sequence == []
+        assert patrol.stay_time == 5
 
 
 class TestApiInfo:

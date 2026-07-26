@@ -40,15 +40,16 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
 
-from surveillance.api.models import Camera, CameraStatus
-from surveillance.config import save_config_now
+from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
+from surveillance.config import save_config, save_config_now
+from surveillance.services import ptz
 from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_path
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
 from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
-from surveillance.ui.ptz_controls import PtzControls
 from surveillance.ui.rtsp_health import RtspHealthMonitor
+from surveillance.ui.slot_toolbar import SlotToolbar
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -62,7 +63,8 @@ _MAX_SLOTS = 16
 
 
 class CameraSlot(Gtk.Box):
-    """Self-contained camera slot with a header label and video player."""
+    """Self-contained camera slot with a header label, video player, and
+    hover-revealed toolbar (see slot_toolbar.SlotToolbar)."""
 
     def __init__(self, index: int, tls_verify: bool = True) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -78,11 +80,29 @@ class CameraSlot(Gtk.Box):
         self._header.set_xalign(0.5)
         self.append(self._header)
 
-        # Video player
+        # Video player, muted by default (see clear()/CameraSlot policy —
+        # MpvGLArea itself defaults unmuted since PlayerDialog wants that).
         self.player = MpvGLArea(tls_verify=tls_verify)
         self.player.set_vexpand(True)
         self.player.set_hexpand(True)
-        self.append(self.player)
+        self.player.set_mute(True)
+
+        # Overlay instead of appending the player directly so the hover
+        # toolbar can float on top of it.
+        self._player_overlay = Gtk.Overlay()
+        self._player_overlay.set_child(self.player)
+        self.append(self._player_overlay)
+
+        self._toolbar = SlotToolbar(index, self.player)
+        self._toolbar.set_snapshot_trigger(self._take_snapshot)
+        self._player_overlay.add_overlay(self._toolbar)
+
+        slot_hover = Gtk.EventControllerMotion()
+        slot_hover.connect(
+            "enter", lambda *_a: self._toolbar.notify_video_hover_enter(bool(self.camera))
+        )
+        slot_hover.connect("leave", lambda *_a: self._toolbar.notify_video_hover_leave())
+        self._player_overlay.add_controller(slot_hover)
 
         # Click handlers — one on the header, one on the player.
         # GLArea consumes events so a CAPTURE gesture on the parent Box
@@ -90,6 +110,12 @@ class CameraSlot(Gtk.Box):
         header_click = Gtk.GestureClick(button=1)
         header_click.connect("pressed", self._on_click)
         self._header.add_controller(header_click)
+
+        # Focusable so a click both selects (existing behavior) and grabs
+        # real keyboard focus — groundwork for keyboard-driven PTZ (ToDo
+        # #10) to key off the same "which slot is active" concept rather
+        # than inventing a second one.
+        self.set_focusable(True)
 
         # Scroll-to-zoom (centered on the cursor) and click-and-drag pan,
         # shared with the recording player dialog. The player uses a drag
@@ -162,6 +188,49 @@ class CameraSlot(Gtk.Box):
         one slot in 1x1 — there'd be nothing to do)."""
         self._open_1x1_available_callback = callback
 
+    # -- Thin forwarders to the toolbar, keeping LiveView's own call sites
+    # unaware of the CameraSlot/SlotToolbar split. --
+
+    def set_volume_changed_callback(self, callback: object) -> None:
+        self._toolbar.set_volume_changed_callback(callback)
+
+    def set_saved_volume(self, volume: int) -> None:
+        self._toolbar.set_saved_volume(volume)
+
+    def set_mute_changed_callback(self, callback: object) -> None:
+        self._toolbar.set_mute_changed_callback(callback)
+
+    def set_saved_mute(self, muted: bool) -> None:
+        self._toolbar.set_saved_mute(muted)
+
+    def set_audio_playable(self, playable: bool) -> None:
+        self._toolbar.set_audio_playable(playable)
+
+    def _update_mute_icon(self) -> None:
+        self._toolbar.update_mute_icon()
+
+    def set_zoom_callback(self, callback: object) -> None:
+        self._toolbar.set_zoom_callback(callback)
+
+    def set_focus_callback(self, callback: object) -> None:
+        self._toolbar.set_focus_callback(callback)
+
+    def set_ptz_callback(self, callback: object) -> None:
+        self._toolbar.set_ptz_callback(callback)
+
+    def set_preset_callback(self, callback: object) -> None:
+        self._toolbar.set_preset_callback(callback)
+
+    def set_presets(self, presets: list[PtzPreset]) -> None:
+        self._toolbar.set_presets(presets)
+
+    def set_patrols(self, patrols: list[PtzPatrol]) -> None:
+        self._toolbar.set_patrols(patrols)
+
+    def _take_snapshot(self) -> None:
+        if self._snapshot_callback and callable(self._snapshot_callback):
+            self._snapshot_callback(self.index)
+
     def _on_right_click(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
         if n_press != 1:
             return
@@ -192,8 +261,7 @@ class CameraSlot(Gtk.Box):
 
     def _on_menu_take_snapshot(self, btn: Gtk.Button) -> None:
         self._menu_popover.popdown()
-        if self._snapshot_callback and callable(self._snapshot_callback):
-            self._snapshot_callback(self.index)
+        self._take_snapshot()
 
     def _on_menu_open_1x1(self, btn: Gtk.Button) -> None:
         self._menu_popover.popdown()
@@ -210,6 +278,7 @@ class CameraSlot(Gtk.Box):
             self._invoke_click_callback()
 
     def _invoke_click_callback(self) -> None:
+        self.grab_focus()
         if self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
@@ -249,6 +318,7 @@ class CameraSlot(Gtk.Box):
         self._header.set_label(camera.name)
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
+        self._toolbar.assign(camera)
 
     def update_camera(self, camera: Camera) -> None:
         """Refresh this slot's camera data (e.g. a status change) without
@@ -277,6 +347,7 @@ class CameraSlot(Gtk.Box):
     def clear(self) -> None:
         self.stop_stream()
         self.player.reset_zoom()
+        self._toolbar.clear()
         self.camera = None
         self._status = ""
         self._stream_lost = False
@@ -325,17 +396,14 @@ class LiveView(Gtk.Box):
             slot.set_open_1x1_callback(self._on_slot_open_1x1)
             slot.set_clear_slot_callback(self._on_slot_clear)
             slot.set_open_1x1_available_callback(lambda: self._current_layout != "1x1")
+            slot.set_volume_changed_callback(self._on_slot_volume_changed)
+            slot.set_mute_changed_callback(self._on_slot_mute_changed)
+            slot.set_zoom_callback(self._on_slot_zoom)
+            slot.set_focus_callback(self._on_slot_focus)
+            slot.set_ptz_callback(self._on_slot_ptz_move)
+            slot.set_preset_callback(self._on_slot_preset)
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
-
-        # PTZ controls (shown below grid when a PTZ camera is active)
-        self._ptz_sep = Gtk.Separator()
-        self._ptz_sep.set_visible(False)
-        self.append(self._ptz_sep)
-
-        self._ptz_controls = PtzControls(window)
-        self._ptz_controls.set_visible(False)
-        self.append(self._ptz_controls)
 
         # Apply initial layout (show/hide slots)
         self._apply_layout()
@@ -354,6 +422,12 @@ class LiveView(Gtk.Box):
         # deliberately not "remembered per camera" across layouts (unlike
         # DSM's own Monitor Center) since a slot showing the same camera in
         # two layouts wouldn't otherwise get a fresh stream to reset it on.
+        # Mute, by contrast, auto-mutes only the slots actually losing
+        # visibility here — one staying visible with the same camera
+        # shouldn't have its manual mute/volume choice clobbered by an
+        # unrelated layout switch. A newly-shown slot gets its camera's
+        # mute/volume restored separately, via _restore_saved_audio_state()
+        # in _restore_layout_cameras().
         for i, slot in enumerate(self._slots):
             slot.player.reset_zoom()
             if i in new_active:
@@ -363,10 +437,11 @@ class LiveView(Gtk.Box):
             else:
                 slot.set_visible(False)
                 if slot.camera:
+                    slot.player.set_mute(True)
+                    slot._update_mute_icon()
                     slot.stop_stream()
 
         self._active = new_active
-        self._update_ptz_controls()
 
     def set_layout(self, layout: str) -> None:
         """Switch to *layout*, keeping each layout's camera assignments."""
@@ -411,33 +486,15 @@ class LiveView(Gtk.Box):
                 seen.add(cam_id)
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
+                self._restore_saved_audio_state(self._slots[phys], cam)
+                self._slots[phys].set_audio_playable(self._resolve_audio_playable(cam))
+                self._load_slot_ptz_extras(self._slots[phys], cam)
                 self._start_stream(phys, cam)
             else:
                 # Saved state says this slot is empty (or a stale duplicate),
                 # so clear it explicitly: hidden slots from other layouts keep
                 # their camera in memory rather than resetting it.
                 self._slots[phys].clear()
-        self._update_ptz_controls()
-
-    # ------------------------------------------------------------------
-    # PTZ controls
-    # ------------------------------------------------------------------
-
-    def _update_ptz_controls(self) -> None:
-        """Show or hide PTZ controls based on the active camera."""
-        camera: Camera | None = None
-        if len(self._active) == 1:
-            camera = self._slots[self._active[0]].camera
-        elif self._selected_slot is not None:
-            camera = self._slots[self._selected_slot].camera
-
-        if camera and camera.is_ptz:
-            self._ptz_controls.set_camera(camera)
-            self._ptz_controls.set_visible(True)
-            self._ptz_sep.set_visible(True)
-        else:
-            self._ptz_controls.set_visible(False)
-            self._ptz_sep.set_visible(False)
 
     # ------------------------------------------------------------------
     # User interactions
@@ -473,7 +530,6 @@ class LiveView(Gtk.Box):
         for slot in self._slots:
             slot.clear()
         self._select_slot(None)
-        self._update_ptz_controls()
         self._save_session()
 
     def _on_slot_clicked(self, slot_idx: int) -> None:
@@ -490,7 +546,6 @@ class LiveView(Gtk.Box):
             self._select_slot(None)
         else:
             self._select_slot(slot_idx)
-        self._update_ptz_controls()
 
     def _select_slot(self, slot_idx: int | None) -> None:
         """Update the selected slot and its visual indicator."""
@@ -519,8 +574,10 @@ class LiveView(Gtk.Box):
             self.window.sync_grid_layout("1x1")
             self._apply_layout()
             self._slots[0].assign(camera)
+            self._restore_saved_audio_state(self._slots[0], camera)
+            self._slots[0].set_audio_playable(self._resolve_audio_playable(camera))
+            self._load_slot_ptz_extras(self._slots[0], camera)
             self._start_stream(0, camera)
-        self._update_ptz_controls()
         self._save_session()
 
     def clear_selected_slot(self) -> None:
@@ -529,7 +586,6 @@ class LiveView(Gtk.Box):
             return
         self._slots[self._selected_slot].clear()
         self._select_slot(None)
-        self._update_ptz_controls()
         self._save_session()
 
     def _on_slot_take_snapshot(self, slot_idx: int) -> None:
@@ -580,6 +636,94 @@ class LiveView(Gtk.Box):
 
         dialog.save(self.window, None, _on_save)
 
+    def _restore_saved_audio_state(self, slot: CameraSlot, camera: Camera) -> None:
+        """Restore *camera*'s persisted volume and mute state into *slot*.
+
+        Mute still auto-mutes whenever a camera loses visibility (see
+        clear(), _apply_layout(), pause_streams()) — this is the other
+        half: called wherever a camera *gains* visibility, restoring
+        whatever it was set to rather than a fixed default.
+        """
+        volume = self.app.config.camera_volume.get(camera.id, 50)
+        slot.set_saved_volume(volume)
+        muted = self.app.config.camera_muted.get(camera.id, True)
+        slot.set_saved_mute(muted)
+
+    def _resolve_audio_playable(self, camera: Camera) -> bool:
+        """Whether audio can actually reach the player for *camera* right
+        now — see CameraSlot.set_audio_playable for why WebSocket never
+        qualifies regardless of has_audio."""
+        if not camera.has_audio:
+            return False
+        protocol = self.app.config.camera_protocols.get(camera.id, "auto")
+        return protocol in ("rtsp", "rtsp_over_http", "direct")
+
+    def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
+        """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
+        PTZ cameras have either."""
+        if not camera.is_ptz or not self.app.api:
+            return
+        run_async(
+            ptz.list_presets(self.app.api, camera.id),
+            callback=slot.set_presets,
+            error_callback=lambda e: log.error("PTZ list_presets failed: %s", e),
+        )
+        run_async(
+            ptz.list_patrols(self.app.api, camera.id),
+            callback=slot.set_patrols,
+            error_callback=lambda e: log.error("PTZ list_patrols failed: %s", e),
+        )
+
+    def _on_slot_mute_changed(self, slot_idx: int, muted: bool) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera:
+            return
+        self.app.config.camera_muted[camera.id] = muted
+        save_config(self.app.config)
+
+    def _on_slot_volume_changed(self, slot_idx: int, volume: int) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera:
+            return
+        self.app.config.camera_volume[camera.id] = volume
+        save_config(self.app.config)
+
+    def _on_slot_ptz_move(self, slot_idx: int, direction: str, move_type: str) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.move(self.app.api, camera.id, f"{direction}{move_type}"),
+            error_callback=lambda e: log.error("PTZ move failed: %s", e),
+        )
+
+    def _on_slot_zoom(self, slot_idx: int, direction: str, move_type: str) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.zoom(self.app.api, camera.id, f"{direction}{move_type}"),
+            error_callback=lambda e: log.error("PTZ zoom failed: %s", e),
+        )
+
+    def _on_slot_focus(self, slot_idx: int, control: str, move_type: str) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.focus(self.app.api, camera.id, control, move_type),
+            error_callback=lambda e: log.error("PTZ focus failed: %s", e),
+        )
+
+    def _on_slot_preset(self, slot_idx: int, preset_id: int) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.go_preset(self.app.api, camera.id, preset_id),
+            error_callback=lambda e: log.error("PTZ go_preset failed: %s", e),
+        )
+
     def _on_slot_open_1x1(self, slot_idx: int) -> None:
         """Right-click menu action: switch to 1x1 layout showing just this
         slot's camera — the same "zoom in" behavior as clicking an
@@ -599,7 +743,6 @@ class LiveView(Gtk.Box):
         self._slots[slot_idx].clear()
         if self._selected_slot == slot_idx:
             self._select_slot(None)
-        self._update_ptz_controls()
         self._save_session()
 
     def _assign_to_slot(self, slot_idx: int, camera: Camera) -> None:
@@ -613,6 +756,9 @@ class LiveView(Gtk.Box):
         # Clear the target slot and assign
         self._slots[slot_idx].clear()
         self._slots[slot_idx].assign(camera)
+        self._restore_saved_audio_state(self._slots[slot_idx], camera)
+        self._slots[slot_idx].set_audio_playable(self._resolve_audio_playable(camera))
+        self._load_slot_ptz_extras(self._slots[slot_idx], camera)
         self._start_stream(slot_idx, camera)
 
     # ------------------------------------------------------------------
@@ -828,21 +974,31 @@ class LiveView(Gtk.Box):
             self._start_stream(i, fresh)
 
     def restart_camera(self, camera_id: int) -> None:
-        """Restart the stream for a camera if it is currently displayed."""
+        """Restart the stream for a camera if it is currently displayed.
+
+        Called after a protocol override change, among other things — the
+        mute button's playability needs re-resolving too, since that's
+        exactly the kind of change that flips it (WebSocket <-> RTSP).
+        """
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
                 slot.stop_stream()
+                slot.set_audio_playable(self._resolve_audio_playable(slot.camera))
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:
         """Stop all mpv playback but keep camera assignments.
 
-        Also resets zoom — leaving the Live View page shouldn't leave a
-        slot zoomed in when the user comes back to it.
+        Also resets zoom and auto-mutes — leaving the Live View page loses
+        visibility for every slot, same as any other slot that stops being
+        shown (see _apply_layout()). resume_streams() restores each
+        camera's actual mute/volume choice, not just leaving it muted.
         """
         self._streams_paused = True
         for slot in self._slots:
             slot.player.reset_zoom()
+            slot.player.set_mute(True)
+            slot._update_mute_icon()
             if slot.camera:
                 slot.stop_stream()
 
@@ -852,6 +1008,7 @@ class LiveView(Gtk.Box):
         for i in self._active:
             slot = self._slots[i]
             if slot.camera:
+                self._restore_saved_audio_state(slot, slot.camera)
                 self._start_stream(i, slot.camera)
 
     def stop_all(self) -> None:

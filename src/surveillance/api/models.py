@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 
@@ -57,6 +57,8 @@ class Camera:
     vendor: str
     status: CameraStatus
     is_ptz: bool = False
+    has_audio: bool = False
+    has_speaker: bool = False
 
     @classmethod
     def from_api(cls, data: dict) -> Camera:  # type: ignore[type-arg]
@@ -67,6 +69,13 @@ class Camera:
             vendor=data.get("vendor", ""),
             status=CameraStatus(data.get("status", 0)),
             is_ptz=bool(data.get("ptzDirection", 0)),
+            # audioCodec is 0 when the camera has no audio track, a
+            # nonzero codec id (confirmed live: 2, 4, 6, ...) when it does.
+            has_audio=bool(data.get("audioCodec", 0)),
+            # audioOut is the camera's own speaker capability (two-way
+            # audio) — separate from audioCodec, which is about the
+            # camera's mic recording into the stream, not its speaker.
+            has_speaker=bool(data.get("audioOut", False)),
         )
 
 
@@ -235,16 +244,25 @@ class PtzPreset:
 
 @dataclass
 class PtzPatrol:
-    """PTZ patrol route."""
+    """PTZ patrol route — an ordered list of preset IDs with a dwell time
+    between each. DSM's own web UI runs a patrol client-side (repeatedly
+    calling PTZ::GoPreset through the sequence, looping until stopped)
+    rather than through any single continuous "run patrol" server command
+    — confirmed via live network capture — so callers wanting the same
+    behavior should walk sequence/stay_time themselves via ptz.go_preset()."""
 
     id: int
     name: str
+    sequence: list[int] = field(default_factory=list)
+    stay_time: int = 5
 
     @classmethod
     def from_api(cls, data: dict) -> PtzPatrol:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
             name=data.get("name", ""),
+            sequence=data.get("sequence", []),
+            stay_time=data.get("stayTime", 5),
         )
 
 

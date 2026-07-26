@@ -119,6 +119,8 @@ class AppConfig:
     snapshot_dir: str = ""
     camera_overrides: dict[int, str] = field(default_factory=dict)
     camera_protocols: dict[int, str] = field(default_factory=dict)
+    camera_volume: dict[int, int] = field(default_factory=dict)
+    camera_muted: dict[int, bool] = field(default_factory=dict)
     search_camera_ids: list[int] = field(default_factory=list)
     search_from_time: str = ""
     search_to_time: str = ""
@@ -177,6 +179,18 @@ def load_config() -> AppConfig:
         with contextlib.suppress(ValueError, TypeError):
             protocols[int(cam_id_str)] = str(proto)
 
+    # camera_volume: maps camera ID (int) -> last-set volume (0-100)
+    volumes: dict[int, int] = {}
+    for cam_id_str, vol in data.get("camera_volume", {}).items():
+        with contextlib.suppress(ValueError, TypeError):
+            volumes[int(cam_id_str)] = int(vol)
+
+    # camera_muted: maps camera ID (int) -> last-set mute state
+    muted: dict[int, bool] = {}
+    for cam_id_str, val in data.get("camera_muted", {}).items():
+        with contextlib.suppress(ValueError, TypeError):
+            muted[int(cam_id_str)] = bool(val)
+
     return AppConfig(
         default_profile=general.get("default_profile", ""),
         profiles=profiles,
@@ -192,6 +206,8 @@ def load_config() -> AppConfig:
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
         camera_overrides=overrides,
         camera_protocols=protocols,
+        camera_volume=volumes,
+        camera_muted=muted,
         search_camera_ids=session.get("search_camera_ids", []),
         search_from_time=session.get("search_from_time", ""),
         search_to_time=session.get("search_to_time", ""),
@@ -279,6 +295,8 @@ def _write_config(config: AppConfig) -> None:
         "camera_protocols": {
             str(cam_id): proto for cam_id, proto in config.camera_protocols.items()
         },
+        "camera_volume": {str(cam_id): vol for cam_id, vol in config.camera_volume.items()},
+        "camera_muted": {str(cam_id): val for cam_id, val in config.camera_muted.items()},
         "profiles": {},
     }
 

@@ -178,6 +178,77 @@ class TestHomeModeService:
             assert call_kwargs[1]["extra_params"]["on"] == "true"
 
 
+class TestPtzService:
+    @pytest.mark.asyncio
+    async def test_move(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import move
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await move(api, 40, "upStart")
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["method"] == "Move"
+            assert call_kwargs["version"] == 2
+            assert call_kwargs["extra_params"]["cameraId"] == "40"
+            assert call_kwargs["extra_params"]["direction"] == "upStart"
+
+    @pytest.mark.asyncio
+    async def test_zoom(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import zoom
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await zoom(api, 40, "inStart")
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["method"] == "Zoom"
+            assert call_kwargs["extra_params"]["control"] == "inStart"
+
+    @pytest.mark.asyncio
+    async def test_focus(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import focus
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await focus(api, 40, "in", "Start")
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["method"] == "Focus"
+            assert call_kwargs["version"] == 6
+            assert call_kwargs["extra_params"]["moveType"] == "Start"
+            assert call_kwargs["extra_params"]["control"] == "in"
+
+    @pytest.mark.asyncio
+    async def test_go_preset(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import go_preset
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await go_preset(api, 40, 6)
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["method"] == "GoPreset"
+            assert call_kwargs["extra_params"]["presetId"] == "6"
+
+    @pytest.mark.asyncio
+    async def test_list_presets(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import list_presets
+
+        mock_data = {"presets": [{"id": 1, "name": "Front"}, {"id": 2, "name": "Gate"}]}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            presets = await list_presets(api, 40)
+            assert len(presets) == 2
+            assert presets[0].name == "Front"
+
+    @pytest.mark.asyncio
+    async def test_list_patrols(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import list_patrols
+
+        mock_data = {
+            "patrols": [
+                {"id": 2, "name": "Perimeter", "sequence": [6, 7, 11, 14], "stayTime": 5},
+            ]
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            patrols = await list_patrols(api, 40)
+            assert len(patrols) == 1
+            assert patrols[0].sequence == [6, 7, 11, 14]
+            assert patrols[0].stay_time == 5
+
+
 class TestEventService:
     @pytest.mark.asyncio
     async def test_list_events(self, api: SurveillanceAPI) -> None:

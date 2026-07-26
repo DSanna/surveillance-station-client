@@ -114,6 +114,7 @@ class MpvGLArea(Gtk.GLArea):
         self._zoom: float = 0.0
         self._pan_x: float = 0.0
         self._pan_y: float = 0.0
+        self._muted = False
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -145,6 +146,7 @@ class MpvGLArea(Gtk.GLArea):
                 loglevel="fatal",
                 demuxer_lavf_o="rtsp_transport=tcp",
                 tls_verify=self._tls_verify,
+                mute=self._muted,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
@@ -419,10 +421,25 @@ class MpvGLArea(Gtk.GLArea):
                 self._mpv.video_pan_y = 0.0
 
     def set_volume(self, volume: int) -> None:
-        """Set volume (0-100)."""
+        """Set volume (0-100). Independent of mute — the level set here is
+        what's restored on unmute, silent or not in the meantime."""
         if self._mpv:
             with contextlib.suppress(Exception):
                 self._mpv.volume = volume
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    def set_mute(self, muted: bool) -> None:
+        """Mute/unmute without touching the volume level (mpv's own `mute`
+        property, not zeroing volume) — stored regardless of whether mpv
+        has been realized yet, same as _low_latency/_start_offset, and
+        applied immediately if it has."""
+        self._muted = muted
+        if self._mpv:
+            with contextlib.suppress(Exception):
+                self._mpv.mute = muted
 
     def seek(self, seconds: float) -> None:
         """Seek relative to current position."""

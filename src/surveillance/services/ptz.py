@@ -68,6 +68,27 @@ async def zoom(api: SurveillanceAPI, camera_id: int, direction: str) -> None:
     )
 
 
+async def focus(api: SurveillanceAPI, camera_id: int, control: str, move_type: str) -> None:
+    """Adjust PTZ camera focus.
+
+    control: "in" or "out". move_type: "Start" or "Stop". Confirmed live
+    against DSM's own web UI (network capture) — a distinct, newer version
+    of the PTZ API than move()/zoom() use, with two extra fixed params.
+    """
+    await api.request(
+        api="SYNO.SurveillanceStation.PTZ",
+        method="Focus",
+        version=6,
+        extra_params={
+            "cameraId": str(camera_id),
+            "moveType": move_type,
+            "control": control,
+            "direction": "1",
+            "profileType": "0",
+        },
+    )
+
+
 async def list_presets(api: SurveillanceAPI, camera_id: int) -> list[PtzPreset]:
     """List PTZ presets for a camera."""
     data = await api.request(
@@ -101,16 +122,3 @@ async def list_patrols(api: SurveillanceAPI, camera_id: int) -> list[PtzPatrol]:
         extra_params={"cameraId": str(camera_id)},
     )
     return [PtzPatrol.from_api(p) for p in data.get("patrols", [])]
-
-
-async def run_patrol(api: SurveillanceAPI, camera_id: int, patrol_id: int) -> None:
-    """Start a PTZ patrol."""
-    await api.request(
-        api="SYNO.SurveillanceStation.PTZ",
-        method="RunPatrol",
-        version=2,
-        extra_params={
-            "cameraId": str(camera_id),
-            "patrolId": str(patrol_id),
-        },
-    )

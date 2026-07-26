@@ -22,9 +22,9 @@
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume, scroll-to-zoom, click-and-drag pan), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
-- **PTZ Control** &mdash; Direction pad, zoom in/out, preset positions, and patrol routes. Appears automatically below the live view when a PTZ-capable camera is active.
+- **PTZ Control** &mdash; Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Patrol runs continuously through the camera's saved route until stopped, matching DSM's own Monitor Center behavior.
 - **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
 - **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
 - **Events & Alerts** &mdash; Browse real motion and person-detected events with their type and time, filter by event type (quick filter plus a multi-select in advanced search) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
@@ -279,7 +279,7 @@ pkg_add gtk4 mpv py3-gobject3 py3-cairo
 
 | Package | Purpose |
 |---|---|
-| `PyGObject` >= 3.50 | GTK4 bindings with native asyncio integration |
+| `PyGObject` >= 3.48 | GTK4 bindings with native asyncio integration |
 | `httpx[http2]` >= 0.27 | Async HTTP/2 client for Synology REST API |
 | `python-mpv` >= 1.0 | libmpv bindings for video rendering |
 | `PyOpenGL` >= 3.1 | OpenGL context for mpv render in GTK4 GLArea |
@@ -359,11 +359,11 @@ surveillance-station-client/
 │   │   ├── headerbar.py                header bar controls
 │   │   ├── sidebar.py                  camera list sidebar
 │   │   ├── liveview.py                 live stream grid
+│   │   ├── slot_toolbar.py             per-slot hover toolbar (audio, PTZ, snapshot)
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
 │   │   ├── advanced_search.py          advanced search dialog (shared by Recordings/Snapshots/Events)
 │   │   ├── player.py                   playback controls
-│   │   ├── ptz_controls.py             PTZ direction pad
 │   │   ├── snapshots.py                snapshot browser
 │   │   ├── events.py                   event list
 │   │   ├── licenses.py                 license management

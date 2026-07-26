@@ -117,7 +117,12 @@ class AppHeaderBar(Gtk.HeaderBar):
 
         # Notification bell
         self.notif_btn = Gtk.MenuButton()
-        self.notif_btn.set_icon_name("bell-symbolic")
+        # "bell-symbolic" doesn't exist in this icon theme (confirmed via
+        # Gtk.IconTheme.has_icon) and silently falls back to a pale
+        # missing-icon placeholder that looks disabled even when the
+        # button is sensitive. This is the same bell GNOME Settings uses
+        # for its own notifications panel.
+        self.notif_btn.set_icon_name("preferences-system-notifications-symbolic")
         self.notif_btn.set_tooltip_text("Notifications")
         self.notif_btn.set_sensitive(False)
 

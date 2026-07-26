@@ -1,4 +1,4 @@
-.TH SURVEILLANCE 1 "2026-07-25" "0.3.10" "User Commands"
+.TH SURVEILLANCE 1 "2026-07-26" "0.3.10" "User Commands"
 .SH NAME
 surveillance \- Synology Surveillance Station client
 .SH SYNOPSIS
@@ -20,6 +20,8 @@ grid menu after a confirmation prompt.
 Scroll the mouse wheel over a slot to zoom in, centered on the cursor;
 click and drag to pan. Zoom resets when switching layouts or leaving the
 page.
+Streams are muted by default; hovering a slot reveals a toolbar with
+mute/volume (remembered per camera) and a Snapshot button.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with
@@ -48,7 +50,10 @@ The playback window supports scroll-to-zoom (centered on the cursor) and
 click-and-drag panning, same as Live View.
 .TP
 .B PTZ Control
-Control pan-tilt-zoom cameras with direction pad, zoom, preset positions, and patrol routes. Controls appear automatically below the live view when a PTZ-capable camera is active.
+Control pan-tilt-zoom cameras with Pan/Tilt, Zoom, Focus, Preset, and Patrol
+controls, in the same per-slot hover toolbar as Live View's audio controls.
+Patrol runs continuously through the camera's saved route until stopped,
+matching DSM's own Monitor Center behavior.
 .TP
 .B Snapshots
 Browse saved snapshots, filter by camera and time range, view, download,
@@ -141,7 +146,7 @@ gtk4, mpv, py311-gobject3, py311-cairo
 gtk4, mpv, py3-gobject3, py3-cairo
 .TP
 .B Python
-PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets
+PyGObject (>=3.48), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets
 .SH FILES
 .TP
 .I ~/.config/surveillance-station/config.toml
