@@ -909,9 +909,7 @@ class SnapshotViewerDialog(Gtk.Window):
         self._drag_last_x = 0.0
         self._drag_last_y = 0.0
 
-    def _on_drag_update(
-        self, gesture: Gtk.GestureDrag, offset_x: float, offset_y: float
-    ) -> None:
+    def _on_drag_update(self, gesture: Gtk.GestureDrag, offset_x: float, offset_y: float) -> None:
         # drag-update reports the offset cumulative from drag-begin, not
         # incrementally, so track how much has already been applied.
         dx = offset_x - self._drag_last_x
