@@ -276,6 +276,7 @@ class CameraSlot(Gtk.Box):
 
     def clear(self) -> None:
         self.stop_stream()
+        self.player.reset_zoom()
         self.camera = None
         self._status = ""
         self._stream_lost = False
