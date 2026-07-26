@@ -310,16 +310,35 @@ class MpvGLArea(Gtk.GLArea):
             with contextlib.suppress(Exception):
                 self._mpv.pause = not self._mpv.pause
 
+    def _letterbox_fraction(self, width: int, height: int) -> tuple[float, float]:
+        """Fraction of the widget's width/height the fitted (unzoomed)
+        video actually occupies — 1.0 on an axis mpv doesn't letterbox to
+        preserve the camera's aspect ratio, less than 1.0 on one it does.
+        Falls back to (1.0, 1.0) if mpv hasn't reported a video size yet.
+        """
+        dwidth = getattr(self._mpv, "dwidth", None)
+        dheight = getattr(self._mpv, "dheight", None)
+        if not dwidth or not dheight or width <= 0 or height <= 0:
+            return 1.0, 1.0
+        fit_scale = min(width / dwidth, height / dheight)
+        return (dwidth * fit_scale) / width, (dheight * fit_scale) / height
+
     def zoom_at(self, delta: float, cursor_x: float, cursor_y: float) -> None:
         """Zoom in/out by *delta* (mpv's own log2 video-zoom units — e.g.
-        0.15 per scroll tick), nudging the pan toward (cursor_x, cursor_y)
-        — widget-relative pixel coordinates — so zooming feels centered on
-        the cursor rather than the video's own center.
+        0.15 per scroll tick), keeping whatever's under the cursor
+        (cursor_x, cursor_y — widget-relative pixel coordinates) fixed on
+        screen — the standard "zoom to point" behavior of image viewers,
+        maps, and graphics editors.
 
-        Deliberately incremental (nudge pan by a fraction of the zoom
-        step) rather than solving for an exact fixed point: simpler, and
-        any small per-step error self-corrects as the user keeps
-        scrolling near the same spot on screen.
+        mpv's video-pan-x/y are fractions of the *scaled* video size, not
+        the widget, so a screen position maps to a video-space point via
+        `screen = scale * (point + pan)`. Solving for the pan that keeps a
+        screen position mapped to the same point across a scale change
+        gives `pan' = pan + cursor_offset * (1/scale' - 1/scale)` — exact
+        at every step either direction, and self-limiting at high zoom
+        since 1/scale shrinks. cursor_offset is relative to the actual
+        displayed video rect (see _letterbox_fraction), not the raw
+        widget.
         """
         if not self._mpv or not self._initialized:
             return
@@ -345,15 +364,19 @@ class MpvGLArea(Gtk.GLArea):
             self._pan_x = 0.0
             self._pan_y = 0.0
         else:
-            actual_delta = new_zoom - self._zoom
-            if actual_delta == 0:
+            if new_zoom == self._zoom:
                 return
+            scale_old = 2**self._zoom
+            scale_new = 2**new_zoom
+            inv_delta = 1 / scale_new - 1 / scale_old
+            letterbox_x, letterbox_y = self._letterbox_fraction(width, height)
             # Cursor position relative to widget center, normalized to
-            # [-0.5, 0.5].
-            nx = cursor_x / width - 0.5
-            ny = cursor_y / height - 0.5
-            self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x - nx * actual_delta))
-            self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y - ny * actual_delta))
+            # [-0.5, 0.5], then rescaled from widget-relative to
+            # actual-video-rect-relative.
+            nx = (cursor_x / width - 0.5) / letterbox_x
+            ny = (cursor_y / height - 0.5) / letterbox_y
+            self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x + nx * inv_delta))
+            self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y + ny * inv_delta))
             self._zoom = new_zoom
 
         with contextlib.suppress(Exception):
@@ -363,14 +386,23 @@ class MpvGLArea(Gtk.GLArea):
 
     def pan_by(self, dx_fraction: float, dy_fraction: float) -> None:
         """Pan by an incremental amount, as fractions of the widget's own
-        size — same normalized units zoom_at() nudges pan in. Allowed even
-        at 1:1 zoom (scrolling back out already re-centers via
-        reset-on-floor in zoom_at(), so panning off-center at 1:1 is
-        always one scroll-out away from being undone)."""
+        size (same units zoom_at() takes a cursor offset in). Divided by
+        the current scale and the letterbox fraction to convert to mpv's
+        own pan units, so a drag tracks the cursor at a constant
+        screen-space rate regardless of zoom level or the camera's aspect
+        ratio. Allowed even at 1:1 zoom (scrolling back out already
+        re-centers via reset-on-floor in zoom_at(), so panning off-center
+        at 1:1 is always one scroll-out away from being undone)."""
         if not self._mpv or not self._initialized:
             return
-        self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x + dx_fraction))
-        self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y + dy_fraction))
+        scale = 2**self._zoom
+        letterbox_x, letterbox_y = self._letterbox_fraction(self.get_width(), self.get_height())
+        self._pan_x = max(
+            -_PAN_MAX, min(_PAN_MAX, self._pan_x + dx_fraction / (scale * letterbox_x))
+        )
+        self._pan_y = max(
+            -_PAN_MAX, min(_PAN_MAX, self._pan_y + dy_fraction / (scale * letterbox_y))
+        )
         with contextlib.suppress(Exception):
             self._mpv.video_pan_x = self._pan_x
             self._mpv.video_pan_y = self._pan_y

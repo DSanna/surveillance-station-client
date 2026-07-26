@@ -72,14 +72,15 @@ async def list_snapshots(
     """List saved snapshots, optionally filtered by camera and time range.
 
     Confirmed against the official Synology client (SrvSnapshotListTask):
-    the pagination param is `start`, not `offset`, time-range filtering
-    uses `from`/`to` (not fromTime/toTime), and camera filtering uses
-    `camIdList` (not camId/cameraId), which the official client sends with
-    a single value.
-
-    The official client only ever filters by one camera, so multi-camera
-    filtering is done client-side: callers fetch unfiltered (by time range
-    only) and filter the results, see ui/snapshots.py.
+    the pagination param is `start`, not `offset`, and time-range filtering
+    uses `from`/`to` (not fromTime/toTime). `camera_id` is sent as
+    `camIdList` (the name the official client uses, which only ever sends
+    one value), but whether the server actually honors it appears to vary
+    by NAS/DSM version — confirmed silently ignored (returning every
+    camera's snapshots) on at least one real NAS, despite matching the
+    official client exactly. Treat it as a best-effort hint to shrink the
+    response, never as guaranteed filtering: callers must still filter the
+    results themselves, see ui/snapshots.py.
 
     Returns (snapshots, total_count).
     """
