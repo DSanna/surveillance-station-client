@@ -635,6 +635,7 @@ class LiveView(Gtk.Box):
         slot._stream_lost = False
         if camera.status != CameraStatus.ENABLED:
             slot.stop_stream()
+            slot.player.reset_zoom()  # the placeholder card is never zoomed
             slot.set_status("offline")
             slot.player.play(OFFLINE_PLACEHOLDER_URL)
             return
@@ -771,6 +772,7 @@ class LiveView(Gtk.Box):
         # camera-to-camera switch), just targeting a local synthetic
         # stream instead of the dead network one, so it can't wedge.
         slot.stop_stream()
+        slot.player.reset_zoom()  # the placeholder card is never zoomed
         slot.set_status("stream lost")
         slot.player.play(OFFLINE_PLACEHOLDER_URL)
 
