@@ -125,4 +125,9 @@ class RtspHealthMonitor:
         )
         self._player.stop()
         self._player.play(self._url)
+        # The replayed stream restarts its time_pos low, so drop the old
+        # baseline: the next check re-baselines instead of reading the fresh
+        # feed as still stalled and giving up on a working reconnect.
+        self._last_time_pos = None
+        self._checks_done = 0
         return True

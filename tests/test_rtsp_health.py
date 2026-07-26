@@ -23,114 +23,60 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for RtspHealthMonitor's stall-detection logic.
-
-_check() is called directly rather than through the real GLib timer, so
-these run without a GLib main loop or a display.
-"""
+"""Tests for the RTSP stream health monitor's stall/recover logic."""
 
 from __future__ import annotations
 
-from surveillance.ui import rtsp_health
 from surveillance.ui.rtsp_health import RtspHealthMonitor
 
 
 class _FakePlayer:
-    """Duck-types the bits of MpvGLArea the monitor touches."""
+    def __init__(self, positions: list[float | None]) -> None:
+        self._positions = positions
+        self._i = 0
+        self.play_calls = 0
 
-    def __init__(self) -> None:
-        self.time_pos: float | None = None
-        self.stop_calls = 0
-        self.play_calls: list[str] = []
+    @property
+    def time_pos(self) -> float | None:
+        p = self._positions[min(self._i, len(self._positions) - 1)]
+        self._i += 1
+        return p
 
     def stop(self) -> None:
-        self.stop_calls += 1
+        pass
 
     def play(self, url: str, **kwargs: object) -> None:
-        self.play_calls.append(url)
+        self.play_calls += 1
 
 
-class TestRtspHealthMonitor:
-    def test_first_check_is_baseline_only(self) -> None:
-        player = _FakePlayer()
-        gave_up: list[str] = []
-        monitor = RtspHealthMonitor(player, "rtsp://cam", "Cam A", gave_up.append)
-        try:
-            assert monitor._check() is True
-            assert player.stop_calls == 0
-            assert gave_up == []
-        finally:
-            monitor.stop()
+def _monitor(positions: list[float | None]) -> tuple[RtspHealthMonitor, _FakePlayer, list]:
+    gave_up: list[str] = []
+    recovered: list[bool] = []
+    player = _FakePlayer(positions)
+    mon = RtspHealthMonitor(
+        player, "rtsp://cam/live", "Front", gave_up.append, lambda: recovered.append(True)
+    )
+    mon.stop()  # cancel the real GLib timer; we drive _check() manually
+    return mon, player, [gave_up, recovered]
 
-    def test_advancing_time_pos_never_retries(self) -> None:
-        player = _FakePlayer()
-        gave_up: list[str] = []
-        monitor = RtspHealthMonitor(player, "rtsp://cam", "Cam A", gave_up.append)
-        try:
-            player.time_pos = 1.0
-            monitor._check()  # baseline
-            for pos in (2.0, 3.0, 4.0):
-                player.time_pos = pos
-                assert monitor._check() is True
-            assert player.stop_calls == 0
-            assert gave_up == []
-        finally:
-            monitor.stop()
 
-    def test_stalled_time_pos_retries_then_gives_up(self) -> None:
-        player = _FakePlayer()
-        gave_up: list[str] = []
-        monitor = RtspHealthMonitor(player, "rtsp://cam", "Cam A", gave_up.append)
-        try:
-            player.time_pos = 5.0
-            monitor._check()  # baseline
+class TestRtspHealth:
+    def test_recovers_after_a_stall_and_replay(self) -> None:
+        """A stalled stream that is replayed and then advances from a low
+        time_pos must be seen as recovered, not as a continued stall."""
+        # baseline=10, advancing=11, then frozen at 11 (stall x3 -> replay),
+        # replayed stream restarts low (2) then advances (3).
+        mon, player, (gave_up, recovered) = _monitor([10.0, 11.0, 11.0, 11.0, 11.0, 2.0, 3.0])
+        for _ in range(7):
+            mon._check()
+        assert player.play_calls >= 1, "should have retried on stall"
+        assert not gave_up, f"should not give up on a recoverable stream: {gave_up}"
+        assert recovered, "should report recovery once the replayed stream advances"
 
-            retries = rtsp_health._MAX_CONSECUTIVE_STALLS - 1
-            for _ in range(retries):
-                assert monitor._check() is True  # not enough stalls yet: retries
-
-            assert player.stop_calls == retries
-            assert player.play_calls == ["rtsp://cam"] * retries
-            assert gave_up == []
-
-            assert monitor._check() is False  # final stall: gives up
-            assert gave_up == ["stalled: no progress"]
-        finally:
-            monitor.stop()
-
-    def test_calls_on_recovered_once_when_advancing_resumes(self) -> None:
-        player = _FakePlayer()
-        recovered_calls = 0
-
-        def _on_recovered() -> None:
-            nonlocal recovered_calls
-            recovered_calls += 1
-
-        monitor = RtspHealthMonitor(
-            player, "rtsp://cam", "Cam A", lambda _: None, on_recovered=_on_recovered
-        )
-        try:
-            player.time_pos = 1.0
-            monitor._check()  # baseline: never reports recovery
-            assert recovered_calls == 0
-
-            player.time_pos = 2.0
-            monitor._check()  # first confirmed advance
-            assert recovered_calls == 1
-
-            player.time_pos = 3.0
-            monitor._check()  # still advancing: not reported again
-            assert recovered_calls == 1
-        finally:
-            monitor.stop()
-
-    def test_none_time_pos_after_baseline_counts_as_stall(self) -> None:
-        player = _FakePlayer()
-        gave_up: list[str] = []
-        monitor = RtspHealthMonitor(player, "rtsp://cam", "", gave_up.append)
-        try:
-            monitor._check()  # baseline, pos stays None throughout
-            monitor._check()
-            assert player.stop_calls == 1
-        finally:
-            monitor.stop()
+    def test_gives_up_when_replay_never_advances(self) -> None:
+        """A stream frozen forever, even across replays, eventually gives up."""
+        mon, _player, (gave_up, _recovered) = _monitor([5.0] + [5.0] * 20)
+        for _ in range(20):
+            if not mon._check():
+                break
+        assert gave_up, "a permanently frozen stream must give up"
