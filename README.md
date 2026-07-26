@@ -35,6 +35,7 @@
 - **Multi-Profile** &mdash; Save multiple NAS connection profiles and switch between them from the login screen.
 - **Secure Credentials** &mdash; Passwords stored in your system keyring (GNOME Keyring, KWallet, macOS Keychain).
 - **Theming** &mdash; Auto (follow OS), dark, or light theme selectable from the header bar.
+- **About & Updates** &mdash; An About page shows the version, license, and repository links. On login the client checks the GitHub releases page once for a newer version and, if one exists, marks the About entry until you have seen it.
 
 ---
 
@@ -141,6 +142,7 @@ specification:
 default_profile = "home-nas"
 theme = "auto"                  # "auto" (follow OS), "dark", or "light"
 sidebar_visible = true          # camera sidebar shown at startup
+dismissed_update_version = ""   # release tag whose update notice was dismissed
 poll_interval_cameras = 30      # seconds
 poll_interval_alerts = 30
 poll_interval_homemode = 60

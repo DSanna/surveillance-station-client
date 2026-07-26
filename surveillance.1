@@ -75,6 +75,11 @@ logins.
 .TP
 .B License Management
 View, add, and delete camera licenses. Supports online and offline activation.
+.TP
+.B About
+Shows the version, license, and repository links, and checks the GitHub
+releases page once per login for a newer version, marking the About entry
+when one is available.
 .SH OPTIONS
 .TP
 .B \-\-debug
@@ -94,9 +99,11 @@ config file.
 .PP
 The
 .B [general]
-section stores the theme, the polling intervals, the snapshot directory, and
+section stores the theme, the polling intervals, the snapshot directory,
 .IR sidebar_visible ,
-which records whether the camera sidebar is shown.
+which records whether the camera sidebar is shown, and
+.IR dismissed_update_version ,
+the release tag whose update notice has been dismissed.
 .PP
 The
 .B [session]
