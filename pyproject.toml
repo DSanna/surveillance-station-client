@@ -41,6 +41,7 @@ ignore = [
     "PLW0603",  # global statement — used by design in async_bridge
     "PLR0915",  # too many statements — GTK __init__ methods are inherently long
     "PLR0913",  # too many arguments — API methods need many params
+    "PLR0917",  # too many positional arguments — same rationale as PLR0913
     "S324",     # SHA1/MD5 — required for Synology API compatibility
     "S311",     # random — used for non-security purposes
     "TRY003",   # long exception messages — pragmatic choice
