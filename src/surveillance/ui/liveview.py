@@ -295,6 +295,7 @@ class LiveView(Gtk.Box):
         self._active: list[int] = []  # physical indices of visible slots
         self._current_layout: str = valid_layout(self.app.config.grid_layout)
         self._cameras: list[Camera] = []  # last known camera list
+        self._streams_paused = False  # true while another page is shown
 
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -818,6 +819,11 @@ class LiveView(Gtk.Box):
             if not status_changed and not retry_lost_stream:
                 continue
             slot.update_camera(fresh)
+            # While another page is shown the streams are paused; keep the
+            # camera status current but do not start a stream behind the
+            # user's back — resume_streams restores them on return.
+            if self._streams_paused:
+                continue
             self._start_stream(i, fresh)
 
     def restart_camera(self, camera_id: int) -> None:
@@ -833,6 +839,7 @@ class LiveView(Gtk.Box):
         Also resets zoom — leaving the Live View page shouldn't leave a
         slot zoomed in when the user comes back to it.
         """
+        self._streams_paused = True
         for slot in self._slots:
             slot.player.reset_zoom()
             if slot.camera:
@@ -840,6 +847,7 @@ class LiveView(Gtk.Box):
 
     def resume_streams(self) -> None:
         """Restart streams for all visible slots that have a camera assigned."""
+        self._streams_paused = False
         for i in self._active:
             slot = self._slots[i]
             if slot.camera:
