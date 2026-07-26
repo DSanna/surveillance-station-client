@@ -54,6 +54,11 @@ log = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECS = 5
 _MAX_CONSECUTIVE_STALLS = 3
+# How long to wait for the first frame before deciding the stream will
+# never start. Cameras over a slow link can take well over one interval to
+# produce their first frame, so give a generous window rather than aborting
+# an in-progress connection.
+_MAX_STARTUP_CHECKS = 6
 
 
 class RtspHealthMonitor:
@@ -73,7 +78,8 @@ class RtspHealthMonitor:
         self._on_gave_up = on_gave_up
         self._on_recovered = on_recovered
         self._reported_recovered = False
-        self._checks_done = 0
+        self._advancing = False  # has the current attempt produced a moving frame
+        self._startup_checks = 0
         self._last_time_pos: float | None = None
         self._consecutive_stalls = 0
         self._timer_id: int = GLib.timeout_add_seconds(_CHECK_INTERVAL_SECS, self._check)
@@ -85,27 +91,39 @@ class RtspHealthMonitor:
             self._timer_id = 0
 
     def _check(self) -> bool:
-        self._checks_done += 1
         pos = self._player.time_pos
-
-        if self._checks_done == 1:
-            # First check is just a baseline: mpv may still be buffering the
-            # initial connection, which normally takes a couple of seconds —
-            # well under one check interval — so this doesn't count as a
-            # stall regardless of what pos is yet.
-            self._last_time_pos = pos
-            return True
-
-        advancing = pos is not None and (self._last_time_pos is None or pos > self._last_time_pos)
+        advancing = (
+            pos is not None and self._last_time_pos is not None and pos > self._last_time_pos
+        )
         self._last_time_pos = pos
 
         if advancing:
+            self._advancing = True
+            self._startup_checks = 0
             self._consecutive_stalls = 0
             if not self._reported_recovered and self._on_recovered is not None:
                 self._reported_recovered = True
                 self._on_recovered()
             return True
 
+        if not self._advancing:
+            # Still connecting / buffering the first frame. Do not restart
+            # the stream here: that would abort a slow-but-working connect.
+            # Only give up if no frame ever arrives within the startup window.
+            self._startup_checks += 1
+            if self._startup_checks >= _MAX_STARTUP_CHECKS:
+                log.error(
+                    "RTSP stream for %s produced no video within ~%ds — giving up",
+                    self._label,
+                    _CHECK_INTERVAL_SECS * _MAX_STARTUP_CHECKS,
+                )
+                self._timer_id = 0
+                self._on_gave_up("no video")
+                return False
+            return True
+
+        # The stream advanced before and has now frozen: a real mid-stream
+        # stall, so retry play() on the same URL.
         self._consecutive_stalls += 1
         if self._consecutive_stalls >= _MAX_CONSECUTIVE_STALLS:
             log.error(
@@ -125,9 +143,10 @@ class RtspHealthMonitor:
         )
         self._player.stop()
         self._player.play(self._url)
-        # The replayed stream restarts its time_pos low, so drop the old
-        # baseline: the next check re-baselines instead of reading the fresh
-        # feed as still stalled and giving up on a working reconnect.
+        # Fresh attempt: wait for its first frame again rather than reading
+        # the old baseline as progress, and do not treat its startup buffering
+        # as another stall.
+        self._advancing = False
+        self._startup_checks = 0
         self._last_time_pos = None
-        self._checks_done = 0
         return True
