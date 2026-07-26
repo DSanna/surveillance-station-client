@@ -316,10 +316,17 @@ class MpvGLArea(Gtk.GLArea):
         — widget-relative pixel coordinates — so zooming feels centered on
         the cursor rather than the video's own center.
 
-        Deliberately incremental (nudge pan by a fraction of the zoom
-        step) rather than solving for an exact fixed point: simpler, and
-        any small per-step error self-corrects as the user keeps
-        scrolling near the same spot on screen.
+        Nudge magnitude only depends on the per-tick step, never the
+        absolute zoom level — otherwise a small cursor move would pan
+        wildly at high zoom, where it actually points at a tiny sliver
+        of the full video.
+
+        Zooming out also rescales the existing pan by the step's scale
+        ratio, so it shrinks along with the video instead of lingering
+        at its old magnitude, and nudges the *same direction* zooming in
+        would for this cursor position (not the opposite direction an
+        exact fixed-point solve gives, which reveals the far corner
+        instead of the one under the cursor).
         """
         if not self._mpv or not self._initialized:
             return
@@ -352,8 +359,17 @@ class MpvGLArea(Gtk.GLArea):
             # [-0.5, 0.5].
             nx = cursor_x / width - 0.5
             ny = cursor_y / height - 0.5
-            self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x - nx * actual_delta))
-            self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y - ny * actual_delta))
+            if actual_delta < 0:
+                ratio = 2**actual_delta  # linear scale change for this step, < 1
+                self._pan_x = max(
+                    -_PAN_MAX, min(_PAN_MAX, self._pan_x * ratio - nx * (1 - ratio))
+                )
+                self._pan_y = max(
+                    -_PAN_MAX, min(_PAN_MAX, self._pan_y * ratio - ny * (1 - ratio))
+                )
+            else:
+                self._pan_x = max(-_PAN_MAX, min(_PAN_MAX, self._pan_x - nx * actual_delta))
+                self._pan_y = max(-_PAN_MAX, min(_PAN_MAX, self._pan_y - ny * actual_delta))
             self._zoom = new_zoom
 
         with contextlib.suppress(Exception):
