@@ -29,9 +29,28 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+import types
 from typing import Any
 
 import pytest
+
+# The bridge imports websockets.exceptions.ConnectionClosedOK lazily inside
+# _pump; provide a stub so these tests run without the websockets package
+# installed (the connect() itself is always monkeypatched below).
+try:
+    import websockets.exceptions  # noqa: F401
+except ModuleNotFoundError:
+    _ws = sys.modules.setdefault("websockets", types.ModuleType("websockets"))
+    _exc = types.ModuleType("websockets.exceptions")
+
+    class ConnectionClosedOK(Exception):
+        def __init__(self, rcvd: object = None, sent: object = None) -> None:
+            super().__init__("connection closed ok")
+
+    _exc.ConnectionClosedOK = ConnectionClosedOK  # type: ignore[attr-defined]
+    _ws.exceptions = _exc  # type: ignore[attr-defined]
+    sys.modules["websockets.exceptions"] = _exc
 
 from surveillance.services import ws_bridge
 from surveillance.services.ws_bridge import WebSocketBridge
@@ -101,6 +120,17 @@ class TestWaitClosed:
         await bridge.start()
         reason = await bridge.wait_closed()
         assert "ConnectionRefusedError" in reason
+        await bridge.stop()
+
+    async def test_reports_open_handshake_timeout(self, connect: Any) -> None:
+        """The open_timeout TimeoutError must keep its own reason, not be
+        mistaken for the idle-stall TimeoutError and reported as empty."""
+        connect(TimeoutError("timed out during opening handshake"))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        reason = await bridge.wait_closed()
+        assert "handshake" in reason
+        assert "stalled" not in reason
         await bridge.stop()
 
     async def test_gives_up_after_repeated_clean_closes(self, connect: Any) -> None:

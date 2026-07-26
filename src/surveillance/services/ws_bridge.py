@@ -61,6 +61,15 @@ _MAX_RECONNECT_DELAY = 2.0  # seconds
 _IDLE_TIMEOUT = 10.0  # seconds
 
 
+class _StreamStalled(Exception):
+    """Raised when a connected stream stops delivering data (idle timeout).
+
+    Distinct from the TimeoutError that connect()'s own open_timeout raises,
+    so _pump can keep the stall reason without mistaking a failed handshake
+    for a stall.
+    """
+
+
 def _ws_connect(url: str, **kwargs: Any) -> Any:
     """Open a WebSocket connection.
 
@@ -145,7 +154,7 @@ class WebSocketBridge:
                 message = await asyncio.wait_for(ws.recv(), timeout=_IDLE_TIMEOUT)
             except TimeoutError:
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
-                raise
+                raise _StreamStalled(self._error) from None
             if isinstance(message, bytes):
                 payload = self._extract_payload(message)
                 if payload:
@@ -253,15 +262,12 @@ class WebSocketBridge:
                         self._connected_at = time.monotonic()
                         delay = 0.0
                         await self._read_messages(ws)
-                    # Reached with no exception: the server closed the
-                    # WebSocket cleanly (confirmed via a real NAS capture —
-                    # this is the COMMON case, e.g. code 1005/"no status
-                    # received", not an error path).
-                    clean_close = True
                 except ConnectionClosedOK:
+                    # Server closed cleanly (the common case, e.g. code 1005
+                    # "no status received") — the NAS's routine rotation.
                     clean_close = True
-                except TimeoutError:
-                    pass  # already logged above, with the distinct "stalled" message
+                except _StreamStalled:
+                    pass  # self._error already holds the stall reason
                 except Exception as exc:
                     self._error = _classify_error(exc)
 
