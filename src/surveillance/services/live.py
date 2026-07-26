@@ -52,6 +52,19 @@ _PROTO_FIELD: dict[str, str] = {
 }
 
 
+# A locally-generated mpv URL showing a "camera offline" card. Uses
+# libavdevice's lavfi input to synthesize a black frame with a static
+# message, entirely without network I/O — unlike a real RTSP/WebSocket URL
+# for an unreachable camera, this can never block mpv's demuxer on a dead
+# connection, so it's always safe to play. The camera's own name is already
+# shown in the slot header, so it isn't repeated here.
+OFFLINE_PLACEHOLDER_URL = (
+    "av://lavfi:color=c=black:s=1280x720:r=5,"
+    "drawtext=text='Camera offline':fontcolor=white:fontsize=36:"
+    "x=(w-text_w)/2:y=(h-text_h)/2"
+)
+
+
 def _build_ws_live_url(api: SurveillanceAPI, camera_id: int) -> str:
     """Build a WebSocket live stream URL."""
     # wss://host:port/ss_webstream_task/?method=MixStream&stmSrc=0&blAudio=true

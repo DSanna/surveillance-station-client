@@ -58,6 +58,10 @@ class SurveillanceApp(Gtk.Application):
         self.config: AppConfig = AppConfig()
         self.api: SurveillanceAPI | None = None
         self._window: Gtk.ApplicationWindow | None = None
+        # (tag_name, html_url) of the latest GitHub release, once the
+        # startup update check completes and finds something newer than
+        # this build — see MainWindow._check_for_update().
+        self.latest_release: tuple[str, str] | None = None
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)

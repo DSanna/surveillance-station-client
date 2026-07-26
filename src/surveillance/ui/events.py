@@ -361,6 +361,11 @@ class EventsView(Gtk.Box):
                 self._camera_id = int(active) if active else None
             except ValueError:
                 self._camera_id = None
+        # A quick pick takes precedence over a prior Advanced Search
+        # multi-camera selection, the same way picking a date preset
+        # overwrites a prior custom range — otherwise this combo silently
+        # does nothing until Reset is used.
+        self._search_camera_ids = None
         self._load_events()
 
     def _on_reset_clicked(self, btn: Gtk.Button) -> None:
@@ -454,13 +459,13 @@ class EventsView(Gtk.Box):
             # A literal unbounded range (from=0) isn't something DSM can
             # actually serve — confirmed directly: it returns 502 Bad Gateway
             # in ~2s rather than just being slow, so there's no timeout value
-            # that fixes it. Capped at 30 days instead: comfortably covers
-            # real-world retention (this NAS's actual history turned out to
-            # be ~2 weeks) while staying within ranges DSM actually completes
-            # (14-90 days all measured at 100-120s+ for all cameras — still
-            # slow, but it works).
+            # that fixes it. Even the 30-day cap this used to fall back to
+            # was too slow in practice (14-90 days all measured at
+            # 100-120s+ for all cameras). Defaulting to 3 days keeps the
+            # no-filter case fast; Advanced Search still allows any longer
+            # range explicitly, for a NAS that can handle it.
             to_time = int(time.time())
-            from_time = to_time - 30 * 86400
+            from_time = to_time - 3 * 86400
 
         self._update_filter_summary()
 
@@ -516,8 +521,8 @@ class EventsView(Gtk.Box):
             self.filter_summary.set_text("Active filters: " + " | ".join(parts))
         else:
             self.filter_summary.set_text(
-                "No filters active — showing the last 30 days "
-                "(a genuinely unbounded query isn't something DSM can serve)"
+                "No filters active — showing the last 3 days "
+                "(use advanced search to specify longer time range if your DSM can handle it)"
             )
 
     def _camera_filter_parts(self) -> list[str]:
@@ -530,12 +535,15 @@ class EventsView(Gtk.Box):
         return []
 
     def _type_filter_parts(self) -> list[str]:
-        """Summarize the advanced-search plural Event Types filter — the
-        quick single-select Type: combo already shows its own state
-        directly in the toolbar, so it doesn't need a summary entry too."""
+        """Summarize the active event-type filter, advanced-search plural
+        selection taking precedence over the quick single-select combo —
+        same precedence _render_events() and the camera filter above use."""
         if self._search_event_types:
             names = [EVENT_TYPES.get(t, f"type {t}") for t in self._search_event_types]
             return [f"Event types: {', '.join(names)}"]
+        if self._event_type_filter is not None:
+            name = EVENT_TYPES.get(self._event_type_filter, f"type {self._event_type_filter}")
+            return [f"Event type: {name}"]
         return []
 
     def _time_filter_parts(self) -> list[str]:
@@ -618,7 +626,11 @@ class EventsView(Gtk.Box):
                 self._event_type_filter = int(active) if active else None
             except ValueError:
                 self._event_type_filter = None
+        # Same reasoning as the camera filter: a quick pick takes precedence
+        # over a prior Advanced Search plural event-type selection.
+        self._search_event_types = None
         self._page = 0
+        self._update_filter_summary()
         self._render_events()
 
     def _render_events(self) -> None:
@@ -785,6 +797,7 @@ class EventsView(Gtk.Box):
         """Handle camera selection from sidebar."""
         self._ensure_camera_in_combo(camera.id, camera.name)
         self._camera_id = camera.id
+        self._search_camera_ids = None
         self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera.id))
         self.camera_combo.handler_unblock_by_func(self._on_filter_changed)

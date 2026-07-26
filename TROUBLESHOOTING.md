@@ -36,13 +36,31 @@ which reconnects the same way). The client reconnects on the same pipe
 without ever stopping playback, so there is no visible interruption — this
 log line alone is not something to act on.
 
-## A live view slot shows "(stream lost)"
+## A live view slot shows "(offline)"
 
-This means the WebSocket bridge tried several times in a row and never
-managed to establish a real connection at all (not just the routine
-session-rotation above). Right-click the camera in the sidebar and switch
-its protocol to RTSP, which does not go through the WebSocket streaming
-backend.
+The server reports this camera as disabled or disconnected. The slot shows
+a local "Camera offline" placeholder instead of a frozen frame or a black
+screen — this is deliberate: handing mpv a real stream URL for a camera
+that can't be reached is what used to wedge the slot permanently. Nothing
+to do here; the sidebar polls camera status periodically (30s by default),
+and the real feed comes back on its own once the camera is reachable again.
+
+## A live view slot shows "(stream lost)" or "(attempting reconnect)"
+
+This means the stream stopped responding mid-session and didn't recover on
+its own: for WebSocket, the bridge tried several times in a row and never
+re-established a connection; for RTSP, mpv's demuxer stopped decoding
+without the camera's status necessarily changing. Either way the slot
+falls back to the same "Camera offline" placeholder rather than a frozen
+frame. "(attempting reconnect)" means it's currently retrying the real
+stream after such a failure.
+
+This also recovers automatically, no action needed &mdash; RTSP retries on
+every camera-status poll while the camera is still reported enabled;
+WebSocket retries on the next status change. If a specific camera never
+recovers on its own after a couple of minutes, right-click it in the
+sidebar and try switching protocol (e.g. RTSP instead of WebSocket, or
+vice versa) as a workaround.
 
 ## Recording playback never starts
 

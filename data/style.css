@@ -60,6 +60,29 @@
     font-weight: bold;
 }
 
+/* Same red as .notification-badge, but a plain dot with no count — for a
+   yes/no indicator (e.g. "update available") rather than a number. The
+   widget itself is a plain Gtk.Box sized via set_size_request, not a
+   Label — a Label's own theme padding/line-height is asymmetric even
+   when empty, which renders an oval here instead of a circle. */
+.status-dot {
+    background-color: @error_color;
+    border-radius: 50%;
+    padding: 0;
+}
+
+/* Pastel notice banner (e.g. "new version available") — a subtler,
+   non-alarming alternative to the red .notification-badge/.status-dot
+   used for the same feature elsewhere, since this is informational, not
+   an error. Fixed colors rather than theme-derived: deliberately reads
+   the same in light and dark mode instead of adapting. */
+.update-banner {
+    background-color: #fff3b0;
+    color: #664d03;
+    border-radius: 6px;
+    padding: 8px 12px;
+}
+
 .recording-row {
     padding: 6px 12px;
 }

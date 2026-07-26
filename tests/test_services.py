@@ -147,6 +147,16 @@ class TestLiveService:
             assert "/mjpeg/1" in url
 
 
+class TestOfflinePlaceholderUrl:
+    """OFFLINE_PLACEHOLDER_URL is a valid, self-contained mpv lavfi URL."""
+
+    def test_is_a_lavfi_url_with_offline_text(self) -> None:
+        from surveillance.services.live import OFFLINE_PLACEHOLDER_URL
+
+        assert OFFLINE_PLACEHOLDER_URL.startswith("av://lavfi:")
+        assert "text='Camera offline'" in OFFLINE_PLACEHOLDER_URL
+
+
 class TestHomeModeService:
     @pytest.mark.asyncio
     async def test_get_homemode(self, api: SurveillanceAPI) -> None:
