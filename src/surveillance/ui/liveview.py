@@ -44,6 +44,7 @@ from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
 from surveillance.config import save_config, save_config_now
 from surveillance.services import ptz
 from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_path
+from surveillance.services.ptt import PttOccupiedError, PttSession
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -158,6 +159,7 @@ class CameraSlot(Gtk.Box):
 
         self._ws_bridge: WebSocketBridge | None = None
         self._rtsp_monitor: RtspHealthMonitor | None = None
+        self._ptt_session: PttSession | None = None
         # Set when a stream gives up while the camera is still reported
         # ENABLED (a transport-level failure, not a status change) — there's
         # no future status transition to retry on, so sync_camera_statuses()
@@ -205,6 +207,12 @@ class CameraSlot(Gtk.Box):
 
     def set_audio_playable(self, playable: bool) -> None:
         self._toolbar.set_audio_playable(playable)
+
+    def set_mic_callback(self, callback: object) -> None:
+        self._toolbar.set_mic_callback(callback)
+
+    def set_mic_active(self, active: bool) -> None:
+        self._toolbar.set_mic_active(active)
 
     def _update_mute_icon(self) -> None:
         self._toolbar.update_mute_icon()
@@ -343,6 +351,10 @@ class CameraSlot(Gtk.Box):
             self._ws_bridge = None
             bridge.close_write_end()
             run_async(bridge.stop())
+        if self._ptt_session is not None:
+            self._ptt_session.stop()
+            self._ptt_session = None
+            self.set_mic_active(False)
 
     def clear(self) -> None:
         self.stop_stream()
@@ -398,6 +410,7 @@ class LiveView(Gtk.Box):
             slot.set_open_1x1_available_callback(lambda: self._current_layout != "1x1")
             slot.set_volume_changed_callback(self._on_slot_volume_changed)
             slot.set_mute_changed_callback(self._on_slot_mute_changed)
+            slot.set_mic_callback(self._on_slot_mic_toggle)
             slot.set_zoom_callback(self._on_slot_zoom)
             slot.set_focus_callback(self._on_slot_focus)
             slot.set_ptz_callback(self._on_slot_ptz_move)
@@ -687,6 +700,39 @@ class LiveView(Gtk.Box):
             return
         self.app.config.camera_volume[camera.id] = volume
         save_config(self.app.config)
+
+    def _on_slot_mic_toggle(self, slot_idx: int, active: bool) -> None:
+        slot = self._slots[slot_idx]
+        if not active:
+            if slot._ptt_session is not None:
+                slot._ptt_session.stop()
+                slot._ptt_session = None
+            return
+
+        camera = slot.camera
+        if not camera or not self.app.api:
+            slot.set_mic_active(False)
+            return
+
+        session = PttSession(camera.id)
+        slot._ptt_session = session
+        run_async(
+            session.run(self.app.api),
+            error_callback=lambda e, s=slot: self._on_ptt_ended(s, e),
+        )
+
+    def _on_ptt_ended(self, slot: CameraSlot, exc: BaseException) -> None:
+        """A push-to-talk session ended on its own (occupied camera, dropped
+        connection, ...) rather than the user tapping to stop — that path
+        is handled directly in _on_slot_mic_toggle() and never reaches here,
+        since PttSession.run() returns normally (no exception) once stop()
+        makes it fall out of its send loop."""
+        if isinstance(exc, PttOccupiedError):
+            log.info("Push-to-talk: %s", exc)
+        else:
+            log.error("Push-to-talk session ended: %s", exc)
+        slot._ptt_session = None
+        slot.set_mic_active(False)
 
     def _on_slot_ptz_move(self, slot_idx: int, direction: str, move_type: str) -> None:
         camera = self._slots[slot_idx].camera

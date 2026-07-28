@@ -22,6 +22,8 @@ click and drag to pan. Zoom resets when switching layouts or leaving the
 page.
 Streams are muted by default; hovering a slot reveals a toolbar with
 mute/volume (remembered per camera) and a Snapshot button.
+Cameras with a speaker also show a push-to-talk microphone button — tap to
+start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with
@@ -137,16 +139,17 @@ Quit the application.
 .SH DEPENDENCIES
 .TP
 .B System (Linux)
-gtk4, libmpv, gir1.2-gtk-4.0
+gtk4, libmpv, portaudio, gir1.2-gtk-4.0
 .TP
 .B System (FreeBSD)
-gtk4, mpv, py311-gobject3, py311-cairo
+gtk4, mpv, portaudio, py311-gobject3, py311-cairo
 .TP
 .B System (OpenBSD)
-gtk4, mpv, py3-gobject3, py3-cairo
+gtk4, mpv, portaudio, py3-gobject3, py3-cairo
 .TP
 .B Python
-PyGObject (>=3.48), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets
+PyGObject (>=3.48), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets,
+sounddevice
 .SH FILES
 .TP
 .I ~/.config/surveillance-station/config.toml

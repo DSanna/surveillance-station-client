@@ -22,7 +22,7 @@
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Cameras with a speaker also get a push-to-talk microphone button &mdash; tap to start talking, tap again to stop. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume, scroll-to-zoom, click-and-drag pan), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Patrol runs continuously through the camera's saved route until stopped, matching DSM's own Monitor Center behavior.
 - **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
@@ -219,6 +219,7 @@ sudo apt install \
     libgtk-4-dev \
     libmpv-dev \
     libmpv2 \
+    libportaudio2 \
     python3-gi \
     python3-gi-cairo \
     python3-cairo
@@ -229,7 +230,7 @@ sudo apt install \
 <summary><b>Arch Linux</b></summary>
 
 ```sh
-sudo pacman -S gtk4 mpv python-gobject python-cairo
+sudo pacman -S gtk4 mpv portaudio python-gobject python-cairo
 ```
 </details>
 
@@ -240,6 +241,7 @@ sudo pacman -S gtk4 mpv python-gobject python-cairo
 sudo dnf install \
     gtk4-devel \
     mpv-devel \
+    portaudio \
     python3-gobject \
     python3-cairo
 ```
@@ -348,6 +350,8 @@ surveillance-station-client/
 │   │   ├── ws_bridge.py               WebSocket-to-pipe bridge
 │   │   ├── recording.py               recording management
 │   │   ├── ptz.py                      PTZ commands
+│   │   ├── ptt.py                      push-to-talk session (AudioOut WebSocket)
+│   │   ├── g711.py                     G.711 mu-law encoder
 │   │   ├── snapshot.py                 snapshot management
 │   │   ├── event.py                    events + alerts
 │   │   ├── homemode.py                 home mode toggle
@@ -359,7 +363,7 @@ surveillance-station-client/
 │   │   ├── headerbar.py                header bar controls
 │   │   ├── sidebar.py                  camera list sidebar
 │   │   ├── liveview.py                 live stream grid
-│   │   ├── slot_toolbar.py             per-slot hover toolbar (audio, PTZ, snapshot)
+│   │   ├── slot_toolbar.py             per-slot hover toolbar (audio, PTT, PTZ, snapshot)
 │   │   ├── mpv_widget.py               GLArea + mpv render
 │   │   ├── recordings.py               recording browser
 │   │   ├── advanced_search.py          advanced search dialog (shared by Recordings/Snapshots/Events)
@@ -411,7 +415,8 @@ pytest tests/ -v              # tests
 ```
 
 This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
-Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
+Requires `libmpv`, `libportaudio2`, GTK4 development files, and `libfuse2` on
+the build machine.
 
 ---
 
@@ -426,6 +431,7 @@ Requires `libmpv`, GTK4 development files, and `libfuse2` on the build machine.
 | `SYNO.API.Auth` | Login / logout / session management |
 | `SYNO.SurveillanceStation.Camera` | Camera list, snapshots, live view paths |
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
+| `SYNO.SurveillanceStation.AudioOut` | Push-to-talk busy-check (CheckOccupied) — the actual audio upload is a raw WebSocket, not a REST call |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download recordings |
 | `SYNO.SurveillanceStation.RecordingPicker` | Motion/person event intervals for the Events page |
 | `SYNO.SurveillanceStation.SnapShot` | List, take, download, delete snapshots |

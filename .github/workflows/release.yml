@@ -97,6 +97,7 @@ jobs:
             libgtk-4-dev \
             libgirepository-2.0-dev \
             libmpv-dev \
+            libportaudio2 \
             gobject-introspection \
             file \
             wget
