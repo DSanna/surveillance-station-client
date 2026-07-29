@@ -60,7 +60,12 @@ class LoginDialog(Gtk.Window):
         )
         self.app = app
         self._current_api: SurveillanceAPI | None = None
+        # Set once the dialog is gone, so a login that resolves afterwards
+        # cannot connect the application behind the user's back — the async
+        # bridge has no cancellation.
+        self._dismissed = False
         self.set_default_size(400, 350)
+        self.connect("close-request", self._on_close_request)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.set_child(outer)
@@ -264,8 +269,20 @@ class LoginDialog(Gtk.Window):
         )
         return api, profile, username, password
 
+    def _on_close_request(self, _dialog: Gtk.Window) -> bool:
+        """Drop any API the dialog still owns. Its httpx client holds a
+        pooled TLS connection to the NAS that nothing else would close."""
+        self._dismissed = True
+        if self._current_api is not None:
+            run_async(self._current_api.close())
+            self._current_api = None
+        return False
+
     def _on_connect_success(self, result: Any) -> None:
         api, profile, username, password = result
+        if self._dismissed:
+            run_async(api.close())
+            return
 
         # Save device_id from server if returned (trusted device token)
         if api.device_id and api.device_id != profile.device_id:
@@ -275,6 +292,9 @@ class LoginDialog(Gtk.Window):
         add_profile(self.app.config, profile)
 
         self.app.set_api(api)
+        # Ownership passes to the application here, so the close handler
+        # below must not tear this client down with the dialog.
+        self._current_api = None
 
         # Get parent window and tell it to load cameras
         parent = self.get_transient_for()
