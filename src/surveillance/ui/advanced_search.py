@@ -344,10 +344,17 @@ class AdvancedSearchDialog(Gtk.Window):
         return datetime(year, month, day, hour, minute, second)
 
     def _get_selected_camera_ids(self) -> list[int] | None:
-        """Return selected camera IDs, or None for all cameras."""
+        """Return selected camera IDs, or None for all cameras.
+
+        Ticking nothing means the same as "All Cameras": callers read an
+        empty list as "a filter is set", which on Events matches its
+        "sidebar has not loaded yet" guard and stops the page reloading.
+        """
         if self.all_cam_btn.get_active():
             return None
-        return [cam_id for cam_id, check in self._camera_checks.items() if check.get_active()]
+        return [
+            cam_id for cam_id, check in self._camera_checks.items() if check.get_active()
+        ] or None
 
     def _get_selected_event_type_ids(self) -> list[int] | None:
         """Return selected event type IDs, or None if this dialog wasn't
