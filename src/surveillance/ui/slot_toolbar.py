@@ -397,13 +397,18 @@ class SlotToolbar(Gtk.Revealer):
         which is what gates the mute button's visibility. Ghosts the
         button rather than hiding it, so a camera with a microphone that
         is simply streaming over the wrong protocol doesn't look like a
-        camera without one. README and the man page carry the
-        explanation: a tooltip here would never be shown, since GTK does
-        not route pointer events to an insensitive widget."""
+        camera without one, and says why in the tooltip: GTK picks with
+        GTK_PICK_INSENSITIVE for tooltips, so a ghosted button still has
+        one."""
         self._audio_playable = playable
         self._mute_btn.set_sensitive(playable)
         if playable:
             self.update_mute_icon()
+        else:
+            self._mute_btn.set_tooltip_text(
+                "Audio needs an RTSP-family protocol (rtsp, rtsp_over_http, "
+                "multicast, direct) — right-click the camera in the sidebar to change it."
+            )
 
     def update_mute_icon(self) -> None:
         if self.player.muted:
