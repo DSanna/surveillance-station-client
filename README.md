@@ -174,7 +174,8 @@ last_page = "live"             # last active page
 # Stream protocol per camera ID:
 # auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
 # Auto tries: websocket → mjpeg → rtsp_over_http → rtsp → multicast.
-# "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe.
+# "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe,
+# muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 # "direct" uses the URL from [camera_overrides].
 # 5 = "direct"
 
@@ -220,6 +221,7 @@ sudo apt install \
     libmpv-dev \
     libmpv2 \
     libportaudio2 \
+    ffmpeg \
     python3-gi \
     python3-gi-cairo \
     python3-cairo
@@ -230,7 +232,7 @@ sudo apt install \
 <summary><b>Arch Linux</b></summary>
 
 ```sh
-sudo pacman -S gtk4 mpv portaudio python-gobject python-cairo
+sudo pacman -S gtk4 mpv portaudio ffmpeg python-gobject python-cairo
 ```
 </details>
 
@@ -242,6 +244,7 @@ sudo dnf install \
     gtk4-devel \
     mpv-devel \
     portaudio \
+    ffmpeg \
     python3-gobject \
     python3-cairo
 ```
@@ -254,6 +257,7 @@ sudo dnf install \
 sudo zypper install \
     gtk4-devel \
     mpv-devel \
+    ffmpeg \
     python3-gobject \
     python3-gobject-cairo
 ```
@@ -263,7 +267,7 @@ sudo zypper install \
 <summary><b>FreeBSD</b></summary>
 
 ```sh
-pkg install gtk4 mpv py311-gobject3 py311-cairo
+pkg install gtk4 mpv ffmpeg py311-gobject3 py311-cairo
 ```
 </details>
 
@@ -271,7 +275,7 @@ pkg install gtk4 mpv py311-gobject3 py311-cairo
 <summary><b>OpenBSD</b></summary>
 
 ```sh
-pkg_add gtk4 mpv py3-gobject3 py3-cairo
+pkg_add gtk4 mpv ffmpeg py3-gobject3 py3-cairo
 ```
 </details>
 
@@ -415,8 +419,8 @@ pytest tests/ -v              # tests
 ```
 
 This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
-Requires `libmpv`, `libportaudio2`, GTK4 development files, and `libfuse2` on
-the build machine.
+Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
+`libfuse2` on the build machine.
 
 ---
 

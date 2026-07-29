@@ -71,6 +71,11 @@ fi
 MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null)
 LIBMPV=$(ldconfig -p 2>/dev/null | grep -E "libmpv\.so($|\.[0-9]|[[:space:]])" | grep "${MULTIARCH}" | head -1 | awk '{print $NF}')
 LIBPORTAUDIO=$(ldconfig -p 2>/dev/null | grep -E "libportaudio\.so($|\.[0-9]|[[:space:]])" | grep "${MULTIARCH}" | head -1 | awk '{print $NF}')
+# Unlike libmpv/libportaudio (native libraries loaded via ctypes), ffmpeg
+# is invoked as a subprocess (see ws_bridge.py's audio muxing) and looked
+# up via PATH -- bundle the actual binary alongside the app and add that
+# directory to PATH in AppRun (below) rather than LD_LIBRARY_PATH.
+FFMPEG_BIN=$(command -v ffmpeg 2>/dev/null || true)
 
 BINARIES=()
 if [ -z "${LIBMPV}" ]; then
@@ -86,6 +91,13 @@ if [ -z "${LIBPORTAUDIO}" ]; then
 else
     echo "Found libportaudio: ${LIBPORTAUDIO}"
     BINARIES+=("('${LIBPORTAUDIO}', '.')")
+fi
+if [ -z "${FFMPEG_BIN}" ]; then
+    echo "WARNING: ffmpeg not found. WebSocket audio muxing will not work."
+    echo "Install with: sudo apt install ffmpeg"
+else
+    echo "Found ffmpeg: ${FFMPEG_BIN}"
+    BINARIES+=("('${FFMPEG_BIN}', '.')")
 fi
 
 BINARIES_LINE="binaries=[$(IFS=,; echo "${BINARIES[*]}")],"
@@ -211,6 +223,14 @@ mkdir -p "${APPDIR}/usr/share/metainfo"
 # Copy the entire PyInstaller onedir output into AppDir
 cp -a "${BUILD_DIR}/dist/${APP_NAME}" "${APPDIR}/usr/lib/${APP_NAME}"
 
+# PyInstaller's binaries=[...] copy preserves permissions in practice, but
+# make sure the bundled ffmpeg is executable regardless -- unlike
+# libmpv/libportaudio (loaded via ctypes, never exec'd directly), this one
+# has to actually run.
+if [ -f "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg" ]; then
+    chmod +x "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg"
+fi
+
 # Create AppRun with proper environment setup
 cat > "${APPDIR}/AppRun" << 'EOF'
 #!/bin/bash
@@ -220,6 +240,10 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 
 export LD_LIBRARY_PATH="${BUNDLEDIR}:${LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# Bundled ffmpeg binary lives alongside the app itself (see BINARIES above) --
+# put it first on PATH so the subprocess lookup in ws_bridge.py finds it
+# even on a system with no ffmpeg installed at all.
+export PATH="${BUNDLEDIR}:${PATH}"
 
 exec "${BUNDLEDIR}/Surveillance" "$@"
 EOF

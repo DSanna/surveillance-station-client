@@ -664,12 +664,16 @@ class LiveView(Gtk.Box):
 
     def _resolve_audio_playable(self, camera: Camera) -> bool:
         """Whether audio can actually reach the player for *camera* right
-        now — see CameraSlot.set_audio_playable for why WebSocket never
-        qualifies regardless of has_audio."""
-        if not camera.has_audio:
-            return False
-        protocol = self.app.config.camera_protocols.get(camera.id, "auto")
-        return protocol in ("rtsp", "rtsp_over_http", "direct")
+        now — an optimistic best guess based on has_audio alone.
+
+        For a WebSocket-protocol camera this is provisional: real audio
+        muxing (see ws_bridge.py) only kicks in once DSM's codec-info
+        frame confirms a codec we can actually mux (PCMU or AAC), so
+        _start_ws_bridge's _on_ready corrects this down (ghosting the
+        mute button after all) for a camera whose audio codec turns out
+        not to be one of those, once that's actually known.
+        """
+        return camera.has_audio
 
     def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
         """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
@@ -885,9 +889,19 @@ class LiveView(Gtk.Box):
         def _on_ready(pipe_url: str) -> None:
             s = self._slots[slot_idx]
             if s.get_visible() and s.camera and s.camera.id == cam_id:
-                log.info("WebSocket bridge ready, playing pipe: %s", pipe_url)
+                log.info(
+                    "WebSocket bridge ready, playing pipe: %s (audio_active=%s)",
+                    pipe_url,
+                    bridge.audio_active,
+                )
                 s.set_status("")
-                s.player.play(pipe_url, low_latency=True)
+                s.player.play(
+                    pipe_url, low_latency=not bridge.audio_active, muxed_audio=bridge.audio_active
+                )
+                # Corrects the optimistic has_audio-based guess from
+                # _resolve_audio_playable() now that whether DSM's audio
+                # codec was actually mixable (PCMU) is known for certain.
+                s.set_audio_playable(bridge.audio_active)
 
         run_async(
             bridge.start(),

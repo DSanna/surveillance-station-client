@@ -704,7 +704,7 @@ class TestDownloadRecordingValidation:
 class TestG711:
     """audioop.lin2ulaw is deprecated (3.12) / removed (3.13) -- this is a
     dependency-free reimplementation, verified bit-for-bit against every
-    possible 16-bit sample."""
+    possible 16-bit sample value."""
 
     def test_bit_exact_against_audioop(self) -> None:
         import warnings

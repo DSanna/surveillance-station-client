@@ -125,7 +125,8 @@ section selects the stream protocol per camera (auto, websocket,
 mjpeg, rtsp_over_http, rtsp, multicast, direct).
 Auto tries: websocket, mjpeg, rtsp_over_http, rtsp, multicast.
 .IR websocket
-uses a WebSocket stream bridged to mpv via an in-memory pipe.
+uses a WebSocket stream bridged to mpv via an in-memory pipe, muxing in
+real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 When set to
 .IR direct ,
 the URL from
@@ -139,13 +140,13 @@ Quit the application.
 .SH DEPENDENCIES
 .TP
 .B System (Linux)
-gtk4, libmpv, portaudio, gir1.2-gtk-4.0
+gtk4, libmpv, portaudio, ffmpeg, gir1.2-gtk-4.0
 .TP
 .B System (FreeBSD)
-gtk4, mpv, portaudio, py311-gobject3, py311-cairo
+gtk4, mpv, portaudio, ffmpeg, py311-gobject3, py311-cairo
 .TP
 .B System (OpenBSD)
-gtk4, mpv, portaudio, py3-gobject3, py3-cairo
+gtk4, mpv, portaudio, ffmpeg, py3-gobject3, py3-cairo
 .TP
 .B Python
 PyGObject (>=3.48), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets,

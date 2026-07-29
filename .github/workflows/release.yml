@@ -98,6 +98,7 @@ jobs:
             libgirepository-2.0-dev \
             libmpv-dev \
             libportaudio2 \
+            ffmpeg \
             gobject-introspection \
             file \
             wget

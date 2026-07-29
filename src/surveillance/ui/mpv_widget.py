@@ -110,6 +110,7 @@ class MpvGLArea(Gtk.GLArea):
         self._render_pending = False
         self._tls_verify = tls_verify
         self._low_latency = False
+        self._muxed_audio = False
         self._start_offset: float = 0
         self._zoom: float = 0.0
         self._pan_x: float = 0.0
@@ -255,7 +256,35 @@ class MpvGLArea(Gtk.GLArea):
         """Apply buffering and timing options for the current playback profile."""
         if not self._mpv:
             return
-        if self._low_latency:
+        if self._muxed_audio:
+            # A live-piped Matroska stream from our own ffmpeg mux (see
+            # ws_bridge.py's audio muxing) -- unlike the raw-NAL
+            # low_latency profile below, mpv is demuxing a properly
+            # headered container here, so it doesn't need probesize
+            # tuned for raw H.264/H.265 stream sync. It does still need a
+            # live-stream-appropriate (bounded, non-file-sized) max byte
+            # cap, and a small but nonzero readahead buffer to absorb
+            # normal scheduling jitter that would otherwise show up as
+            # audible micro-cuts with zero buffer margin.
+            self._mpv["cache"] = "yes"
+            self._mpv["demuxer-max-bytes"] = "32MiB"
+            self._mpv["demuxer-readahead-secs"] = 2
+            self._mpv["cache-secs"] = 2
+            # This widget's other profile's analyzeduration=0 + large
+            # probesize (tuned for RTSP/local files, below) causes a
+            # real, reproducible multi-second demuxer stall on a live
+            # pipe: a never-ending source can leave libavformat waiting
+            # well past any reasonable duration for "enough" data to
+            # feel confident, unlike a normal file/RTSP source. A
+            # well-formed MKV header (ffmpeg has already resolved
+            # codec/timing info by the time mpv sees it) needs nowhere
+            # near this much probing margin.
+            self._mpv["demuxer-lavf-analyzeduration"] = 0.3
+            self._mpv["demuxer-lavf-probesize"] = 32768
+            self._mpv["correct-pts"] = True
+            self._mpv["untimed"] = False
+            self._mpv["container-fps-override"] = 0
+        elif self._low_latency:
             self._mpv["cache"] = "no"
             self._mpv["demuxer-max-bytes"] = "512KiB"
             self._mpv["demuxer-readahead-secs"] = 0
@@ -277,17 +306,31 @@ class MpvGLArea(Gtk.GLArea):
             self._mpv["untimed"] = False
             self._mpv["container-fps-override"] = 0
 
-    def play(self, url: str, *, low_latency: bool = False, start_offset: float = 0) -> None:
+    def play(
+        self,
+        url: str,
+        *,
+        low_latency: bool = False,
+        muxed_audio: bool = False,
+        start_offset: float = 0,
+    ) -> None:
         """Start playing a stream URL.
 
         When *low_latency* is True, disable caching and read-ahead so the
-        stream plays in near real-time (used for WebSocket pipe bridges).
+        stream plays in near real-time (used for WebSocket pipe bridges
+        without a usable audio track, piping raw video only).
+
+        When *muxed_audio* is True, use the buffering profile tuned for a
+        live-piped Matroska stream instead (used for WebSocket pipe
+        bridges that muxed real audio in via ffmpeg — see ws_bridge.py).
+        Takes precedence over *low_latency* if both are set.
 
         *start_offset* seeks to that position (seconds) as the file loads,
         for playing a moment within a much longer recording file.
         """
         self._url = url
         self._low_latency = low_latency
+        self._muxed_audio = muxed_audio
         self._start_offset = start_offset
         if self._initialized and self._mpv:
             try:

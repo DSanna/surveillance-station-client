@@ -494,21 +494,22 @@ class SlotToolbar(Gtk.Revealer):
     def set_audio_playable(self, playable: bool) -> None:
         """Whether the currently assigned camera's audio can actually reach
         the player right now — separate from whether it *has* audio at all
-        (has_audio only gates the mute button's visibility). False for a
-        WebSocket-protocol camera regardless of has_audio: the WebSocket
-        bridge pipes raw video NAL units only (see ws_bridge.py's
-        _extract_payload — no container to also carry an audio track
-        through), so there's nothing mute/volume could ever control there.
-        Ghosts the button rather than hiding it, with a tooltip pointing
-        at the fix, so it isn't mistaken for "this camera has no mic"."""
+        (has_audio only gates the mute button's visibility).
+
+        A WebSocket-protocol camera mixes real audio in via ffmpeg when
+        DSM reports a codec it knows how to mux (PCMU or AAC — see
+        ws_bridge.py) — False here means that didn't happen for this
+        camera (an unsupported audio codec, or no audio at all). Ghosts
+        the button rather than hiding it, with a tooltip explaining why,
+        so it isn't mistaken for "this camera has no mic"."""
         self._audio_playable = playable
         self._mute_btn.set_sensitive(playable)
         if playable:
             self.update_mute_icon()
         else:
             self._mute_btn.set_tooltip_text(
-                "Audio isn't available over WebSocket (this camera's current "
-                "protocol) — switch it to RTSP in camera settings to enable audio."
+                "Audio isn't available for this camera's stream right now "
+                "(unsupported audio codec, or the camera has no microphone)."
             )
 
     def update_mute_icon(self) -> None:

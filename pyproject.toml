@@ -27,6 +27,7 @@ surveillance = "surveillance.__main__:main"
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout",
     "respx",
     "ruff",
     "mypy",
