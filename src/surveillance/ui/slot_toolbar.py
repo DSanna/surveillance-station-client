@@ -65,9 +65,9 @@ def _icon_overlay(*icons: tuple[str, int, int]) -> Gtk.Overlay:
 class SlotToolbar(Gtk.Revealer):
     """Hover-revealed toolbar over a Live View slot's video.
 
-    Mute/volume, PTZ/Zoom/Focus/Preset/Patrol (shown only for PTZ-capable
-    cameras), and Snapshot — slides up from the bottom of the video on
-    hover, matching DSM's own Monitor Center.
+    Mute/volume, push-to-talk, PTZ/Zoom/Focus/Preset/Patrol (shown only for
+    PTZ-capable cameras), and Snapshot — slides up from the bottom of the
+    video on hover, matching DSM's own Monitor Center.
     """
 
     def __init__(self, index: int, player: MpvGLArea) -> None:
@@ -89,6 +89,31 @@ class SlotToolbar(Gtk.Revealer):
         self._mute_btn.connect("clicked", self._on_mute_clicked)
         toolbar.append(self._mute_btn)
         self.update_mute_icon()
+
+        # Push-to-talk — a toggle (tap to start talking, tap again to
+        # stop), matching the mobile app's own gesture rather than a
+        # press-and-hold (mirroring the PTZ buttons would need the mic
+        # held open for the exact duration of a physical button press,
+        # which doesn't fit a click-based UI as naturally). Only shown
+        # for cameras with a speaker (has_speaker).
+        # _mic_requested is the user's own click-toggle intent (drives what
+        # the *next* click does); _mic_active is purely the visual "actively
+        # recording" indicator, deliberately delayed ~1s behind it (see
+        # _on_mic_clicked) — mic startup has a real, unavoidable latency
+        # (PortAudio/ALSA stream warm-up plus the CheckOccupied/WebSocket
+        # handshake, confirmed live to lose up to ~1s of speech otherwise),
+        # and an instantly-red button invites talking before anything is
+        # actually listening.
+        self._mic_requested = False
+        self._mic_active = False
+        self._mic_delay_timer_id = 0
+        self._mic_btn = Gtk.Button()
+        self._mic_btn.add_css_class("flat")
+        self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
+        self._mic_btn.set_visible(False)  # shown in assign() only if the camera has a speaker
+        self._mic_btn.set_tooltip_text("Push-to-talk")
+        self._mic_btn.connect("clicked", self._on_mic_clicked)
+        toolbar.append(self._mic_btn)
 
         # PTZ pad — services.ptz.move(), a discrete 4-button pad, so the
         # v2 up/down/left/right/home strings are enough; the newer
@@ -289,6 +314,7 @@ class SlotToolbar(Gtk.Revealer):
         self._snapshot_trigger: object = None
         self._volume_changed_callback: object = None
         self._mute_changed_callback: object = None
+        self._mic_callback: object = None
         self._zoom_callback: object = None
         self._focus_callback: object = None
         self._ptz_callback: object = None
@@ -394,20 +420,26 @@ class SlotToolbar(Gtk.Revealer):
     def set_audio_playable(self, playable: bool) -> None:
         """Whether the assigned camera's audio can actually reach the
         player right now — separate from whether it *has* audio at all,
-        which is what gates the mute button's visibility. Ghosts the
-        button rather than hiding it, so a camera with a microphone that
-        is simply streaming over the wrong protocol doesn't look like a
-        camera without one, and says why in the tooltip: GTK picks with
-        GTK_PICK_INSENSITIVE for tooltips, so a ghosted button still has
-        one."""
+        which is what gates the mute button's visibility.
+
+        False can mean the camera has no audio track, its protocol
+        doesn't carry one (mjpeg has none at all), or — for a
+        WebSocket-protocol camera — DSM's codec-info frame reported an
+        audio codec ffmpeg can't mux (see ws_bridge.py; PCMU and AAC are
+        supported). Ghosts the button rather than hiding it, so a camera
+        with a microphone that just isn't playable right now doesn't
+        look like a camera without one, and says why in the tooltip:
+        GTK picks with GTK_PICK_INSENSITIVE for tooltips, so a ghosted
+        button still shows one."""
         self._audio_playable = playable
         self._mute_btn.set_sensitive(playable)
         if playable:
             self.update_mute_icon()
         else:
             self._mute_btn.set_tooltip_text(
-                "Audio needs an RTSP-family protocol (rtsp, rtsp_over_http, "
-                "multicast, direct) — right-click the camera in the sidebar to change it."
+                "Audio isn't available for this camera right now — no audio "
+                "track, an unsupported codec, or a protocol that doesn't "
+                "carry one (mjpeg). Try switching protocol in the sidebar."
             )
 
     def update_mute_icon(self) -> None:
@@ -426,6 +458,45 @@ class SlotToolbar(Gtk.Revealer):
         self.update_mute_icon()
         if self._mute_changed_callback and callable(self._mute_changed_callback):
             self._mute_changed_callback(self.index, muted)
+
+    def set_mic_callback(self, callback: object) -> None:
+        """Callback(slot_index, active) — active is True when the user just
+        turned push-to-talk on, False when they just turned it off."""
+        self._mic_callback = callback
+
+    def set_mic_active(self, active: bool) -> None:
+        """Reflect push-to-talk state in the button's icon/tooltip without
+        re-triggering the callback — used to revert the toggle if starting
+        a session fails (e.g. the camera's speaker is already in use)."""
+        self._mic_active = active
+        if active:
+            self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
+            self._mic_btn.add_css_class("mic-active")
+            self._mic_btn.set_tooltip_text("Stop talking")
+        else:
+            self._mic_btn.remove_css_class("mic-active")
+            self._mic_btn.set_tooltip_text("Push-to-talk")
+
+    def _cancel_mic_delay(self) -> None:
+        if self._mic_delay_timer_id:
+            GLib.source_remove(self._mic_delay_timer_id)
+            self._mic_delay_timer_id = 0
+
+    def _apply_mic_delay(self) -> bool:
+        self._mic_delay_timer_id = 0
+        if self._mic_requested:  # still on — could've been tapped off within the 1s
+            self.set_mic_active(True)
+        return False  # one-shot
+
+    def _on_mic_clicked(self, btn: Gtk.Button) -> None:
+        self._mic_requested = not self._mic_requested
+        self._cancel_mic_delay()
+        if self._mic_requested:
+            self._mic_delay_timer_id = GLib.timeout_add(1000, self._apply_mic_delay)
+        else:
+            self.set_mic_active(False)  # stopping should feel instant
+        if self._mic_callback and callable(self._mic_callback):
+            self._mic_callback(self.index, self._mic_requested)
 
     def _on_volume_changed(self, scale: Gtk.Scale) -> None:
         volume = int(scale.get_value())
@@ -564,6 +635,10 @@ class SlotToolbar(Gtk.Revealer):
 
     def assign(self, camera: Camera) -> None:
         self._mute_btn.set_visible(camera.has_audio)
+        self._cancel_mic_delay()
+        self._mic_requested = False
+        self.set_mic_active(False)
+        self._mic_btn.set_visible(camera.has_speaker)
         for button in self._ptz_buttons():
             button.set_visible(camera.is_ptz)
 
@@ -571,6 +646,10 @@ class SlotToolbar(Gtk.Revealer):
         self.player.set_mute(True)
         self.update_mute_icon()
         self._mute_btn.set_visible(False)
+        self._cancel_mic_delay()
+        self._mic_requested = False
+        self.set_mic_active(False)
+        self._mic_btn.set_visible(False)
         for button in self._ptz_buttons():
             button.set_visible(False)
         self._preset_combo.remove_all()

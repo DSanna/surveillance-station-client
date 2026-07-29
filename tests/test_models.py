@@ -59,6 +59,7 @@ class TestCamera:
             "fps": 25,
             "channel": 0,
             "audioType": 2,
+            "audioOut": True,
         }
         cam = Camera.from_api(data)
         assert cam.id == 1
@@ -67,6 +68,7 @@ class TestCamera:
         assert cam.is_ptz is True
         assert cam.vendor == "Hikvision"
         assert cam.has_audio is True
+        assert cam.has_speaker is True
 
     def test_from_api_fallback_name(self) -> None:
         data = {"id": 2, "name": "Back Yard", "status": 0}
@@ -81,10 +83,14 @@ class TestCamera:
         assert cam.status == CameraStatus.DISABLED
         assert cam.is_ptz is False
         assert cam.has_audio is False
+        assert cam.has_speaker is False
 
     def test_from_api_no_audio_track(self) -> None:
-        cam = Camera.from_api({"audioType": 0})
+        # audioType 0 means no audio track -- distinct from audioOut, the
+        # camera's own speaker capability for two-way audio.
+        cam = Camera.from_api({"audioType": 0, "audioOut": False})
         assert cam.has_audio is False
+        assert cam.has_speaker is False
 
 
 class TestRecording:

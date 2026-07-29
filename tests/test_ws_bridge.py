@@ -23,7 +23,18 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for the WebSocket-to-pipe bridge and its disconnect reporting."""
+"""Tests for the WebSocket-to-pipe bridge and its disconnect reporting.
+
+start() now waits for the first codec-info frame (it has to know the
+video/audio codecs before deciding whether to mux audio in via ffmpeg —
+see ws_bridge.py's _setup_pipes) rather than returning instantly the way
+it used to when it only ever piped raw video through. A fake connection
+that never sends codec info and never gives up would make start() hang
+forever, so every fake WS sequence below that's meant to succeed sends a
+video-only codec-info frame first (avoiding ffmpeg/subprocess mocking
+entirely for these unit tests); ones testing pure connection failure
+expect start() to raise instead.
+"""
 
 from __future__ import annotations
 
@@ -54,6 +65,13 @@ except ModuleNotFoundError:
 
 from surveillance.services import ws_bridge
 from surveillance.services.ws_bridge import WebSocketBridge
+
+# Captured before any test can monkeypatch asyncio.create_subprocess_exec --
+# _spawn_fake_mux_holder needs the real one regardless of what a given
+# test has patched the module attribute to (patching it and then calling
+# it *by name* from within the same test would just recurse into the
+# patched version instead of ever spawning anything).
+_REAL_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
 
 
 class _FakeWS:
@@ -87,6 +105,21 @@ def _frame(header: bytes, payload: bytes) -> bytes:
     return len(header).to_bytes(4, "big") + header + payload
 
 
+def _codec_frame(video: str = "H264") -> bytes:
+    """A video-only codec-info frame -- enough for _setup_pipes to fall
+    back to the plain raw-video pipe (no audio codec means no ffmpeg
+    muxing, so these tests don't need to mock a subprocess at all)."""
+    return _frame(f"vdoCodec={video}".encode(), b"")
+
+
+async def _start_expecting_failure(bridge: WebSocketBridge) -> None:
+    """start() now raises if the bridge gives up before ever becoming
+    ready (see module docstring) -- the fakes in these tests never send
+    codec info, so that's exactly what happens here."""
+    with pytest.raises(RuntimeError):
+        await bridge.start()
+
+
 @pytest.fixture
 def connect(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Replace the real WebSocket connect with a configurable fake."""
@@ -117,7 +150,7 @@ class TestWaitClosed:
     async def test_reports_connection_failure(self, connect: Any) -> None:
         connect(ConnectionRefusedError("connection refused"))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
+        await _start_expecting_failure(bridge)
         reason = await bridge.wait_closed()
         assert "ConnectionRefusedError" in reason
         await bridge.stop()
@@ -127,7 +160,7 @@ class TestWaitClosed:
         mistaken for the idle-stall TimeoutError and reported as empty."""
         connect(TimeoutError("timed out during opening handshake"))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
+        await _start_expecting_failure(bridge)
         reason = await bridge.wait_closed()
         assert "handshake" in reason
         assert "stalled" not in reason
@@ -139,9 +172,9 @@ class TestWaitClosed:
         failure. But a run of closes that never last long enough to look
         like a real connection must still eventually surface, rather than
         retrying forever in a tight loop."""
-        connect(_FakeWS([_frame(b"mediaType=1", b"frame")]))
+        connect(_FakeWS([_codec_frame(), _frame(b"mediaType=1", b"frame")]))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
+        await bridge.start()  # codec info arrives on the very first connect
         reason = await bridge.wait_closed()
         assert reason
         await bridge.stop()
@@ -150,7 +183,12 @@ class TestWaitClosed:
         """One clean close must not surface as a drop: the bridge should
         reconnect on the same pipe and keep running silently, exactly like
         the NAS's routine WebSocket session rotation."""
-        connect([_FakeWS([_frame(b"mediaType=1", b"frame")]), _FakeWS([], hang=True)])
+        connect(
+            [
+                _FakeWS([_codec_frame(), _frame(b"mediaType=1", b"frame")]),
+                _FakeWS([], hang=True),
+            ]
+        )
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         await asyncio.sleep(0.5)  # let it clean-close once and reconnect into the hanging fake
@@ -169,13 +207,16 @@ class TestWaitClosed:
         monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.1)
         connect(_FakeWS([], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
+        # Never sends codec info, so every attempt stalls out after 0.1s —
+        # eventually gives up (same _fast_failures path as a real repeated
+        # connection failure), and start() raises once it does.
+        await _start_expecting_failure(bridge)
         reason = await bridge.wait_closed()
         assert "stalled" in reason
         await bridge.stop()
 
     async def test_silent_when_we_stop_it(self, connect: Any) -> None:
-        connect(_FakeWS([], hang=True))
+        connect(_FakeWS([_codec_frame()], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         await bridge.stop()
@@ -187,7 +228,7 @@ class TestWaitClosed:
         The pump then ends on its own, which must not be reported as the
         NAS dropping the session.
         """
-        connect(_FakeWS([]))
+        connect(_FakeWS([_codec_frame()], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         bridge.close_write_end()
@@ -199,17 +240,168 @@ class TestUptime:
     async def test_zero_when_never_connected(self, connect: Any) -> None:
         connect(ConnectionRefusedError("nope"))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
+        await _start_expecting_failure(bridge)
         await bridge.wait_closed()
         assert bridge.uptime == 0.0
         await bridge.stop()
 
     async def test_positive_once_connected(self, connect: Any) -> None:
-        connect(_FakeWS([]))
+        # start() only resolves once codec info arrives, which happens
+        # strictly after _connected_at is set on entering the connected
+        # async-with block -- no need to wait for the connection to end
+        # (it never does here, hang=True) just to check uptime.
+        connect(_FakeWS([_codec_frame()], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
-        await bridge.wait_closed()
         assert bridge.uptime > 0.0
+        await bridge.stop()
+
+
+class _FakeFfmpegProc:
+    """Stand-in for asyncio.subprocess.Process -- avoids spawning a real
+    ffmpeg in these unit tests, which only care about the mux/fallback
+    decision in _setup_pipes, not ffmpeg's actual behavior."""
+
+    returncode: int | None = 0
+
+    async def wait(self) -> int:
+        return 0
+
+    def terminate(self) -> None:
+        pass
+
+
+class _FakeValidationProc:
+    """Stand-in for the throwaway ffmpeg process _aac_frames_look_valid
+    spawns to sanity-check the AU-header/ADTS transform."""
+
+    def __init__(self, stderr: bytes = b"") -> None:
+        self._stderr = stderr
+
+    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+    def kill(self) -> None:
+        pass
+
+
+def _aac_audio_frame(payload_len: int = 50) -> bytes:
+    """A mediaType=2 frame with a 2-byte AU-header prefix (real content
+    doesn't matter for these tests -- they only exercise the mux/
+    fallback decision, not real AAC decoding)."""
+    return _frame(b"mediaType=2", b"\x00\x00" + b"\xaa" * payload_len)
+
+
+def _video_frame() -> bytes:
+    return _frame(b"mediaType=1", b"\x00" * 10)
+
+
+async def _spawn_fake_mux_holder(**kwargs: Any) -> Any:
+    """Stand-in for the real ffmpeg mux spawn in tests that write
+    buffered frames afterward (AAC detection's flush) -- a plain fake
+    object leaves nothing holding the passed-through pipe read ends open
+    once _start_muxed closes its own copies, so every write after that
+    fails with EPIPE. A real, trivial process that inherits the same
+    fds and sleeps keeps them open without needing anything
+    ffmpeg-specific."""
+    return await _REAL_SUBPROCESS_EXEC(
+        "sleep",
+        "5",
+        pass_fds=kwargs.get("pass_fds", []),
+        stdout=kwargs.get("stdout"),
+        stdin=kwargs.get("stdin"),
+        stderr=kwargs.get("stderr"),
+    )
+
+
+# AAC detection normally completes once 5 real inter-frame intervals are
+# measured -- but a fake WS with no real delay between messages can see
+# back-to-back time.monotonic() calls return an identical value (clock
+# resolution, not a real race), so intervals never accumulate. Padding
+# with enough video frames to hit _AAC_DETECTION_VIDEO_FRAME_CAP makes
+# detection finish deterministically either way.
+_AAC_DETECTION_PADDING = [_video_frame() for _ in range(ws_bridge._AAC_DETECTION_VIDEO_FRAME_CAP)]
+
+
+class TestAudioMuxDecision:
+    """_setup_pipes must only spawn ffmpeg for a codec combination it
+    actually knows how to mux (currently H264/H265 video + PCMU audio) --
+    anything else keeps the original raw-video-only passthrough, so a
+    camera with an unsupported/no audio track sees no behavior change at
+    all from before this feature existed."""
+
+    async def test_no_ffmpeg_for_unsupported_audio_codec(self, connect: Any) -> None:
+        connect(_FakeWS([_frame(b"vdoCodec=H264&adoCodec=AAC", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        await bridge.stop()
+
+    async def test_no_ffmpeg_for_video_only_camera(self, connect: Any) -> None:
+        connect(_FakeWS([_codec_frame()], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        await bridge.stop()
+
+    async def test_mux_active_for_pcmu(self, connect: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._ffmpeg_proc is not None
+        await bridge.stop()
+
+    async def test_mux_active_for_valid_aac(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(stderr=b"")  # transform "decodes" cleanly
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._ffmpeg_proc is not None
+        await bridge.stop()
+
+    async def test_falls_back_to_video_only_when_aac_validation_fails(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A camera reporting the same adoCodec but using different (here,
+        unrecognized) framing must not get a broken muxed session --
+        this is the exact scenario a second real camera model hit live:
+        same adoCodec string as a working one, but frames that don't
+        decode through the AU-header/ADTS transform at all."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(stderr=b"[aac] Reserved bit set.\n")
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
         await bridge.stop()
 
 
@@ -220,18 +412,23 @@ class TestPipeLifetime:
         The next bridge gets the same descriptor numbers back, so an mpv
         demuxer still holding the old ones would read the new stream.
         """
-        connect(_FakeWS([], hang=True))
+        connect(_FakeWS([_codec_frame()], hang=True))
         first = WebSocketBridge("wss://nas/stream", False, "sid")
         url = await first.start()
         fd = int(url.removeprefix("fd://"))
         await first.stop()
 
+        # A fresh fake with its own codec-info message: the first bridge's
+        # fake already consumed its one message, so reusing it here would
+        # leave the second bridge waiting forever for codec info that will
+        # never arrive.
+        connect(_FakeWS([_codec_frame()], hang=True))
         second = WebSocketBridge("wss://nas/stream", False, "sid")
         assert await second.start() == f"fd://{fd}"
         await second.stop()
 
     async def test_stop_closes_both_ends(self, connect: Any) -> None:
-        connect(_FakeWS([], hang=True))
+        connect(_FakeWS([_codec_frame()], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         url = await bridge.start()
         fd = int(url.removeprefix("fd://"))

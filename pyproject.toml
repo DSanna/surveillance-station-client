@@ -17,6 +17,7 @@ dependencies = [
     "keyring>=25.0",
     "tomli-w>=1.0",
     "websockets>=13.0",
+    "sounddevice>=0.5",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ surveillance = "surveillance.__main__:main"
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout",
     "respx",
     "ruff",
     "mypy",

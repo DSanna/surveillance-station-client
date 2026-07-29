@@ -58,6 +58,7 @@ class Camera:
     status: CameraStatus
     is_ptz: bool = False
     has_audio: bool = False
+    has_speaker: bool = False
 
     @classmethod
     def from_api(cls, data: dict) -> Camera:  # type: ignore[type-arg]
@@ -68,11 +69,18 @@ class Camera:
             vendor=data.get("vendor", ""),
             status=CameraStatus(data.get("status", 0)),
             is_ptz=bool(data.get("ptzDirection", 0)),
-            # audioType is the codec of the camera's audio track, 0 when
-            # there is none. It is the only top-level audio field DS cam
-            # reads off a Camera List response, and it hands it straight
-            # to its player.
-            has_audio=bool(data.get("audioType", 0)),
+            # audioCodec is 0 when the camera has no audio track, a
+            # nonzero codec id when it does -- confirmed live as a
+            # genuine top-level Camera List field on this DSM/API
+            # version (audioType, claimed as the only top-level audio
+            # field upstream, was absent entirely from the same live
+            # response). Checking both covers whichever field a given
+            # DSM version actually populates.
+            has_audio=bool(data.get("audioCodec", 0) or data.get("audioType", 0)),
+            # audioOut is the camera's own speaker capability (two-way
+            # audio) — separate from audioType, which is about the
+            # camera's mic recording into the stream, not its speaker.
+            has_speaker=bool(data.get("audioOut", False)),
         )
 
 

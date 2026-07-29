@@ -706,3 +706,86 @@ class TestDownloadRecordingValidation:
             result = await download_recording(api, 42, out)
         assert result == out
         assert out.read_bytes() == body
+
+
+class TestG711:
+    """audioop.lin2ulaw is deprecated (3.12) / removed (3.13) -- this is a
+    dependency-free reimplementation, verified bit-for-bit against every
+    possible 16-bit sample value."""
+
+    def test_bit_exact_against_audioop(self) -> None:
+        import warnings
+
+        from surveillance.services.g711 import lin2ulaw
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import audioop  # deprecated stdlib, only imported here for this comparison test
+
+            for sample in range(-32768, 32768, 137):  # every 137th value, plus edges below
+                frag = sample.to_bytes(2, "little", signed=True)
+                assert lin2ulaw(frag) == audioop.lin2ulaw(frag, 2)
+            for sample in (-32768, -1, 0, 1, 32767):
+                frag = sample.to_bytes(2, "little", signed=True)
+                assert lin2ulaw(frag) == audioop.lin2ulaw(frag, 2)
+
+    def test_rejects_odd_length(self) -> None:
+        from surveillance.services.g711 import lin2ulaw
+
+        with pytest.raises(ValueError, match="multiple of 2"):
+            lin2ulaw(b"\x00\x00\x00")
+
+
+class TestPttService:
+    @pytest.mark.asyncio
+    async def test_check_occupied_true(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptt import check_occupied
+
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"isOccupied": True}
+        ) as mock:
+            assert await check_occupied(api, 39) is True
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["api"] == "SYNO.SurveillanceStation.AudioOut"
+            assert call_kwargs["method"] == "CheckOccupied"
+            assert call_kwargs["extra_params"]["devId"] == 39
+
+    @pytest.mark.asyncio
+    async def test_check_occupied_false(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptt import check_occupied
+
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"isOccupied": False}
+        ):
+            assert await check_occupied(api, 39) is False
+
+    @pytest.mark.asyncio
+    async def test_run_raises_when_occupied(self, api: SurveillanceAPI) -> None:
+        """run() must bail out before opening a WebSocket or touching the
+        mic at all when the camera's speaker is already in use."""
+        from surveillance.services.ptt import PttOccupiedError, PttSession
+
+        session = PttSession(39)
+        with (
+            patch.object(session, "_start_capture", return_value=object()),
+            patch.object(session, "_stop_capture"),
+            patch.object(api, "request", new_callable=AsyncMock, return_value={"isOccupied": True}),
+            pytest.raises(PttOccupiedError),
+        ):
+            await session.run(api)
+
+    def test_build_ws_url(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptt import _build_ws_url
+
+        url = _build_ws_url(api, 39)
+        assert url.startswith("wss://" if api.base_url.startswith("https") else "ws://")
+        assert "method=AudioOut" in url
+        assert "dsId=0" in url
+        assert "id=39" in url
+        assert "type=1" in url
+
+    def test_double_bytes(self) -> None:
+        from surveillance.services.ptt import _double_bytes
+
+        assert _double_bytes(b"") == b""
+        assert _double_bytes(b"\x01\x02\x03") == b"\x01\x01\x02\x02\x03\x03"

@@ -55,16 +55,52 @@ else
     APPIMAGETOOL="appimagetool"
 fi
 
-# Find libmpv for bundling (python-mpv loads it via ctypes at runtime)
-LIBMPV=$(ldconfig -p 2>/dev/null | grep "libmpv.so " | head -1 | awk '{print $NF}')
+# Find libmpv and libportaudio for bundling -- python-mpv and sounddevice
+# both locate their native library via ctypes.util.find_library() at
+# runtime rather than a normal compile-time link, so PyInstaller's own
+# dependency analysis can't discover them on its own; each needs its .so
+# found here and copied in explicitly.
+# Anchored so a versioned SONAME ("libmpv.so.2"), an unversioned dev
+# symlink ("libmpv.so"), or trailing whitespace all match -- but nothing
+# else that merely happens to contain "libmpv.so" as a substring could.
+# Also filtered to the build machine's own multiarch triplet (e.g.
+# x86_64-linux-gnu) -- a system with a foreign architecture enabled
+# (e.g. i386 for Steam/Wine) could otherwise have more than one matching
+# entry, and picking the wrong one would silently bundle a library of the
+# wrong ELF class.
+MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null)
+LIBMPV=$(ldconfig -p 2>/dev/null | grep -E "libmpv\.so($|\.[0-9]|[[:space:]])" | grep "${MULTIARCH}" | head -1 | awk '{print $NF}')
+LIBPORTAUDIO=$(ldconfig -p 2>/dev/null | grep -E "libportaudio\.so($|\.[0-9]|[[:space:]])" | grep "${MULTIARCH}" | head -1 | awk '{print $NF}')
+# Unlike libmpv/libportaudio (native libraries loaded via ctypes), ffmpeg
+# is invoked as a subprocess (see ws_bridge.py's audio muxing) and looked
+# up via PATH -- bundle the actual binary alongside the app and add that
+# directory to PATH in AppRun (below) rather than LD_LIBRARY_PATH.
+FFMPEG_BIN=$(command -v ffmpeg 2>/dev/null || true)
+
+BINARIES=()
 if [ -z "${LIBMPV}" ]; then
     echo "WARNING: libmpv.so not found. Video playback will not work."
     echo "Install with: sudo apt install libmpv-dev"
-    BINARIES_LINE="binaries=[],"
 else
     echo "Found libmpv: ${LIBMPV}"
-    BINARIES_LINE="binaries=[('${LIBMPV}', '.')],"
+    BINARIES+=("('${LIBMPV}', '.')")
 fi
+if [ -z "${LIBPORTAUDIO}" ]; then
+    echo "WARNING: libportaudio.so not found. Push-to-talk mic capture will not work."
+    echo "Install with: sudo apt install libportaudio2"
+else
+    echo "Found libportaudio: ${LIBPORTAUDIO}"
+    BINARIES+=("('${LIBPORTAUDIO}', '.')")
+fi
+if [ -z "${FFMPEG_BIN}" ]; then
+    echo "WARNING: ffmpeg not found. WebSocket audio muxing will not work."
+    echo "Install with: sudo apt install ffmpeg"
+else
+    echo "Found ffmpeg: ${FFMPEG_BIN}"
+    BINARIES+=("('${FFMPEG_BIN}', '.')")
+fi
+
+BINARIES_LINE="binaries=[$(IFS=,; echo "${BINARIES[*]}")],"
 
 # Create runtime hook so ctypes.util.find_library() can locate
 # bundled shared libs (libmpv, etc.) inside the frozen app
@@ -112,6 +148,13 @@ hiddenimports = [
     'h2', 'hpack', 'hyperframe',
     'keyring', 'keyring.backends', 'keyring.backends.SecretService',
     'tomli_w',
+    # pkg_resources (pulled in by keyring's plugin-discovery mechanism)
+    # expects setuptools' vendored copy of platformdirs, but PyInstaller's
+    # own setuptools hook doesn't yet special-case it the way it does
+    # jaraco/tomli/wheel/zipp/etc -- without this, keyring backend
+    # discovery fails at startup with "The 'platformdirs' package is
+    # required". Harmless to also bundle the plain top-level package.
+    'platformdirs',
 ]
 hiddenimports += collect_submodules('surveillance')
 
@@ -180,6 +223,14 @@ mkdir -p "${APPDIR}/usr/share/metainfo"
 # Copy the entire PyInstaller onedir output into AppDir
 cp -a "${BUILD_DIR}/dist/${APP_NAME}" "${APPDIR}/usr/lib/${APP_NAME}"
 
+# PyInstaller's binaries=[...] copy preserves permissions in practice, but
+# make sure the bundled ffmpeg is executable regardless -- unlike
+# libmpv/libportaudio (loaded via ctypes, never exec'd directly), this one
+# has to actually run.
+if [ -f "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg" ]; then
+    chmod +x "${APPDIR}/usr/lib/${APP_NAME}/ffmpeg"
+fi
+
 # Create AppRun with proper environment setup
 cat > "${APPDIR}/AppRun" << 'EOF'
 #!/bin/bash
@@ -189,6 +240,10 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 
 export LD_LIBRARY_PATH="${BUNDLEDIR}:${LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# Bundled ffmpeg binary lives alongside the app itself (see BINARIES above) --
+# put it first on PATH so the subprocess lookup in ws_bridge.py finds it
+# even on a system with no ffmpeg installed at all.
+export PATH="${BUNDLEDIR}:${PATH}"
 
 exec "${BUNDLEDIR}/Surveillance" "$@"
 EOF

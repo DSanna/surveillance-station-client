@@ -48,6 +48,7 @@ from surveillance.services.live import (
     OFFLINE_PLACEHOLDER_URL,
     get_live_view_path,
 )
+from surveillance.services.ptt import PttOccupiedError, PttSession
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -161,6 +162,7 @@ class CameraSlot(Gtk.Box):
 
         self._ws_bridge: WebSocketBridge | None = None
         self._rtsp_monitor: RtspHealthMonitor | None = None
+        self._ptt_session: PttSession | None = None
         # Set when a stream gives up while the camera is still reported
         # ENABLED (a transport-level failure, not a status change) — there's
         # no future status transition to retry on, so sync_camera_statuses()
@@ -208,6 +210,12 @@ class CameraSlot(Gtk.Box):
 
     def set_audio_playable(self, playable: bool) -> None:
         self._toolbar.set_audio_playable(playable)
+
+    def set_mic_callback(self, callback: object) -> None:
+        self._toolbar.set_mic_callback(callback)
+
+    def set_mic_active(self, active: bool) -> None:
+        self._toolbar.set_mic_active(active)
 
     def _update_mute_icon(self) -> None:
         self._toolbar.update_mute_icon()
@@ -348,6 +356,10 @@ class CameraSlot(Gtk.Box):
             self._ws_bridge = None
             bridge.close_write_end()
             run_async(bridge.stop())
+        if self._ptt_session is not None:
+            self._ptt_session.stop()
+            self._ptt_session = None
+            self.set_mic_active(False)
 
     def clear(self) -> None:
         self.stop_stream()
@@ -403,6 +415,7 @@ class LiveView(Gtk.Box):
             slot.set_open_1x1_available_callback(lambda: self._current_layout != "1x1")
             slot.set_volume_changed_callback(self._on_slot_volume_changed)
             slot.set_mute_changed_callback(self._on_slot_mute_changed)
+            slot.set_mic_callback(self._on_slot_mic_toggle)
             slot.set_zoom_callback(self._on_slot_zoom)
             slot.set_focus_callback(self._on_slot_focus)
             slot.set_ptz_callback(self._on_slot_ptz_move)
@@ -659,13 +672,24 @@ class LiveView(Gtk.Box):
         slot.set_saved_mute(muted)
 
     def _update_slot_audio(self, slot: CameraSlot, camera: Camera) -> None:
-        """Tell *slot* whether audio can reach the player for *camera*.
+        """Tell *slot* whether audio can reach the player for *camera*
+        right now.
 
         Having an audio track is not enough: it also has to arrive over a
-        protocol that carries one (see AUDIO_PROTOCOLS).
+        protocol that carries one. The RTSP-family protocols (see
+        AUDIO_PROTOCOLS) settle this immediately. The WebSocket-family
+        protocols ("auto", "websocket") get an optimistic has_audio-based
+        guess instead: real audio muxing (see ws_bridge.py) only kicks in
+        once DSM's codec-info frame confirms a codec we can actually mux
+        (PCMU or AAC), so _start_ws_bridge's _on_ready corrects this down
+        for a camera whose audio codec turns out not to be one of those,
+        once that's actually known. mjpeg never carries audio.
         """
         protocol = self.app.config.camera_protocols.get(camera.id, "auto")
-        slot.set_audio_playable(camera.has_audio and protocol in AUDIO_PROTOCOLS)
+        playable = camera.has_audio and (
+            protocol in AUDIO_PROTOCOLS or protocol in ("auto", "websocket")
+        )
+        slot.set_audio_playable(playable)
 
     def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
         """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
@@ -715,6 +739,39 @@ class LiveView(Gtk.Box):
             return
         self.app.config.camera_volume[camera.id] = volume
         save_config(self.app.config)
+
+    def _on_slot_mic_toggle(self, slot_idx: int, active: bool) -> None:
+        slot = self._slots[slot_idx]
+        if not active:
+            if slot._ptt_session is not None:
+                slot._ptt_session.stop()
+                slot._ptt_session = None
+            return
+
+        camera = slot.camera
+        if not camera or not self.app.api:
+            slot.set_mic_active(False)
+            return
+
+        session = PttSession(camera.id)
+        slot._ptt_session = session
+        run_async(
+            session.run(self.app.api),
+            error_callback=lambda e, s=slot: self._on_ptt_ended(s, e),
+        )
+
+    def _on_ptt_ended(self, slot: CameraSlot, exc: BaseException) -> None:
+        """A push-to-talk session ended on its own (occupied camera, dropped
+        connection, ...) rather than the user tapping to stop — that path
+        is handled directly in _on_slot_mic_toggle() and never reaches here,
+        since PttSession.run() returns normally (no exception) once stop()
+        makes it fall out of its send loop."""
+        if isinstance(exc, PttOccupiedError):
+            log.info("Push-to-talk: %s", exc)
+        else:
+            log.error("Push-to-talk session ended: %s", exc)
+        slot._ptt_session = None
+        slot.set_mic_active(False)
 
     def _on_slot_ptz_move(self, slot_idx: int, direction: str, move_type: str) -> None:
         camera = self._slots[slot_idx].camera
@@ -876,9 +933,19 @@ class LiveView(Gtk.Box):
         def _on_ready(pipe_url: str) -> None:
             s = self._slots[slot_idx]
             if s.get_visible() and s.camera and s.camera.id == cam_id:
-                log.info("WebSocket bridge ready, playing pipe: %s", pipe_url)
+                log.info(
+                    "WebSocket bridge ready, playing pipe: %s (audio_active=%s)",
+                    pipe_url,
+                    bridge.audio_active,
+                )
                 s.set_status("")
-                s.player.play(pipe_url, low_latency=True)
+                s.player.play(
+                    pipe_url, low_latency=not bridge.audio_active, muxed_audio=bridge.audio_active
+                )
+                # Corrects the optimistic has_audio-based guess from
+                # _update_slot_audio() now that whether DSM's audio codec
+                # was actually mixable (PCMU or AAC) is known for certain.
+                s.set_audio_playable(bridge.audio_active)
 
         run_async(
             bridge.start(),

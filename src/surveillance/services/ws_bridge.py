@@ -23,19 +23,32 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""WebSocket-to-pipe bridge for mpv playback of WebSocket streams."""
+"""WebSocket-to-pipe bridge for mpv playback of WebSocket streams.
+
+Video is always piped through. Audio (mediaType=2 frames, dropped
+entirely until now) is muxed in via an ffmpeg subprocess when DSM reports
+a codec we know how to handle (currently PCMU/G.711 mu-law, and AAC via
+the common "AAC-hbr" RTP framing -- see aac.py) -- mpv's fd:// pipe then
+reads ffmpeg's own Matroska output instead of the raw Annex B video
+stream directly. A camera whose audio is neither (or has none at all)
+falls back to the original raw-video-only passthrough, unchanged.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import logging
 import os
 import ssl
 import struct
+import subprocess
 import threading
 import time
 from typing import Any
+
+from surveillance.services.aac import adts_header, nearest_sample_rate, strip_au_header
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +72,45 @@ _MAX_RECONNECT_DELAY = 2.0  # seconds
 # recv(), not a protocol ping, so it doesn't reintroduce the premature-
 # disconnect problem.
 _IDLE_TIMEOUT = 10.0  # seconds
+
+# Safety cap on how long AAC sample-rate detection buffers video before
+# giving up on getting 5 real audio intervals and starting anyway with
+# whatever's been measured so far (or the default guess, if audio never
+# arrived at all) -- so a camera that claims AAC but doesn't actually
+# deliver a steady audio stream can't block start()/mpv forever.
+_AAC_DETECTION_VIDEO_FRAME_CAP = 60
+
+# ffmpeg -f value for each video codec DSM reports.
+_FFMPEG_VIDEO_FORMAT = {"H264": "h264", "H265": "hevc"}
+# ffmpeg input args for each audio codec DSM reports -- anything else
+# falls back to the raw-video-only pipe rather than risk muxing a format
+# never verified. PCMU is passed straight through (raw mulaw); AAC needs
+# each frame transformed first (see _AAC_AUDIO_CODECS/aac.py) before
+# ffmpeg's plain ADTS "aac" demuxer can read it.
+_FFMPEG_AUDIO_ARGS = {
+    "PCMU": ["-f", "mulaw", "-ar", "8000", "-ac", "1"],
+    "MPEG4-GENERIC": ["-f", "aac"],
+}
+# Audio codecs that need per-frame transformation (DSM's RFC 3640
+# AU-header stripped, a synthesized ADTS header prepended) rather than
+# PCMU's raw passthrough. Confirmed against one real camera's "AAC-hbr"
+# framing (the common default for IP camera RTP audio) -- a second
+# camera model reporting the same adoCodec used different framing
+# entirely, so this is known to not cover every AAC camera yet.
+_AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
+
+# AAC detection can buffer up to _AAC_DETECTION_VIDEO_FRAME_CAP frames
+# before anything starts draining them, easily exceeding Linux's default
+# 64KiB pipe buffer (H.265 keyframes alone can run into the hundreds of
+# KB) and blocking our writer on a reader that hasn't attached yet.
+# Growing the buffer to the system max (still unprivileged -- see
+# /proc/sys/fs/pipe-max-size) gives the flush headroom to finish first.
+_PIPE_CAPACITY = 1024 * 1024
+
+
+def _grow_pipe_buffer(fd: int) -> None:
+    with contextlib.suppress(OSError):
+        fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, _PIPE_CAPACITY)
 
 
 class _StreamStalled(Exception):
@@ -96,8 +148,19 @@ def _classify_error(exc: BaseException) -> str:
     return f"{exc_type}: {exc_str}"
 
 
+def _parse_header(header: bytes) -> dict[str, str]:
+    """Parse the Synology WebSocket frame's ASCII '&'-joined key=value header."""
+    text = header.decode("ascii", errors="replace")
+    out: dict[str, str] = {}
+    for part in text.split("&"):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            out[k] = v
+    return out
+
+
 class WebSocketBridge:
-    """Bridge a WebSocket video stream to an in-memory pipe for mpv."""
+    """Bridge a WebSocket video (+ optional audio) stream to a pipe for mpv."""
 
     def __init__(self, ws_url: str, verify_ssl: bool, sid: str, label: str = "") -> None:
         self._ws_url = ws_url
@@ -108,13 +171,44 @@ class WebSocketBridge:
         # itself only ever sees a bare URL.
         self._label = label or ws_url
         self._read_fd: int = -1
-        self._write_fd: int = -1
+        self._video_write_fd: int = -1
+        self._audio_write_fd: int = -1
+        self._ffmpeg_proc: asyncio.subprocess.Process | None = None
+        self._audio_active = False
+        self._audio_codec: str = ""
+        self._ready_event = asyncio.Event()
+        self._last_audio_write_time: float | None = None
+        # AAC's real sample rate isn't in the codec-info frame anywhere,
+        # but ffmpeg's Matroska muxer needs a correct, stable rate from
+        # its very first probe to write valid output -- a wrong initial
+        # guess that self-corrects a few frames in still poisons the
+        # muxer's extradata detection. So video+audio are buffered here
+        # (see _aac_detecting) until real inter-frame timing reveals the
+        # rate, and only then does ffmpeg start.
+        self._aac_sample_rate = 16000
+        self._aac_intervals: list[float] = []
+        self._aac_rate_locked = False
+        self._aac_detecting = False
+        self._pending_video_codec: str = ""
+        self._aac_video_buffer: list[bytes] = []
+        self._aac_audio_buffer: list[bytes] = []
         self._fd_lock = threading.Lock()
         self._pump_task: asyncio.Task[None] | None = None
         self._error: str = ""
         self._stopping = False
         self._connected_at: float | None = None
         self._fast_failures = 0
+
+    @property
+    def audio_active(self) -> bool:
+        """Whether this session ended up muxing real audio in.
+
+        Only meaningful once the first codec-info frame has arrived (see
+        _setup_pipes) — False before that, and permanently False for a
+        camera whose audio codec isn't muxable (see _FFMPEG_AUDIO_ARGS)
+        or that has no audio at all.
+        """
+        return self._audio_active
 
     def _note_attempt_outcome(self, connected: bool, attempt_start: float) -> bool:
         """Track consecutive failed-to-connect attempts; return True to give up.
@@ -141,11 +235,342 @@ class WebSocketBridge:
         )
         return True
 
-    async def _read_messages(self, ws: Any) -> None:
-        """Read messages until the connection ends, writing video payloads.
+    async def _setup_pipes(self, video_codec: str, audio_codec: str) -> None:
+        """One-time setup on the first codec-info frame of the bridge's
+        lifetime: decide whether DSM's audio track can be muxed in, and
+        create whatever pipe(s) mpv will read from.
 
-        Behaves like a bare `async for message in ws:` — raises whatever the
-        connection raises — except a stall (no message at all for
+        If audio can't be muxed (an unrecognized codec, or no audio at
+        all), falls back to the original raw-video-only passthrough —
+        mpv auto-detects H.264/H.265 straight from the Annex B stream,
+        no container needed — so a camera without usable audio sees no
+        behavior change at all from before this feature existed.
+
+        AAC is a third case: video+audio are buffered rather than piped
+        anywhere yet, until real frame timing reveals the sample rate
+        (see _accumulate_aac_detection_frame) — ffmpeg only starts once
+        that's known, so `start()` (and mpv) stay blocked a little
+        longer for these cameras specifically.
+        """
+        self._audio_codec = audio_codec
+        if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _AAC_AUDIO_CODECS:
+            self._pending_video_codec = video_codec
+            self._aac_detecting = True
+            log.debug(
+                "WebSocket bridge for %s: detecting AAC sample rate before muxing", self._label
+            )
+            return
+        if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _FFMPEG_AUDIO_ARGS:
+            await self._start_muxed(video_codec, audio_codec)
+        else:
+            self._read_fd, self._video_write_fd = os.pipe()
+            self._audio_active = False
+        log.debug(
+            "WebSocket bridge pipe for %s: fd://%d (audio_active=%s)",
+            self._label,
+            self._read_fd,
+            self._audio_active,
+        )
+        self._ready_event.set()
+
+    async def _start_muxed(self, video_codec: str, audio_codec: str) -> None:
+        """Spawn ffmpeg to mux raw video NALs + raw audio samples (fed in
+        live via separate input pipes) into a Matroska stream on stdout,
+        which becomes the pipe mpv actually plays.
+
+        -thread_queue_size raises ffmpeg's default per-input packet queue
+        (8), far too small for this bursty live-piped setup — once full,
+        ffmpeg stops draining that input's pipe, and once the pipe's own
+        OS buffer fills too, our write to it blocks forever.
+
+        -use_wallclock_as_timestamps is set for video always, and for
+        PCMU audio deliberately isn't: PCMU is a fixed-rate raw format
+        (8kHz mulaw), so ffmpeg derives smooth, sample-accurate
+        timestamps just by counting bytes, immune to our own
+        asyncio/thread-pool scheduling jitter. AAC arrives as discrete
+        compressed frames rather than a fixed-rate byte stream, so it
+        uses wallclock timestamps instead, same as video.
+
+        The video -probesize is deliberately large (2MB, versus 16KB for
+        audio): a single H.265 keyframe from an 8MP/4K-class camera can
+        exceed 500KB on its own, and a too-small probesize leaves
+        ffmpeg's stream analysis unable to get past the first real frame.
+        """
+        video_r, video_w = os.pipe()
+        audio_r, audio_w = os.pipe()
+        out_r, out_w = os.pipe()
+        for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
+            _grow_pipe_buffer(fd)
+        audio_args = ["-probesize", "16384", "-analyzeduration", "300000"]
+        if audio_codec in _AAC_AUDIO_CODECS:
+            audio_args += ["-use_wallclock_as_timestamps", "1"]
+        audio_args += [
+            "-thread_queue_size",
+            "4096",
+            *_FFMPEG_AUDIO_ARGS[audio_codec],
+            "-i",
+            f"pipe:{audio_r}",
+        ]
+        args = [
+            "ffmpeg",
+            "-loglevel",
+            "warning",
+            "-nostdin",
+            "-probesize",
+            "2000000",
+            "-analyzeduration",
+            "300000",
+            "-use_wallclock_as_timestamps",
+            "1",
+            "-thread_queue_size",
+            "4096",
+            "-f",
+            _FFMPEG_VIDEO_FORMAT[video_codec],
+            "-i",
+            f"pipe:{video_r}",
+            *audio_args,
+            "-c:v",
+            "copy",
+            "-c:a",
+            # AAC stream-copied straight from ffmpeg's ADTS demuxer into
+            # Matroska fails outright regardless of how correct the
+            # ADTS headers are (confirmed live: "Error parsing AAC
+            # extradata, unable to determine samplerate" / "Could not
+            # write header" even with a verified-correct, consistent
+            # sample rate from the very first frame) -- the ADTS
+            # demuxer apparently doesn't populate the extradata
+            # Matroska's muxer needs for -c:a copy. Decoding to raw PCM
+            # instead sidesteps the whole problem the same way PCMU's
+            # already-raw audio never has it.
+            "copy" if audio_codec not in _AAC_AUDIO_CODECS else "pcm_s16le",
+            "-f",
+            "matroska",
+            "-live",
+            "1",
+            "-flush_packets",
+            "1",
+            "pipe:1",
+        ]
+        try:
+            self._ffmpeg_proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=subprocess.DEVNULL,
+                stdout=out_w,
+                stderr=subprocess.DEVNULL,
+                pass_fds=[video_r, audio_r],
+            )
+        except OSError:
+            # Spawn itself failed (e.g. ffmpeg isn't installed) -- none of
+            # these 6 fds have a subprocess to inherit them now, and this
+            # runs again on every reconnect attempt until the bridge gives
+            # up, so leaking them here would compound quickly.
+            for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            raise
+        os.close(video_r)
+        os.close(audio_r)
+        os.close(out_w)
+        self._video_write_fd = video_w
+        self._audio_write_fd = audio_w
+        self._read_fd = out_r
+        self._audio_active = True
+
+    async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
+        """Handle a close notice or codec-info frame (anything that isn't
+        a video/audio payload) — pipe/ffmpeg setup happens here, once,
+        the first time codec info arrives for this bridge's lifetime."""
+        if "close" in fields:
+            log.debug("WebSocket stream close: %s", header.decode(errors="replace"))
+            return
+        if self._read_fd < 0 and not self._aac_detecting:
+            await self._setup_pipes(fields.get("vdoCodec", ""), fields.get("adoCodec", ""))
+
+    async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
+        """Write a real PCMU audio payload to ffmpeg's audio input."""
+        await asyncio.to_thread(os.write, self._audio_write_fd, payload)
+
+    async def _handle_aac_audio_frame(self, payload: bytes) -> None:
+        """Write a real AAC frame to ffmpeg's audio input, after
+        stripping DSM's RFC 3640 AU-header and prepending a synthesized
+        ADTS header (see aac.py) — ffmpeg's plain "aac" demuxer needs
+        ADTS framing, not the bare AU-header-prefixed frames DSM sends.
+
+        The sample rate is already known by the time this ever runs
+        (detection happens before ffmpeg starts at all — see
+        _accumulate_aac_detection_frame).
+        """
+        frame = strip_au_header(payload)
+        header = adts_header(len(frame), self._aac_sample_rate)
+        await asyncio.to_thread(os.write, self._audio_write_fd, header + frame)
+
+    async def _accumulate_aac_detection_frame(self, payload: bytes) -> None:
+        """Buffer a raw (still AU-header-prefixed) AAC frame while
+        determining the camera's real sample rate from real inter-frame
+        timing — called instead of _handle_aac_audio_frame until the
+        rate locks in and ffmpeg actually starts (see _setup_pipes)."""
+        now = time.monotonic()
+        if self._last_audio_write_time is not None:
+            interval = now - self._last_audio_write_time
+            if 0 < interval < 0.5:  # skip anything spanning a reconnect gap
+                self._aac_intervals.append(interval)
+        self._last_audio_write_time = now
+        self._aac_audio_buffer.append(payload)
+        if len(self._aac_intervals) >= 5:
+            await self._finish_aac_detection()
+
+    async def _aac_frames_look_valid(self) -> bool:
+        """Quick sanity check: does our AU-header-strip + ADTS-header
+        transform actually produce decodable AAC for this camera?
+
+        Some cameras report the same adoCodec but use different AU-header
+        framing entirely -- feeding ffmpeg the wrongly-transformed result
+        doesn't just produce bad audio, it stalls the whole muxed
+        pipeline outright. This catches that with a throwaway decode
+        attempt before ever committing to a real session, so an
+        unsupported camera falls back to video-only instead of a broken
+        one.
+        """
+        buf = bytearray()
+        for raw in self._aac_audio_buffer:
+            frame = strip_au_header(raw)
+            buf += adts_header(len(frame), self._aac_sample_rate) + frame
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "aac",
+                "-i",
+                "pipe:0",
+                "-f",
+                "null",
+                "-",
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            return True  # can't validate -- _start_muxed's own error handling takes over
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(bytes(buf)), timeout=3.0)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            return False
+        return not stderr.strip()
+
+    async def _fall_back_to_video_only(self) -> None:
+        """Give up on muxing this camera's AAC in — its framing didn't
+        validate (see _aac_frames_look_valid) — and use the original
+        raw-video-only passthrough instead, flushing the video buffered
+        during detection into it.
+
+        Unlike the muxed path (where ffmpeg is already running and
+        draining its input pipes before any flush happens), nothing
+        reads this pipe until mpv opens it, which only happens once
+        start() returns and the caller acts on it — which only happens
+        once _ready_event is set. Flushing buffered frames before
+        setting the event would fill the pipe with no reader ever
+        coming, a permanent deadlock. Setting the event first lets the
+        event loop hand control back to mpv (via the asyncio.to_thread
+        yield points in the flush loop below) before that can happen.
+        """
+        log.warning(
+            "WebSocket bridge for %s: this camera's AAC framing doesn't match the "
+            "AU-header transform this app knows — falling back to video-only audio",
+            self._label,
+        )
+        self._read_fd, self._video_write_fd = os.pipe()
+        _grow_pipe_buffer(self._read_fd)
+        _grow_pipe_buffer(self._video_write_fd)
+        self._audio_active = False
+        self._ready_event.set()
+        for nal in self._aac_video_buffer:
+            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+        self._aac_video_buffer.clear()
+        self._aac_audio_buffer.clear()
+
+    async def _finish_aac_detection(self) -> None:
+        """Lock in the detected (or, failing that, default) AAC sample
+        rate, verify the AU-header/ADTS transform actually produces
+        valid AAC for this camera, then either start the muxed ffmpeg
+        pipeline or fall back to video-only — flushing everything
+        buffered during detection either way."""
+        if self._aac_intervals:
+            avg = sum(self._aac_intervals) / len(self._aac_intervals)
+            self._aac_sample_rate = nearest_sample_rate(avg)
+        self._aac_detecting = False
+
+        if not await self._aac_frames_look_valid():
+            await self._fall_back_to_video_only()
+            return
+
+        self._aac_rate_locked = True
+        log.debug(
+            "WebSocket bridge for %s: AAC sample rate %dHz, starting muxed pipeline "
+            "(%d buffered video, %d buffered audio frames)",
+            self._label,
+            self._aac_sample_rate,
+            len(self._aac_video_buffer),
+            len(self._aac_audio_buffer),
+        )
+        await self._start_muxed(self._pending_video_codec, self._audio_codec)
+        # Signal readiness before flushing, not after: mpv doesn't open
+        # ffmpeg's muxed output pipe until start() returns, which only
+        # happens once _ready_event is set. If nothing reads that output
+        # while we flush a large buffer, ffmpeg's stdout write blocks
+        # once its pipe fills, which stops it draining our input pipes,
+        # which then blocks our flush writes too -- a backpressure
+        # deadlock through ffmpeg. Setting the event first lets the
+        # event loop hand control to mpv (via the asyncio.to_thread/sleep
+        # yield points below) concurrently with the flush.
+        self._ready_event.set()
+        # Paced, not dumped instantly: -use_wallclock_as_timestamps (both
+        # inputs) means ffmpeg derives its own frame timing from real
+        # elapsed time between writes -- flushing a whole buffer with
+        # near-zero real time between writes looks like a degenerate
+        # rate to ffmpeg's own estimation and can stall it entirely.
+        # ~25fps is a reasonable stand-in for real video pacing; audio
+        # uses its own just-detected real frame duration.
+        for nal in self._aac_video_buffer:
+            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.sleep(0.04)
+        self._aac_video_buffer.clear()
+        audio_frame_duration = 1024 / self._aac_sample_rate
+        for buffered_payload in self._aac_audio_buffer:
+            await self._handle_aac_audio_frame(buffered_payload)
+            await asyncio.sleep(audio_frame_duration)
+        self._aac_audio_buffer.clear()
+
+    async def _handle_video_frame(self, nal: bytes) -> None:
+        """Route a video NAL to ffmpeg's input, or buffer it if still
+        waiting on AAC sample-rate detection (see _setup_pipes)."""
+        if self._aac_detecting:
+            self._aac_video_buffer.append(nal)
+            if len(self._aac_video_buffer) >= _AAC_DETECTION_VIDEO_FRAME_CAP:
+                await self._finish_aac_detection()
+        else:
+            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+
+    async def _dispatch_audio_frame(self, payload: bytes) -> None:
+        """Route a real audio payload to whichever handler matches the
+        current codec/detection state."""
+        if self._aac_detecting:
+            await self._accumulate_aac_detection_frame(payload)
+        elif self._audio_codec in _AAC_AUDIO_CODECS:
+            await self._handle_aac_audio_frame(payload)
+        else:
+            await self._handle_pcmu_audio_frame(payload)
+
+    async def _read_messages(self, ws: Any) -> None:
+        """Read messages until the connection ends, routing video/audio
+        payloads to the appropriate pipe(s) and setting up pipes/ffmpeg on
+        the very first codec-info frame this bridge ever sees.
+
+        Behaves like a bare `async for message in ws:` — raises whatever
+        the connection raises — except a stall (no message at all for
         _IDLE_TIMEOUT) also raises, with self._error left set to a
         distinctly greppable reason first.
         """
@@ -155,10 +580,30 @@ class WebSocketBridge:
             except TimeoutError:
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
-            if isinstance(message, bytes):
-                payload = self._extract_payload(message)
-                if payload:
-                    await asyncio.to_thread(os.write, self._write_fd, payload)
+            if not isinstance(message, bytes) or len(message) < 4:
+                continue
+            (hdr_len,) = struct.unpack(">I", message[:4])
+            if 4 + hdr_len > len(message):
+                continue
+            header = message[4 : 4 + hdr_len]
+            payload = message[4 + hdr_len :]
+            fields = _parse_header(header)
+
+            if "close" in fields or "vdoCodec" in fields or "adoCodec" in fields:
+                await self._handle_control_frame(fields, header)
+                continue
+
+            if (self._read_fd < 0 and not self._aac_detecting) or not payload:
+                continue  # haven't seen codec info yet, or an empty frame
+
+            media_type = fields.get("mediaType")
+            if media_type == "1":
+                # The Synology header embeds the Annex B start code
+                # (00 00 00 01) as its last 4 bytes — prepend it so
+                # mpv/ffmpeg can detect NAL boundaries.
+                await self._handle_video_frame(b"\x00\x00\x00\x01" + payload)
+            elif media_type == "2" and (self._audio_active or self._aac_detecting):
+                await self._dispatch_audio_frame(payload)
 
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:
@@ -176,57 +621,33 @@ class WebSocketBridge:
             )
 
     async def start(self) -> str:
-        """Create pipe, start pump task, return fd:// URL for mpv."""
-        self._read_fd, self._write_fd = os.pipe()
-        log.debug("WebSocket bridge pipe: fd://%d", self._read_fd)
+        """Start the pump task and wait for the first codec-info frame —
+        which determines whether audio can be muxed in — before returning
+        the fd:// URL mpv should play.
 
-        self._pump_task = asyncio.create_task(self._pump())
-        return f"fd://{self._read_fd}"
-
-    @staticmethod
-    def _extract_payload(message: bytes) -> bytes | None:
-        """Strip Synology framing from a WebSocket message.
-
-        Frame format: [4-byte BE header_len][ASCII header][binary payload]
-
-        Returns the binary payload for video frames and codec init data.
-        Returns None for audio frames (mediaType=2) and control messages
-        (close=...) which should not be written to the video pipe.
+        Raises whatever the pump task's last failure was if it gives up
+        (see _note_attempt_outcome) before ever becoming ready, rather
+        than waiting forever for a camera that never delivers anything.
         """
-        if len(message) < 4:
-            return None
-        (hdr_len,) = struct.unpack(">I", message[:4])
-        if 4 + hdr_len > len(message):
-            # Malformed: header extends beyond message
-            return None
-        header = message[4 : 4 + hdr_len]
-        payload = message[4 + hdr_len :]
-        # Skip audio frames and control messages
-        if b"mediaType=2" in header or b"close=" in header:
-            if b"close=" in header:
-                log.debug("WebSocket stream close: %s", header.decode(errors="replace"))
-            return None
-        if not payload:
-            return None
-        # The Synology header embeds the Annex B start code (00 00 00 01)
-        # as its last 4 bytes.  Prepend it so mpv can detect NAL boundaries.
-        return b"\x00\x00\x00\x01" + payload
+        self._pump_task = asyncio.create_task(self._pump())
+        ready_task = asyncio.create_task(self._ready_event.wait())
+        await asyncio.wait({ready_task, self._pump_task}, return_when=asyncio.FIRST_COMPLETED)
+        if self._ready_event.is_set():
+            ready_task.cancel()
+            return f"fd://{self._read_fd}"
+        ready_task.cancel()
+        raise RuntimeError(self._error or "WebSocket bridge exited before becoming ready")
 
     async def _pump(self) -> None:
-        """Connect to the WebSocket and write video frames to the pipe.
+        """Connect to the WebSocket and write video (+ audio) frames to
+        the pipe(s).
 
-        Reconnects internally on the same pipe whenever the NAS drops the
-        session (its normal behavior, every ~15-25s) instead of closing the
-        pipe — see the comment at the reconnect site for why. Only exits
-        (letting the pipe close and `wait_closed()` return a reason) on a
-        deliberate stop or after repeated attempts that never establish a
-        real connection at all.
-
-        Strips the Synology proprietary framing (4-byte length + ASCII
-        header) from each WebSocket message and writes only the raw
-        video payload (Annex B H.264/H.265 NAL units) to the pipe.
-        Audio frames are dropped since mpv cannot demux interleaved
-        raw audio in a raw video byte stream.
+        Reconnects internally on the same pipe(s) whenever the NAS drops
+        the session (its normal behavior, every ~15-25s) instead of
+        closing them — see the comment at the reconnect site for why.
+        Only exits (letting the pipe close and `wait_closed()` return a
+        reason) on a deliberate stop or after repeated attempts that
+        never establish a real connection at all.
         """
         ssl_ctx: ssl.SSLContext | bool | None = None
         if self._ws_url.startswith("wss://"):
@@ -277,18 +698,19 @@ class WebSocketBridge:
                 if self._note_attempt_outcome(connected, attempt_start):
                     break
 
-                # Reconnect on the SAME pipe rather than closing it, whether
-                # the session ended cleanly or with an error: the NAS drops
-                # this WebSocket session routinely, every ~15-25s, as normal
-                # behavior (confirmed against a real NAS — not a rare
-                # failure). Closing the write end here would deliver a real
-                # EOF to mpv, which — with keep_open=yes on a raw fd://
-                # stream — never resumes decoding again even after a fresh
-                # play() call on a new pipe (confirmed via a standalone
-                # repro). Keeping the pipe open and just resuming writes
-                # after a short reconnect makes this look like an ordinary
-                # buffering stall to mpv instead of a terminal end-of-file,
-                # so it recovers on its own with no player/render-context
+                # Reconnect on the SAME pipe(s) rather than closing them,
+                # whether the session ended cleanly or with an error: the
+                # NAS drops this WebSocket session routinely, every
+                # ~15-25s, as normal behavior (confirmed against a real
+                # NAS — not a rare failure). Closing the write end here
+                # would deliver a real EOF to mpv, which — with
+                # keep_open=yes on a raw fd:// stream — never resumes
+                # decoding again even after a fresh play() call on a new
+                # pipe (confirmed via a standalone repro). Keeping the
+                # pipe(s) open and just resuming writes after a short
+                # reconnect makes this look like an ordinary buffering
+                # stall to mpv instead of a terminal end-of-file, so it
+                # recovers on its own with no player/render-context
                 # teardown needed at all.
                 self._log_reconnect(clean_close)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY) if delay else 0.25
@@ -321,26 +743,30 @@ class WebSocketBridge:
         return self._error or "stream ended"
 
     def _close_write_fd(self) -> None:
-        """Atomically close the write fd. Thread-safe, idempotent."""
+        """Atomically close the write fd(s). Thread-safe, idempotent."""
         with self._fd_lock:
-            fd = self._write_fd
-            self._write_fd = -1
-        if fd >= 0:
+            vfd, self._video_write_fd = self._video_write_fd, -1
+            afd, self._audio_write_fd = self._audio_write_fd, -1
+        if vfd >= 0:
             with contextlib.suppress(OSError):
-                os.close(fd)
+                os.close(vfd)
+        if afd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(afd)
 
     def close_write_end(self) -> None:
-        """Close the write end of the pipe immediately.
+        """Close the write end of the pipe(s) immediately.
 
-        This unblocks any os.write call stuck in the thread pool
-        and signals EOF to mpv on the read end. Safe to call from
-        any thread, idempotent.
+        This unblocks any os.write call stuck in the thread pool and
+        signals EOF to ffmpeg (if muxing) or mpv (if not) on the read
+        end. Safe to call from any thread, idempotent.
         """
         self._stopping = True
         self._close_write_fd()
 
     async def stop(self) -> None:
-        """Cancel the pump task and close pipe fds."""
+        """Cancel the pump task, let ffmpeg (if any) drain and exit, and
+        close pipe fds."""
         self.close_write_end()
 
         if self._pump_task is not None:
@@ -348,6 +774,15 @@ class WebSocketBridge:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._pump_task
             self._pump_task = None
+
+        if self._ffmpeg_proc is not None:
+            proc = self._ffmpeg_proc
+            self._ffmpeg_proc = None
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.terminate()
 
         if self._read_fd >= 0:
             with contextlib.suppress(OSError):
