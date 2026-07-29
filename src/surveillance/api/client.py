@@ -278,8 +278,12 @@ class SurveillanceAPI:
                         device_id=self.device_id,
                         device_name=platform.node(),
                     )
-                except AuthError:
-                    raise SessionExpiredError("Re-login failed") from e
+                except (AuthError, ApiError) as relogin_exc:
+                    # login() reports a rejected password as ApiError, not
+                    # AuthError, so catching only the latter let a stale
+                    # stored password surface as whatever the failing data
+                    # call happened to be.
+                    raise SessionExpiredError(str(relogin_exc)) from e
                 return await self.raw_request(api, method, version, extra_params, timeout=timeout)
             raise
 
@@ -352,8 +356,12 @@ class SurveillanceAPI:
                         device_id=self.device_id,
                         device_name=platform.node(),
                     )
-                except AuthError:
-                    raise SessionExpiredError("Re-login failed") from e
+                except (AuthError, ApiError) as relogin_exc:
+                    # login() reports a rejected password as ApiError, not
+                    # AuthError, so catching only the latter let a stale
+                    # stored password surface as whatever the failing data
+                    # call happened to be.
+                    raise SessionExpiredError(str(relogin_exc)) from e
                 return await self._raw_download(api, method, version, extra_params)
             raise
 
