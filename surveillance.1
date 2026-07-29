@@ -29,8 +29,9 @@ Audio only reaches the player over the RTSP-family protocols
 .BR direct );
 the WebSocket bridge used by the default
 .B auto
-protocol carries video only, so the mute button stays greyed out until the
-camera's protocol is changed by right-clicking it in the sidebar.
+protocol carries video only, so for a camera that has a microphone the mute
+button stays greyed out until its protocol is changed by right-clicking it in
+the sidebar. A camera with no audio track gets no mute button at all.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with
@@ -141,6 +142,13 @@ the URL from
 .B [camera_overrides]
 is used instead of Synology's RTSP proxy.
 These settings can be configured by right-clicking a camera in the sidebar.
+.PP
+The
+.B [camera_volume]
+and
+.B [camera_muted]
+sections hold the Live View volume (0-100) and mute state per camera, as set
+from the slot's hover toolbar. Cameras start muted.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q
