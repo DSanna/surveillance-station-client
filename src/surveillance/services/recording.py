@@ -235,9 +235,12 @@ async def download_recording(
 
     _check_download_content(data, recording_id)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Off the loop thread: one event loop serves the whole app, so a
+    # multi-hundred-MB write here would stall every live stream and
+    # every poll until it finished.
+    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
     try:
-        output_path.write_bytes(data)
+        await asyncio.to_thread(output_path.write_bytes, data)
     except Exception:
         # Remove any partial file so the user is not left with a 0-byte placeholder.
         with contextlib.suppress(OSError):

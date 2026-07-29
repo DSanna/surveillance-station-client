@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -127,8 +128,11 @@ async def download_snapshot(
 ) -> Path:
     """Download a snapshot to disk."""
     data = await fetch_snapshot_image(api, snapshot_id)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(data)
+    # Off the loop thread: one event loop serves the whole app, so a
+    # multi-hundred-MB write here would stall every live stream and
+    # every poll until it finished.
+    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(output_path.write_bytes, data)
     return output_path
 
 
