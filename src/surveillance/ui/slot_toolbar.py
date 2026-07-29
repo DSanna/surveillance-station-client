@@ -90,18 +90,6 @@ class SlotToolbar(Gtk.Revealer):
         toolbar.append(self._mute_btn)
         self.update_mute_icon()
 
-        # Placeholder — push-to-talk two-way audio. Only shown for cameras
-        # with a speaker (has_speaker); real implementation still needs OS
-        # microphone capture plumbed into a press-and-hold gesture and the
-        # actual DSM upload protocol reverse-engineered (see ToDo.md).
-        self._mic_btn = Gtk.Button()
-        self._mic_btn.add_css_class("flat")
-        self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
-        self._mic_btn.set_sensitive(False)
-        self._mic_btn.set_visible(False)  # shown in assign() only if the camera has a speaker
-        self._mic_btn.set_tooltip_text("Push-to-talk — not yet implemented")
-        toolbar.append(self._mic_btn)
-
         # PTZ pad — only shown for PTZ-capable cameras. Reuses
         # services.ptz.move() (v2, string-direction API) rather than
         # the newer v6/numeric-direction Move DSM's own web UI uses for
@@ -677,7 +665,6 @@ class SlotToolbar(Gtk.Revealer):
 
     def assign(self, camera: Camera) -> None:
         self._mute_btn.set_visible(camera.has_audio)
-        self._mic_btn.set_visible(camera.has_speaker)
         self._ptz_btn.set_visible(camera.is_ptz)
         self._zoom_btn.set_visible(camera.is_ptz)
         self._focus_btn.set_visible(camera.is_ptz)
@@ -688,7 +675,6 @@ class SlotToolbar(Gtk.Revealer):
         self.player.set_mute(True)
         self.update_mute_icon()
         self._mute_btn.set_visible(False)
-        self._mic_btn.set_visible(False)
         self._ptz_btn.set_visible(False)
         self._zoom_btn.set_visible(False)
         self._focus_btn.set_visible(False)

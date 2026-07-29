@@ -58,7 +58,6 @@ class Camera:
     status: CameraStatus
     is_ptz: bool = False
     has_audio: bool = False
-    has_speaker: bool = False
 
     @classmethod
     def from_api(cls, data: dict) -> Camera:  # type: ignore[type-arg]
@@ -72,10 +71,6 @@ class Camera:
             # audioCodec is 0 when the camera has no audio track, a
             # nonzero codec id (confirmed live: 2, 4, 6, ...) when it does.
             has_audio=bool(data.get("audioCodec", 0)),
-            # audioOut is the camera's own speaker capability (two-way
-            # audio) — separate from audioCodec, which is about the
-            # camera's mic recording into the stream, not its speaker.
-            has_speaker=bool(data.get("audioOut", False)),
         )
 
 
