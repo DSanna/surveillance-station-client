@@ -39,8 +39,11 @@ from surveillance.config import ConnectionProfile
 
 log = logging.getLogger(__name__)
 
-# Synology API error codes
-ERRORS: dict[int, str] = {
+# Codes 100-119 are shared by every Synology API. Above that the
+# namespaces diverge: SYNO.API.Auth and Surveillance Station both define
+# 400-407 and mean entirely different things by them, so they need
+# separate tables (see _error_table).
+COMMON_ERRORS: dict[int, str] = {
     100: "Unknown error",
     101: "Invalid parameters",
     102: "API does not exist",
@@ -50,27 +53,49 @@ ERRORS: dict[int, str] = {
     106: "Connection time out",
     107: "Multiple login detected",
     119: "SID not found",
+}
+
+ERRORS: dict[int, str] = {
+    **COMMON_ERRORS,
     400: "Execution failed",
     401: "Parameter invalid",
     402: "Camera disabled",
-    403: "Two-factor authentication required",
-    404: "Invalid OTP code",
-    406: "Two-factor authentication enforced",
     407: "CMS closed",
     412: "Need to run as admin",
     413: "Need to enable home mode first",
 }
 
+AUTH_ERRORS: dict[int, str] = {
+    **COMMON_ERRORS,
+    400: "No such account or incorrect password",
+    401: "Account disabled",
+    402: "Permission denied",
+    403: "Two-factor authentication required",
+    404: "Invalid OTP code",
+    406: "Two-factor authentication enforced",
+    407: "Account blocked after too many failed attempts",
+}
+
+AUTH_API = "SYNO.API.Auth"
 SESSION_ERRORS = {105, 106, 107, 119}
 OTP_ERRORS = {403, 404, 406}
 
 
-class ApiError(Exception):
-    """API call failed."""
+def _error_table(api: str) -> dict[int, str]:
+    """Pick the code table for *api*'s namespace."""
+    return AUTH_ERRORS if api.startswith(AUTH_API) else ERRORS
 
-    def __init__(self, code: int, message: str = "") -> None:
+
+class ApiError(Exception):
+    """API call failed.
+
+    *table* selects the code namespace; it defaults to Surveillance
+    Station's, since that is all but a handful of this client's calls.
+    """
+
+    def __init__(self, code: int, message: str = "", table: dict[int, str] | None = None) -> None:
         self.code = code
-        self.message = message or ERRORS.get(code, f"Unknown error ({code})")
+        self.message = message or (table or ERRORS).get(code, f"Unknown error ({code})")
         super().__init__(self.message)
 
 
@@ -156,7 +181,7 @@ class SurveillanceAPI:
         result = resp.json()
 
         if not result.get("success"):
-            raise ApiError(result.get("error", {}).get("code", 100))
+            raise ApiError(result.get("error", {}).get("code", 100), table=COMMON_ERRORS)
 
         for name, info in result.get("data", {}).items():
             self._api_info[name] = ApiInfo.from_api(info)
@@ -218,9 +243,12 @@ class SurveillanceAPI:
 
         if not result.get("success"):
             code = result.get("error", {}).get("code", 100)
-            if code in OTP_ERRORS:
-                raise OtpRequiredError(code)
-            raise ApiError(code)
+            syno_msg = result.get("error", {}).get("message", "")
+            # OTP codes only mean two-factor under SYNO.API.Auth; 403 and
+            # 404 mean something else entirely to Surveillance Station.
+            if api.startswith(AUTH_API) and code in OTP_ERRORS:
+                raise OtpRequiredError(code, syno_msg, AUTH_ERRORS)
+            raise ApiError(code, syno_msg, _error_table(api))
 
         data: Any = result.get("data", {})
         return data

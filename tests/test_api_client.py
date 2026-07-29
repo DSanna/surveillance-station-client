@@ -166,3 +166,27 @@ class TestHttpStatusError:
 
         req = httpx.Request("GET", "https://nas:5001/webapi/entry.cgi")
         assert _raise_for_status(httpx.Response(200, request=req)) is None
+
+
+class TestErrorNamespaces:
+    def test_auth_and_surveillance_codes_differ(self) -> None:
+        from surveillance.api.client import ApiError, _error_table
+
+        auth = _error_table("SYNO.API.Auth")
+        svs = _error_table("SYNO.SurveillanceStation.Camera")
+        assert ApiError(400, table=auth).message == "No such account or incorrect password"
+        assert ApiError(400, table=svs).message == "Execution failed"
+        assert ApiError(407, table=auth).message.startswith("Account blocked")
+        assert ApiError(407, table=svs).message == "CMS closed"
+
+    def test_shared_codes_agree(self) -> None:
+        from surveillance.api.client import AUTH_ERRORS, COMMON_ERRORS, ERRORS
+
+        for code, text in COMMON_ERRORS.items():
+            assert AUTH_ERRORS[code] == text
+            assert ERRORS[code] == text
+
+    def test_server_message_overrides_table(self) -> None:
+        from surveillance.api.client import ApiError
+
+        assert ApiError(400, "Camera is offline").message == "Camera is offline"
