@@ -43,7 +43,11 @@ from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
 from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
 from surveillance.config import save_config, save_config_now
 from surveillance.services import ptz
-from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_path
+from surveillance.services.live import (
+    AUDIO_PROTOCOLS,
+    OFFLINE_PLACEHOLDER_URL,
+    get_live_view_path,
+)
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
 from surveillance.ui.layouts import LAYOUT_VISIBLE, valid_layout
@@ -480,7 +484,7 @@ class LiveView(Gtk.Box):
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._restore_saved_audio_state(self._slots[phys], cam)
-                self._slots[phys].set_audio_playable(self._resolve_audio_playable(cam))
+                self._update_slot_audio(self._slots[phys], cam)
                 self._load_slot_ptz_extras(self._slots[phys], cam)
                 self._start_stream(phys, cam)
             else:
@@ -568,7 +572,7 @@ class LiveView(Gtk.Box):
             self._apply_layout()
             self._slots[0].assign(camera)
             self._restore_saved_audio_state(self._slots[0], camera)
-            self._slots[0].set_audio_playable(self._resolve_audio_playable(camera))
+            self._update_slot_audio(self._slots[0], camera)
             self._load_slot_ptz_extras(self._slots[0], camera)
             self._start_stream(0, camera)
         self._save_session()
@@ -642,14 +646,14 @@ class LiveView(Gtk.Box):
         muted = self.app.config.camera_muted.get(camera.id, True)
         slot.set_saved_mute(muted)
 
-    def _resolve_audio_playable(self, camera: Camera) -> bool:
-        """Whether audio can actually reach the player for *camera* right
-        now — see CameraSlot.set_audio_playable for why WebSocket never
-        qualifies regardless of has_audio."""
-        if not camera.has_audio:
-            return False
+    def _update_slot_audio(self, slot: CameraSlot, camera: Camera) -> None:
+        """Tell *slot* whether audio can reach the player for *camera*.
+
+        Having an audio track is not enough: it also has to arrive over a
+        protocol that carries one (see AUDIO_PROTOCOLS).
+        """
         protocol = self.app.config.camera_protocols.get(camera.id, "auto")
-        return protocol in ("rtsp", "rtsp_over_http", "direct")
+        slot.set_audio_playable(camera.has_audio and protocol in AUDIO_PROTOCOLS)
 
     def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
         """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
@@ -750,7 +754,7 @@ class LiveView(Gtk.Box):
         self._slots[slot_idx].clear()
         self._slots[slot_idx].assign(camera)
         self._restore_saved_audio_state(self._slots[slot_idx], camera)
-        self._slots[slot_idx].set_audio_playable(self._resolve_audio_playable(camera))
+        self._update_slot_audio(self._slots[slot_idx], camera)
         self._load_slot_ptz_extras(self._slots[slot_idx], camera)
         self._start_stream(slot_idx, camera)
 
@@ -979,7 +983,7 @@ class LiveView(Gtk.Box):
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
                 slot.stop_stream()
-                slot.set_audio_playable(self._resolve_audio_playable(slot.camera))
+                self._update_slot_audio(slot, slot.camera)
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:

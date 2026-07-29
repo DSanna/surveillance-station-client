@@ -22,7 +22,7 @@
 
 ## Features
 
-- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
+- **Live View** &mdash; Real-time camera streams in 1&times;1, 2&times;2, 3&times;3, or 4&times;4 grid layouts, selected from the grid button in the header bar. Each layout keeps its own camera arrangement. Clear a single slot from the camera sidebar or the whole layout from the same grid menu, with a confirmation prompt. Scroll to zoom in on a slot (centered on the cursor) and click-and-drag to pan; zoom resets when switching layouts or leaving the page. Streams are muted by default; hover a slot to reveal a toolbar with mute/volume (remembered per camera) and a quick Snapshot button. Audio only reaches the player over the RTSP-family protocols (`rtsp`, `rtsp_over_http`, `multicast`, `direct`); the WebSocket bridge used by the default `auto` protocol carries video only, so the mute button stays greyed out until the camera's protocol is changed by right-clicking it in the sidebar. Hardware-accelerated rendering via mpv + OpenGL. Works on X11 and Wayland. The NAS ends each WebSocket stream's session every ~15-25s as routine behavior; the client reconnects on the same pipe transparently, with no visible interruption. A camera the server reports as disabled or disconnected shows an "offline" placeholder instead of freezing, and a WebSocket or RTSP stream that stops responding mid-session shows "stream lost" ("attempting reconnect" while retrying) &mdash; both recover automatically and restore the real feed as soon as the camera is reachable again, with no action needed.
 - **Recordings** &mdash; Browse, filter by camera, play back with full transport controls (seek, pause, volume, scroll-to-zoom, click-and-drag pan), and download to disk. Quick date presets (Today, Yesterday, Last 24 h, Last 7 days) for one-click filtering, plus advanced search by camera(s) and custom time range. Reset button clears all filters at once. Active filter summary always visible. Per-event thumbnails and smart detection labels (person, vehicle, animal, etc.) shown for each recording.
 - **PTZ Control** &mdash; Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Patrol runs continuously through the camera's saved route until stopped, matching DSM's own Monitor Center behavior.
 - **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
@@ -169,6 +169,14 @@ last_page = "live"             # last active page
 # Direct RTSP URLs keyed by camera ID.
 # Use when Synology's RTSP proxy corrupts a stream (e.g. Reolink Duo 3 PoE h265).
 # 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
+
+[camera_volume]
+# Live View volume per camera ID, 0-100. Set from the slot's hover toolbar.
+# 5 = 40
+
+[camera_muted]
+# Live View mute state per camera ID. Cameras start muted.
+# 5 = false
 
 [camera_protocols]
 # Stream protocol per camera ID:

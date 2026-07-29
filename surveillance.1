@@ -22,6 +22,15 @@ click and drag to pan. Zoom resets when switching layouts or leaving the
 page.
 Streams are muted by default; hovering a slot reveals a toolbar with
 mute/volume (remembered per camera) and a Snapshot button.
+Audio only reaches the player over the RTSP-family protocols
+.RB ( rtsp ,
+.BR rtsp_over_http ,
+.BR multicast ,
+.BR direct );
+the WebSocket bridge used by the default
+.B auto
+protocol carries video only, so the mute button stays greyed out until the
+camera's protocol is changed by right-clicking it in the sidebar.
 Video is rendered via mpv with hardware acceleration.
 The NAS ends each WebSocket streaming session every ~15-25 seconds as
 routine behavior; the slot reconnects on the same pipe transparently, with

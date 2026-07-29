@@ -43,6 +43,12 @@ PROTOCOL_LABELS: dict[str, str] = {
     "direct": "Direct RTSP URL",
 }
 
+# Protocols whose stream URL is an RTSP one, the only ones an audio track
+# reaches mpv over. "auto" and "websocket" go through ws_bridge, which
+# pipes bare NAL units with no container to carry audio; "mjpeg" is a
+# still-image stream.
+AUDIO_PROTOCOLS = frozenset({"rtsp", "rtsp_over_http", "multicast", "direct"})
+
 # Map protocol name -> API response field
 _PROTO_FIELD: dict[str, str] = {
     "rtsp": "rtspPath",
