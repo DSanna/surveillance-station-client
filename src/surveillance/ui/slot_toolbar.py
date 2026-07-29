@@ -30,13 +30,36 @@ from __future__ import annotations
 import gi
 
 gi.require_version("Gtk", "4.0")
-gi.require_version("Gdk", "4.0")
-gi.require_version("GdkPixbuf", "2.0")
 
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-untyped]
+from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, PtzPatrol, PtzPreset
 from surveillance.ui.mpv_widget import MpvGLArea
+
+ICON_SIZE = 24
+
+
+def _icon_overlay(*icons: tuple[str, int, int]) -> Gtk.Overlay:
+    """Stack symbolic icons centered on an ICON_SIZE square.
+
+    Each entry is (name, pixel size, offset); *offset* shifts the icon
+    up and left, used to line the Zoom "+" up with the magnifying glass's
+    lens. A Gtk.Overlay takes its size from its main child, so a plain
+    box provides the square and every icon is an overlay child.
+    """
+    overlay = Gtk.Overlay()
+    canvas = Gtk.Box()
+    canvas.set_size_request(ICON_SIZE, ICON_SIZE)
+    overlay.set_child(canvas)
+    for name, pixel_size, offset in icons:
+        image = Gtk.Image.new_from_icon_name(name)
+        image.set_pixel_size(pixel_size)
+        image.set_halign(Gtk.Align.CENTER)
+        image.set_valign(Gtk.Align.CENTER)
+        image.set_margin_end(offset)
+        image.set_margin_bottom(offset)
+        overlay.add_overlay(image)
+    return overlay
 
 
 class SlotToolbar(Gtk.Revealer):
@@ -91,111 +114,37 @@ class SlotToolbar(Gtk.Revealer):
         # since this is a discrete 4-button pad, not a free-angle one.
         self._ptz_btn = Gtk.Button()
         self._ptz_btn.add_css_class("flat")
-        # No single stock icon reads as "pan/tilt" — overlay flip-
-        # horizontal and flip-vertical's arrow glyphs to get a 4-way
-        # arrow instead of picking an unrelated one (e.g. a gamepad).
-        # Letting Gtk.Picture/Gtk.Overlay stretch a square icon into a
-        # non-square box proved unreliable (the two arrows fought over
-        # the Overlay's allocated size, squashing one another), so the
-        # non-uniform stretch is instead baked directly into the pixel
-        # data at load time via GdkPixbuf's preserve_aspect_ratio=False,
-        # sidestepping GTK layout/measure() entirely for the distortion.
-        icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
-        base_size = 16
-        stretch_size = int(base_size * 1.5)
-        shrink_size = int(base_size * 0.5)
-
-        def _stretched_icon_picture(name: str, width: int, height: int) -> Gtk.Picture:
-            icon_file = icon_theme.lookup_icon(
-                name,
-                None,
-                base_size,
-                1,
-                Gtk.TextDirection.NONE,
-                Gtk.IconLookupFlags.PRELOAD,
-            ).get_file()
-            with open(icon_file.get_path(), encoding="utf-8") as f:
-                svg_text = f.read()
-            # Adwaita symbolic SVGs ship with a placeholder dark fill
-            # (#2e3436) that GTK normally recolors to the current
-            # foreground at render time (see .slot-toolbar button's
-            # "color: #ccc" in style.css) — loading the raw file via
-            # GdkPixbuf bypasses that recoloring, so patch the fill
-            # directly before rasterizing or the icon is nearly
-            # invisible against the toolbar's dark background.
-            svg_text = svg_text.replace("#2e3436", "#cccccc")
-            # SVG's default preserveAspectRatio ("xMidYMid meet") scales
-            # uniformly to fit within width/height and letterboxes the
-            # rest — GdkPixbuf.new_from_stream_at_scale's own
-            # preserve_aspect_ratio=False argument does NOT override
-            # that, so the non-uniform stretch was silently being
-            # ignored. preserveAspectRatio="none" makes it actually
-            # stretch to fill width/height exactly.
-            svg_text = svg_text.replace("<svg ", '<svg preserveAspectRatio="none" ', 1)
-            stream = Gio.MemoryInputStream.new_from_data(svg_text.encode("utf-8"))
-            pixbuf = GdkPixbuf.Pixbuf.new_from_stream_at_scale(stream, width, height, False, None)
-            picture = Gtk.Picture.new_for_pixbuf(pixbuf)
-            picture.set_content_fit(Gtk.ContentFit.FILL)
-            picture.set_size_request(width, height)
-            picture.set_halign(Gtk.Align.CENTER)
-            picture.set_valign(Gtk.Align.CENTER)
-            return picture
-
-        ptz_icon_overlay = Gtk.Overlay()
-        # A Gtk.Overlay sizes itself from its *main* child (set_child), so
-        # give it a neutral square spacer as the main child (sized to fit
-        # both arrows) rather than either arrow, and add both arrows as
-        # centered overlay children.
-        ptz_icon_canvas = Gtk.Box()
-        ptz_icon_canvas.set_size_request(stretch_size, stretch_size)
-        ptz_icon_overlay.set_child(ptz_icon_canvas)
-        ptz_icon_h = _stretched_icon_picture(
-            "object-flip-horizontal-symbolic", stretch_size, shrink_size
+        # No single stock icon reads as "pan/tilt", so overlay the
+        # left-right and up-down arrow glyphs into a 4-way arrow instead
+        # of picking an unrelated one (e.g. a gamepad).
+        self._ptz_btn.set_child(
+            _icon_overlay(
+                ("object-flip-horizontal-symbolic", ICON_SIZE, 0),
+                ("object-flip-vertical-symbolic", ICON_SIZE, 0),
+            )
         )
-        ptz_icon_overlay.add_overlay(ptz_icon_h)
-        ptz_icon_v = _stretched_icon_picture(
-            "object-flip-vertical-symbolic", shrink_size, stretch_size
-        )
-        ptz_icon_overlay.add_overlay(ptz_icon_v)
-        self._ptz_btn.set_child(ptz_icon_overlay)
         self._ptz_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._ptz_btn.set_tooltip_text("Pan / Tilt")
         toolbar.append(self._ptz_btn)
 
-        # Zoom — services.ptz.zoom() Start/Stop calls. plain zoom-in-symbolic
-        # is just a "+" in a square, not a magnifying glass, so combine
-        # system-search-symbolic (the actual magnifying glass, large) with
-        # list-add-symbolic (a "+", small) overlaid on top of it — both
-        # scaled uniformly (unlike the Pan/Tilt icon) so plain Gtk.Image
-        # keeps automatic symbolic recoloring.
-        self._zoom_btn = Gtk.Button()
-        self._zoom_btn.add_css_class("flat")
-        search_size = int(base_size * 1.5)
-        plus_size = int(base_size * 0.5)
-        zoom_icon_overlay = Gtk.Overlay()
-        zoom_icon_canvas = Gtk.Box()
-        zoom_icon_canvas.set_size_request(search_size, search_size)
-        zoom_icon_overlay.set_child(zoom_icon_canvas)
-        zoom_icon_search = Gtk.Image.new_from_icon_name("system-search-symbolic")
-        zoom_icon_search.set_pixel_size(search_size)
-        zoom_icon_search.set_halign(Gtk.Align.CENTER)
-        zoom_icon_search.set_valign(Gtk.Align.CENTER)
-        zoom_icon_overlay.add_overlay(zoom_icon_search)
-        zoom_icon_plus = Gtk.Image.new_from_icon_name("list-add-symbolic")
-        zoom_icon_plus.set_pixel_size(plus_size)
-        zoom_icon_plus.set_halign(Gtk.Align.CENTER)
-        zoom_icon_plus.set_valign(Gtk.Align.CENTER)
+        # Zoom — services.ptz.zoom() Start/Stop calls. Plain
+        # zoom-in-symbolic is just a "+" in a square, not a magnifying
+        # glass, so overlay list-add-symbolic on system-search-symbolic.
         # system-search-symbolic's lens circle is centered at (6.5, 6.5)
         # in its 16x16 viewBox, not (8, 8) — the handle sticking out to
         # the bottom-right pulls the icon's overall bounding box off from
         # the circle's true center. Nudge the "+" up-left to compensate
-        # (margin_end/margin_bottom shift a centered widget by half the
-        # margin amount, so use 2x the (0.5 - 6.5/16) offset fraction).
-        plus_offset = round(search_size * (0.5 - 6.5 / 16) * 2)
-        zoom_icon_plus.set_margin_end(plus_offset)
-        zoom_icon_plus.set_margin_bottom(plus_offset)
-        zoom_icon_overlay.add_overlay(zoom_icon_plus)
-        self._zoom_btn.set_child(zoom_icon_overlay)
+        # (a margin shifts a centered widget by half its amount, so use
+        # 2x the (0.5 - 6.5/16) offset fraction).
+        self._zoom_btn = Gtk.Button()
+        self._zoom_btn.add_css_class("flat")
+        plus_offset = round(ICON_SIZE * (0.5 - 6.5 / 16) * 2)
+        self._zoom_btn.set_child(
+            _icon_overlay(
+                ("system-search-symbolic", ICON_SIZE, 0),
+                ("list-add-symbolic", ICON_SIZE // 2, plus_offset),
+            )
+        )
         self._zoom_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
         self._zoom_btn.set_tooltip_text("Zoom")
         toolbar.append(self._zoom_btn)
