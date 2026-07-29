@@ -518,7 +518,7 @@ class SlotToolbar(Gtk.Revealer):
         # on two different widgets each time, so hiding immediately on
         # any single leave would collapse things mid-transition.
         if self._popover_button_held:
-            return  # re-armed in _on_{ptz,zoom,focus}_release once it isn't
+            return  # re-armed by the next leave once _on_hold clears it
         if self._combo_popup_open:
             # A ComboBoxText's own dropdown list is yet another separate
             # popup surface (below the popover, below the icon) — moving

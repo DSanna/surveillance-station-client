@@ -666,17 +666,36 @@ class LiveView(Gtk.Box):
 
     def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
         """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
-        PTZ cameras have either."""
+        PTZ cameras have either.
+
+        Both lists are dropped if the slot has moved on to another camera
+        by the time they arrive: picking an entry acts on whichever camera
+        the slot holds now, so a stale list would aim one camera's presets
+        at another. Same check as _on_stream_url().
+        """
         if not camera.is_ptz or not self.app.api:
             return
+        cam_id = camera.id
+
+        def _still_current() -> bool:
+            return bool(slot.camera and slot.camera.id == cam_id)
+
+        def _apply_presets(presets: list[PtzPreset]) -> None:
+            if _still_current():
+                slot.set_presets(presets)
+
+        def _apply_patrols(patrols: list[PtzPatrol]) -> None:
+            if _still_current():
+                slot.set_patrols(patrols)
+
         run_async(
             ptz.list_presets(self.app.api, camera.id),
-            callback=slot.set_presets,
+            callback=_apply_presets,
             error_callback=lambda e: log.error("PTZ list_presets failed: %s", e),
         )
         run_async(
             ptz.list_patrols(self.app.api, camera.id),
-            callback=slot.set_patrols,
+            callback=_apply_patrols,
             error_callback=lambda e: log.error("PTZ list_patrols failed: %s", e),
         )
 
