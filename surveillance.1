@@ -22,6 +22,17 @@ click and drag to pan. Zoom resets when switching layouts or leaving the
 page.
 Streams are muted by default; hovering a slot reveals a toolbar with
 mute/volume (remembered per camera) and a Snapshot button.
+Audio reaches the player over the RTSP-family protocols
+.RB ( rtsp ,
+.BR rtsp_over_http ,
+.BR multicast ,
+.BR direct ),
+or over the default
+.B auto/websocket
+protocol when the camera's audio codec is PCMU or AAC (muxed in via
+ffmpeg); otherwise the mute button stays greyed out until the protocol is
+changed (or DSM reports a different codec) by right-clicking the camera
+in the sidebar. A camera with no audio track gets no mute button at all.
 Cameras with a speaker also show a push-to-talk microphone button — tap to
 start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.
@@ -54,8 +65,10 @@ click-and-drag panning, same as Live View.
 .B PTZ Control
 Control pan-tilt-zoom cameras with Pan/Tilt, Zoom, Focus, Preset, and Patrol
 controls, in the same per-slot hover toolbar as Live View's audio controls.
-Patrol runs continuously through the camera's saved route until stopped,
-matching DSM's own Monitor Center behavior.
+Picking a patrol asks Surveillance Station to run that saved route; the NAS
+drives the camera, so it keeps going after you switch cameras or quit.
+Routes are created and edited in Surveillance Station itself, and there is
+no stop control, the same as Synology's own clients.
 .TP
 .B Snapshots
 Browse saved snapshots, filter by camera and time range, view, download,
@@ -133,6 +146,13 @@ the URL from
 .B [camera_overrides]
 is used instead of Synology's RTSP proxy.
 These settings can be configured by right-clicking a camera in the sidebar.
+.PP
+The
+.B [camera_volume]
+and
+.B [camera_muted]
+sections hold the Live View volume (0-100) and mute state per camera, as set
+from the slot's hover toolbar. Cameras start muted.
 .SH KEYBOARD SHORTCUTS
 .TP
 .B Ctrl+Q
@@ -149,7 +169,7 @@ gtk4, mpv, portaudio, ffmpeg, py311-gobject3, py311-cairo
 gtk4, mpv, portaudio, ffmpeg, py3-gobject3, py3-cairo
 .TP
 .B Python
-PyGObject (>=3.48), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets,
+PyGObject (>=3.50), httpx, python-mpv, PyOpenGL, keyring, tomli-w, websockets,
 sounddevice
 .SH FILES
 .TP

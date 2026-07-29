@@ -122,3 +122,21 @@ async def list_patrols(api: SurveillanceAPI, camera_id: int) -> list[PtzPatrol]:
         extra_params={"cameraId": str(camera_id)},
     )
     return [PtzPatrol.from_api(p) for p in data.get("patrols", [])]
+
+
+async def run_patrol(api: SurveillanceAPI, camera_id: int, patrol_id: int) -> None:
+    """Ask Surveillance Station to run a saved patrol route.
+
+    The NAS drives the camera through the route from here; there is no
+    counterpart call to stop one, and the official client does not offer
+    one either.
+    """
+    await api.request(
+        api="SYNO.SurveillanceStation.PTZ",
+        method="RunPatrol",
+        version=2,
+        extra_params={
+            "cameraId": str(camera_id),
+            "patrolId": str(patrol_id),
+        },
+    )

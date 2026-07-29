@@ -43,7 +43,11 @@ from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
 from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
 from surveillance.config import save_config, save_config_now
 from surveillance.services import ptz
-from surveillance.services.live import OFFLINE_PLACEHOLDER_URL, get_live_view_path
+from surveillance.services.live import (
+    AUDIO_PROTOCOLS,
+    OFFLINE_PLACEHOLDER_URL,
+    get_live_view_path,
+)
 from surveillance.services.ptt import PttOccupiedError, PttSession
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import WebSocketBridge
@@ -98,12 +102,17 @@ class CameraSlot(Gtk.Box):
         self._toolbar.set_snapshot_trigger(self._take_snapshot)
         self._player_overlay.add_overlay(self._toolbar)
 
-        slot_hover = Gtk.EventControllerMotion()
-        slot_hover.connect(
+        # On the player, not the overlay: the toolbar is an overlay child,
+        # so a pointer crossing between the two never leaves the overlay
+        # and it would emit nothing. Watching the video itself makes that
+        # crossing a leave/enter pair the toolbar's own hover tracking
+        # already knows how to handle.
+        video_hover = Gtk.EventControllerMotion()
+        video_hover.connect(
             "enter", lambda *_a: self._toolbar.notify_video_hover_enter(bool(self.camera))
         )
-        slot_hover.connect("leave", lambda *_a: self._toolbar.notify_video_hover_leave())
-        self._player_overlay.add_controller(slot_hover)
+        video_hover.connect("leave", lambda *_a: self._toolbar.notify_video_hover_leave())
+        self.player.add_controller(video_hover)
 
         # Click handlers — one on the header, one on the player.
         # GLArea consumes events so a CAPTURE gesture on the parent Box
@@ -111,12 +120,6 @@ class CameraSlot(Gtk.Box):
         header_click = Gtk.GestureClick(button=1)
         header_click.connect("pressed", self._on_click)
         self._header.add_controller(header_click)
-
-        # Focusable so a click both selects (existing behavior) and grabs
-        # real keyboard focus — groundwork for keyboard-driven PTZ (ToDo
-        # #10) to key off the same "which slot is active" concept rather
-        # than inventing a second one.
-        self.set_focusable(True)
 
         # Scroll-to-zoom (centered on the cursor) and click-and-drag pan,
         # shared with the recording player dialog. The player uses a drag
@@ -229,6 +232,9 @@ class CameraSlot(Gtk.Box):
     def set_preset_callback(self, callback: object) -> None:
         self._toolbar.set_preset_callback(callback)
 
+    def set_patrol_callback(self, callback: object) -> None:
+        self._toolbar.set_patrol_callback(callback)
+
     def set_presets(self, presets: list[PtzPreset]) -> None:
         self._toolbar.set_presets(presets)
 
@@ -286,7 +292,6 @@ class CameraSlot(Gtk.Box):
             self._invoke_click_callback()
 
     def _invoke_click_callback(self) -> None:
-        self.grab_focus()
         if self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
@@ -415,6 +420,7 @@ class LiveView(Gtk.Box):
             slot.set_focus_callback(self._on_slot_focus)
             slot.set_ptz_callback(self._on_slot_ptz_move)
             slot.set_preset_callback(self._on_slot_preset)
+            slot.set_patrol_callback(self._on_slot_patrol)
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
 
@@ -500,7 +506,7 @@ class LiveView(Gtk.Box):
                 cam = cam_map[cam_id]
                 self._slots[phys].assign(cam)
                 self._restore_saved_audio_state(self._slots[phys], cam)
-                self._slots[phys].set_audio_playable(self._resolve_audio_playable(cam))
+                self._update_slot_audio(self._slots[phys], cam)
                 self._load_slot_ptz_extras(self._slots[phys], cam)
                 self._start_stream(phys, cam)
             else:
@@ -588,7 +594,7 @@ class LiveView(Gtk.Box):
             self._apply_layout()
             self._slots[0].assign(camera)
             self._restore_saved_audio_state(self._slots[0], camera)
-            self._slots[0].set_audio_playable(self._resolve_audio_playable(camera))
+            self._update_slot_audio(self._slots[0], camera)
             self._load_slot_ptz_extras(self._slots[0], camera)
             self._start_stream(0, camera)
         self._save_session()
@@ -662,32 +668,58 @@ class LiveView(Gtk.Box):
         muted = self.app.config.camera_muted.get(camera.id, True)
         slot.set_saved_mute(muted)
 
-    def _resolve_audio_playable(self, camera: Camera) -> bool:
-        """Whether audio can actually reach the player for *camera* right
-        now — an optimistic best guess based on has_audio alone.
+    def _update_slot_audio(self, slot: CameraSlot, camera: Camera) -> None:
+        """Tell *slot* whether audio can reach the player for *camera*
+        right now.
 
-        For a WebSocket-protocol camera this is provisional: real audio
-        muxing (see ws_bridge.py) only kicks in once DSM's codec-info
-        frame confirms a codec we can actually mux (PCMU or AAC), so
-        _start_ws_bridge's _on_ready corrects this down (ghosting the
-        mute button after all) for a camera whose audio codec turns out
-        not to be one of those, once that's actually known.
+        Having an audio track is not enough: it also has to arrive over a
+        protocol that carries one. The RTSP-family protocols (see
+        AUDIO_PROTOCOLS) settle this immediately. The WebSocket-family
+        protocols ("auto", "websocket") get an optimistic has_audio-based
+        guess instead: real audio muxing (see ws_bridge.py) only kicks in
+        once DSM's codec-info frame confirms a codec we can actually mux
+        (PCMU or AAC), so _start_ws_bridge's _on_ready corrects this down
+        for a camera whose audio codec turns out not to be one of those,
+        once that's actually known. mjpeg never carries audio.
         """
-        return camera.has_audio
+        protocol = self.app.config.camera_protocols.get(camera.id, "auto")
+        playable = camera.has_audio and (
+            protocol in AUDIO_PROTOCOLS or protocol in ("auto", "websocket")
+        )
+        slot.set_audio_playable(playable)
 
     def _load_slot_ptz_extras(self, slot: CameraSlot, camera: Camera) -> None:
         """Populate *slot*'s Preset/Patrol dropdowns for *camera* — only
-        PTZ cameras have either."""
+        PTZ cameras have either.
+
+        Both lists are dropped if the slot has moved on to another camera
+        by the time they arrive: picking an entry acts on whichever camera
+        the slot holds now, so a stale list would aim one camera's presets
+        at another. Same check as _on_stream_url().
+        """
         if not camera.is_ptz or not self.app.api:
             return
+        cam_id = camera.id
+
+        def _still_current() -> bool:
+            return bool(slot.camera and slot.camera.id == cam_id)
+
+        def _apply_presets(presets: list[PtzPreset]) -> None:
+            if _still_current():
+                slot.set_presets(presets)
+
+        def _apply_patrols(patrols: list[PtzPatrol]) -> None:
+            if _still_current():
+                slot.set_patrols(patrols)
+
         run_async(
             ptz.list_presets(self.app.api, camera.id),
-            callback=slot.set_presets,
+            callback=_apply_presets,
             error_callback=lambda e: log.error("PTZ list_presets failed: %s", e),
         )
         run_async(
             ptz.list_patrols(self.app.api, camera.id),
-            callback=slot.set_patrols,
+            callback=_apply_patrols,
             error_callback=lambda e: log.error("PTZ list_patrols failed: %s", e),
         )
 
@@ -774,6 +806,15 @@ class LiveView(Gtk.Box):
             error_callback=lambda e: log.error("PTZ go_preset failed: %s", e),
         )
 
+    def _on_slot_patrol(self, slot_idx: int, patrol_id: int) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.run_patrol(self.app.api, camera.id, patrol_id),
+            error_callback=lambda e: log.error("PTZ run_patrol failed: %s", e),
+        )
+
     def _on_slot_open_1x1(self, slot_idx: int) -> None:
         """Right-click menu action: switch to 1x1 layout showing just this
         slot's camera — the same "zoom in" behavior as clicking an
@@ -807,7 +848,7 @@ class LiveView(Gtk.Box):
         self._slots[slot_idx].clear()
         self._slots[slot_idx].assign(camera)
         self._restore_saved_audio_state(self._slots[slot_idx], camera)
-        self._slots[slot_idx].set_audio_playable(self._resolve_audio_playable(camera))
+        self._update_slot_audio(self._slots[slot_idx], camera)
         self._load_slot_ptz_extras(self._slots[slot_idx], camera)
         self._start_stream(slot_idx, camera)
 
@@ -899,8 +940,8 @@ class LiveView(Gtk.Box):
                     pipe_url, low_latency=not bridge.audio_active, muxed_audio=bridge.audio_active
                 )
                 # Corrects the optimistic has_audio-based guess from
-                # _resolve_audio_playable() now that whether DSM's audio
-                # codec was actually mixable (PCMU) is known for certain.
+                # _update_slot_audio() now that whether DSM's audio codec
+                # was actually mixable (PCMU or AAC) is known for certain.
                 s.set_audio_playable(bridge.audio_active)
 
         run_async(
@@ -1046,7 +1087,7 @@ class LiveView(Gtk.Box):
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
                 slot.stop_stream()
-                slot.set_audio_playable(self._resolve_audio_playable(slot.camera))
+                self._update_slot_audio(slot, slot.camera)
                 self._start_stream(slot.index, slot.camera)
 
     def pause_streams(self) -> None:

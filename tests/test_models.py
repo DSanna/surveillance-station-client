@@ -58,7 +58,7 @@ class TestCamera:
             "resolution": "3840x2160",
             "fps": 25,
             "channel": 0,
-            "audioCodec": 2,
+            "audioType": 2,
             "audioOut": True,
         }
         cam = Camera.from_api(data)
@@ -85,10 +85,10 @@ class TestCamera:
         assert cam.has_audio is False
         assert cam.has_speaker is False
 
-    def test_from_api_no_audio_codec(self) -> None:
-        # audioCodec 0 means no audio track — distinct from audioOut,
-        # the camera's own speaker capability for two-way audio.
-        cam = Camera.from_api({"audioCodec": 0, "audioOut": False})
+    def test_from_api_no_audio_track(self) -> None:
+        # audioType 0 means no audio track -- distinct from audioOut, the
+        # camera's own speaker capability for two-way audio.
+        cam = Camera.from_api({"audioType": 0, "audioOut": False})
         assert cam.has_audio is False
         assert cam.has_speaker is False
 
@@ -192,18 +192,9 @@ class TestPtzPreset:
 
 class TestPtzPatrol:
     def test_from_api(self) -> None:
-        patrol = PtzPatrol.from_api(
-            {"id": 1, "name": "Perimeter", "sequence": [6, 7, 11, 14], "stayTime": 10}
-        )
+        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
         assert patrol.id == 1
         assert patrol.name == "Perimeter"
-        assert patrol.sequence == [6, 7, 11, 14]
-        assert patrol.stay_time == 10
-
-    def test_from_api_defaults(self) -> None:
-        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
-        assert patrol.sequence == []
-        assert patrol.stay_time == 5
 
 
 class TestApiInfo:

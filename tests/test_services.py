@@ -237,16 +237,23 @@ class TestPtzService:
     async def test_list_patrols(self, api: SurveillanceAPI) -> None:
         from surveillance.services.ptz import list_patrols
 
-        mock_data = {
-            "patrols": [
-                {"id": 2, "name": "Perimeter", "sequence": [6, 7, 11, 14], "stayTime": 5},
-            ]
-        }
+        mock_data = {"patrols": [{"id": 2, "name": "Perimeter"}]}
         with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
             patrols = await list_patrols(api, 40)
             assert len(patrols) == 1
-            assert patrols[0].sequence == [6, 7, 11, 14]
-            assert patrols[0].stay_time == 5
+            assert patrols[0].name == "Perimeter"
+
+    @pytest.mark.asyncio
+    async def test_run_patrol(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.ptz import run_patrol
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock:
+            await run_patrol(api, 40, 2)
+            call_kwargs = mock.call_args[1]
+            assert call_kwargs["method"] == "RunPatrol"
+            assert call_kwargs["version"] == 2
+            assert call_kwargs["extra_params"]["cameraId"] == "40"
+            assert call_kwargs["extra_params"]["patrolId"] == "2"
 
 
 class TestEventService:
