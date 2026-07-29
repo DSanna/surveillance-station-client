@@ -81,6 +81,7 @@ class TimeLapseView(Gtk.Box):
         self._offset = 0
         self._task_id: int = -1  # -1 = all tasks
         self._loading = False
+        self._reload_pending = False
 
         # Toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -194,8 +195,13 @@ class TimeLapseView(Gtk.Box):
 
     def _load_recordings(self) -> None:
         if not self.app.api or self._loading:
+            # A filter switch during a slow query is common; remember it and
+            # reload once the in-flight request lands, rather than dropping it
+            # and leaving the previous camera's rows under the new filter.
+            self._reload_pending = True
             return
         self._loading = True
+        self._reload_pending = False
         self.prev_btn.set_sensitive(False)
         self.next_btn.set_sensitive(False)
         log.debug(
@@ -219,9 +225,14 @@ class TimeLapseView(Gtk.Box):
         self.prev_btn.set_sensitive(self._offset > 0)
         self.next_btn.set_sensitive(self._offset + _PAGE_SIZE < self._total)
         log.error("Failed to load time lapse recordings: %s", error)
+        if self._reload_pending:
+            self._load_recordings()
 
     def _on_recordings_loaded(self, result: tuple[list[TimeLapseRecording], int]) -> None:
         self._loading = False
+        if self._reload_pending:
+            self._load_recordings()
+            return
         recordings, total = result
         self._recordings = recordings
         self._total = total

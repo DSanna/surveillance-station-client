@@ -87,6 +87,7 @@ class RecordingsView(Gtk.Box):
         self._offset = 0
         self._camera_id: int | None = None
         self._loading = False
+        self._reload_pending = False
         self._thumb_futures: list[concurrent.futures.Future[bytes]] = []
         self._thumb_generation = 0
         self._search_camera_ids: list[int] | None = None
@@ -396,8 +397,13 @@ class RecordingsView(Gtk.Box):
             self._search_time_preset,
         )
         if not self.app.api or self._loading:
+            # A filter switch during a slow query is common; remember it and
+            # reload once the in-flight request lands, rather than dropping it
+            # and leaving the previous camera's rows under the new filter.
+            self._reload_pending = True
             return
         self._loading = True
+        self._reload_pending = False
         self.prev_btn.set_sensitive(False)
         self.next_btn.set_sensitive(False)
 
@@ -466,9 +472,14 @@ class RecordingsView(Gtk.Box):
         self.prev_btn.set_sensitive(self._offset > 0)
         self.next_btn.set_sensitive(self._offset + 50 < self._total)
         log.error("Failed to load recordings: %s", error)
+        if self._reload_pending:
+            self._load_recordings()
 
     def _on_recordings_loaded(self, result: tuple[list[Recording], int]) -> None:
         self._loading = False
+        if self._reload_pending:
+            self._load_recordings()
+            return
         recordings, total = result
         self._recordings = recordings
         self._total = total

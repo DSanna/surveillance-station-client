@@ -115,6 +115,7 @@ class SnapshotsView(Gtk.Box):
         self._multi_camera_filter: set[int] | None = None
         self._camera_id: int | None = None
         self._loading = False
+        self._reload_pending = False
         self._search_camera_ids: list[int] | None = None
         self._search_from_time: int | None = None
         self._search_to_time: int | None = None
@@ -436,8 +437,13 @@ class SnapshotsView(Gtk.Box):
         pagination itself.
         """
         if not self.app.api or self._loading:
+            # A filter switch during a slow query is common; remember it and
+            # reload once the in-flight request lands, rather than dropping it
+            # and leaving the previous camera's rows under the new filter.
+            self._reload_pending = True
             return
         self._loading = True
+        self._reload_pending = False
         self.prev_btn.set_sensitive(False)
         self.next_btn.set_sensitive(False)
 
@@ -497,6 +503,9 @@ class SnapshotsView(Gtk.Box):
         see _render_multi_camera_page(), also used by _on_prev/_on_next so
         paging doesn't re-fetch."""
         self._loading = False
+        if self._reload_pending:
+            self._load_snapshots()
+            return
         snapshots, _total = result
         self._resolve_camera_ids(snapshots)
         self._snapshots = snapshots
@@ -571,10 +580,15 @@ class SnapshotsView(Gtk.Box):
         self.prev_btn.set_sensitive(self._page > 0)
         self.next_btn.set_sensitive(False)
         log.error("Failed to load snapshots: %s", error)
+        if self._reload_pending:
+            self._load_snapshots()
 
     def _on_snapshots_loaded(self, result: tuple[list[Snapshot], int]) -> None:
         """Server already filtered and paginated this page — just render it."""
         self._loading = False
+        if self._reload_pending:
+            self._load_snapshots()
+            return
         snapshots, total = result
         self._resolve_camera_ids(snapshots)
         self._snapshots = snapshots
