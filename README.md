@@ -146,7 +146,7 @@ dismissed_update_version = ""   # release tag whose update notice was dismissed
 poll_interval_cameras = 30      # seconds
 poll_interval_alerts = 30
 poll_interval_homemode = 60
-snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"
+snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"  # folder the Save dialog opens in
 
 [session]
 grid_layout = "2x2"            # "1x1", "2x2", "3x3", or "4x4"

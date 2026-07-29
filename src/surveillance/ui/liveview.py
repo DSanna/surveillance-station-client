@@ -38,7 +38,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, Gio, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, CameraStatus, PtzPatrol, PtzPreset
 from surveillance.config import save_config, save_config_now
@@ -623,6 +623,9 @@ class LiveView(Gtk.Box):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_name = re.sub(r'[/\\<>:"|?*]', "_", camera.name)
         dialog.set_initial_name(f"{safe_name}_{timestamp}.jpg")
+        snapshot_dir = self.app.config.snapshot_dir
+        if snapshot_dir:
+            dialog.set_initial_folder(Gio.File.new_for_path(snapshot_dir))
 
         def _on_save(d: Gtk.FileDialog, result: object) -> None:
             try:
