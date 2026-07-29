@@ -641,8 +641,15 @@ class SnapshotsView(Gtk.Box):
         cam_btn.add_css_class("camera-label")
         cam_btn.add_css_class("flat")
         cam_btn.set_halign(Gtk.Align.START)
-        cam_btn.set_tooltip_text(f"Filter snapshots by {snap.camera_name}")
-        cam_btn.connect("clicked", self._on_camera_filter_clicked, snap.camera_id)
+        if snap.camera_id:
+            cam_btn.set_tooltip_text(f"Filter snapshots by {snap.camera_name}")
+            cam_btn.connect("clicked", self._on_camera_filter_clicked, snap.camera_id)
+        else:
+            # camera_id 0 means the name matched no current camera — it was
+            # renamed or deleted since. Filtering on the sentinel would pool
+            # every such camera's snapshots under whichever name was clicked.
+            cam_btn.set_sensitive(False)
+            cam_btn.set_tooltip_text(f"{snap.camera_name} is no longer on this NAS")
         info_box.append(cam_btn)
 
         time_str = datetime.fromtimestamp(snap.create_time).strftime("%Y-%m-%d %H:%M:%S")
