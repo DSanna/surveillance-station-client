@@ -303,9 +303,25 @@ def _write_config(config: AppConfig) -> None:
     for name, profile in config.profiles.items():
         data["profiles"][name] = profile.to_dict()
 
-    fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with open(fd, "wb") as f:
-        tomli_w.dump(data, f)
+    # Write a sibling temp file and rename over the real one. os.replace()
+    # is atomic within a filesystem, so an interrupted save leaves the
+    # previous config intact instead of a truncated or empty one — the
+    # SIGINT/SIGTERM handlers in __main__ are os._exit(), which would
+    # otherwise skip the flush and lose every profile.
+    tmp = CONFIG_FILE.with_suffix(".toml.new")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with open(fd, "wb") as f:
+            tomli_w.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+    except BaseException:
+        # Cleanup only — the failure is always re-raised. BaseException
+        # because KeyboardInterrupt is exactly the case this guards.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def add_profile(config: AppConfig, profile: ConnectionProfile) -> None:
