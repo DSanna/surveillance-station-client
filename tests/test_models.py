@@ -58,7 +58,7 @@ class TestCamera:
             "resolution": "3840x2160",
             "fps": 25,
             "channel": 0,
-            "audioCodec": 2,
+            "audioType": 2,
         }
         cam = Camera.from_api(data)
         assert cam.id == 1
@@ -82,8 +82,8 @@ class TestCamera:
         assert cam.is_ptz is False
         assert cam.has_audio is False
 
-    def test_from_api_no_audio_codec(self) -> None:
-        cam = Camera.from_api({"audioCodec": 0})
+    def test_from_api_no_audio_track(self) -> None:
+        cam = Camera.from_api({"audioType": 0})
         assert cam.has_audio is False
 
 

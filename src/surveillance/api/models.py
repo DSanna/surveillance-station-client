@@ -68,9 +68,11 @@ class Camera:
             vendor=data.get("vendor", ""),
             status=CameraStatus(data.get("status", 0)),
             is_ptz=bool(data.get("ptzDirection", 0)),
-            # audioCodec is 0 when the camera has no audio track, a
-            # nonzero codec id (confirmed live: 2, 4, 6, ...) when it does.
-            has_audio=bool(data.get("audioCodec", 0)),
+            # audioType is the codec of the camera's audio track, 0 when
+            # there is none. It is the only top-level audio field DS cam
+            # reads off a Camera List response, and it hands it straight
+            # to its player.
+            has_audio=bool(data.get("audioType", 0)),
         )
 
 
