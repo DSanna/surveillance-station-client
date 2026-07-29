@@ -111,12 +111,6 @@ class CameraSlot(Gtk.Box):
         header_click.connect("pressed", self._on_click)
         self._header.add_controller(header_click)
 
-        # Focusable so a click both selects (existing behavior) and grabs
-        # real keyboard focus — groundwork for keyboard-driven PTZ (ToDo
-        # #10) to key off the same "which slot is active" concept rather
-        # than inventing a second one.
-        self.set_focusable(True)
-
         # Scroll-to-zoom (centered on the cursor) and click-and-drag pan,
         # shared with the recording player dialog. The player uses a drag
         # gesture instead of a plain click, so a left-button drag can pan a
@@ -278,7 +272,6 @@ class CameraSlot(Gtk.Box):
             self._invoke_click_callback()
 
     def _invoke_click_callback(self) -> None:
-        self.grab_focus()
         if self._click_callback and callable(self._click_callback):
             self._click_callback(self.index)
 
