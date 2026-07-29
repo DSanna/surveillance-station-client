@@ -114,6 +114,11 @@ def run_async(
     if callback or error_callback:
 
         def _on_done(f: concurrent.futures.Future[T]) -> None:
+            # A cancelled future has no exception to ask for — .exception()
+            # re-raises CancelledError instead of returning it, and this
+            # runs on the loop thread where nothing would catch it.
+            if f.cancelled():
+                return
             exc = f.exception()
             if exc:
                 if error_callback:
