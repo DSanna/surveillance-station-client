@@ -336,22 +336,31 @@ class SlotToolbar(Gtk.Revealer):
         self._patrol_popover.set_child(patrol_box)
 
         # One shared debounced hide, armed on leaving *any* of the video,
-        # an icon, or its popover, and cancelled on entering *any* of
-        # them — each popover renders in its own surface above its button
-        # rather than as a normal child, so there's a gap between the two
-        # a plain per-widget leave-hides-immediately would otherwise
-        # collapse the whole toolbar in the middle of. Showing one popover
-        # hides any other that's open, so only one is ever up at a time.
+        # the toolbar, or an open popover, and cancelled on entering *any*
+        # of them — each popover renders in its own surface above its
+        # button rather than as a normal child, so there's a gap between
+        # the two a plain per-widget leave-hides-immediately would
+        # otherwise collapse the whole toolbar in the middle of. Showing
+        # one popover hides any other that's open, so only one is ever up.
         self._toolbar_hide_id = 0
-        # True while a zoom/focus button is actively pressed — suppresses
-        # auto-hide so the popover can't get torn down mid-hold (which
-        # silently drops the button's "released" signal, meaning the
+        # True while a pad/zoom/focus button is actively pressed —
+        # suppresses auto-hide so the popover can't get torn down mid-hold
+        # (which silently drops the button's "released" signal, meaning the
         # matching Stop command never gets sent and the motor keeps
         # running server-side until manually stopped some other way).
         self._popover_button_held = False
         # True while a Preset/Patrol combo's own dropdown list is open —
         # see schedule_hide().
         self._combo_popup_open = False
+
+        # The toolbar box carries the hide/cancel pair, not the individual
+        # icons: its padding, its inter-button spacing and the Snapshot
+        # button are all part of it, and arming the hide on leaving an icon
+        # for any of those would collapse the toolbar under the pointer.
+        toolbar_hover = Gtk.EventControllerMotion()
+        toolbar_hover.connect("enter", lambda *_a: self.cancel_hide())
+        toolbar_hover.connect("leave", lambda *_a: self.schedule_hide())
+        toolbar.add_controller(toolbar_hover)
 
         for icon_btn, popover in (
             (self._mute_btn, self._volume_popover),
@@ -363,7 +372,6 @@ class SlotToolbar(Gtk.Revealer):
         ):
             icon_hover = Gtk.EventControllerMotion()
             icon_hover.connect("enter", lambda *_a, p=popover: self._show_only_popover(p))
-            icon_hover.connect("leave", lambda *_a: self.schedule_hide())
             icon_btn.add_controller(icon_hover)
 
             popover_hover = Gtk.EventControllerMotion()
@@ -637,7 +645,7 @@ class SlotToolbar(Gtk.Revealer):
         # on two different widgets each time, so hiding immediately on
         # any single leave would collapse things mid-transition.
         if self._popover_button_held:
-            return  # re-armed in _on_{zoom,focus}_release once it isn't
+            return  # re-armed in _on_{ptz,zoom,focus}_release once it isn't
         if self._combo_popup_open:
             # A ComboBoxText's own dropdown list is yet another separate
             # popup surface (below the popover, below the icon) — moving
