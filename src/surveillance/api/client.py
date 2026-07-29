@@ -74,8 +74,37 @@ class ApiError(Exception):
         super().__init__(self.message)
 
 
+class HttpStatusError(Exception):
+    """The server answered with a non-2xx HTTP status.
+
+    Deliberately not an ApiError and deliberately carrying no URL: the
+    login and download requests put the password, the OTP code and the
+    session id in the query string, and httpx's own HTTPStatusError quotes
+    the whole URL in its message, which then reaches the user's screen.
+    HTTP status numbers also collide with Synology's own codes (403 and
+    404 mean two-factor prompts there), so this cannot share ApiError.
+    """
+
+    def __init__(self, status_code: int, reason: str = "") -> None:
+        self.status_code = status_code
+        self.reason = reason
+        super().__init__(f"Server returned HTTP {status_code}{f' {reason}' if reason else ''}")
+
+
 class OtpRequiredError(ApiError):
     """Two-factor authentication code required."""
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """httpx's raise_for_status() puts the full request URL in the message.
+
+    These URLs carry passwd, otp_code and _sid in their query string and
+    the message ends up in user-facing dialogs, so raise our own error
+    with just the status instead.
+    """
+    if resp.is_success:
+        return
+    raise HttpStatusError(resp.status_code, resp.reason_phrase)
 
 
 class SurveillanceAPI:
@@ -123,7 +152,7 @@ class SurveillanceAPI:
                 "query": "all",
             },
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         result = resp.json()
 
         if not result.get("success"):
@@ -184,7 +213,7 @@ class SurveillanceAPI:
         if timeout is not None:
             get_kwargs["timeout"] = timeout
         resp = await self.client.get(path, **get_kwargs)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         result = resp.json()
 
         if not result.get("success"):
@@ -248,7 +277,7 @@ class SurveillanceAPI:
             params.update(extra_params)
 
         resp = await self.client.get(path, params=params)
-        resp.raise_for_status()
+        _raise_for_status(resp)
 
         content_type = resp.headers.get("content-type", "")
         if "json" in content_type:

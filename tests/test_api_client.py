@@ -139,3 +139,30 @@ class TestSurveillanceAPI:
         _ = api.client
         await api.close()
         assert api._client is None
+
+
+class TestHttpStatusError:
+    def test_message_has_no_credentials(self) -> None:
+        import httpx
+
+        from surveillance.api.client import HttpStatusError, _raise_for_status
+
+        req = httpx.Request(
+            "GET",
+            "https://nas:5001/webapi/auth.cgi?api=SYNO.API.Auth&method=Login"
+            "&account=admin&passwd=Sup3rSecret&otp_code=123456&_sid=abc123",
+        )
+        with pytest.raises(HttpStatusError) as excinfo:
+            _raise_for_status(httpx.Response(500, request=req))
+        message = str(excinfo.value)
+        assert excinfo.value.status_code == 500
+        for secret in ("Sup3rSecret", "123456", "abc123", "passwd", "nas:5001"):
+            assert secret not in message
+
+    def test_success_does_not_raise(self) -> None:
+        import httpx
+
+        from surveillance.api.client import _raise_for_status
+
+        req = httpx.Request("GET", "https://nas:5001/webapi/entry.cgi")
+        assert _raise_for_status(httpx.Response(200, request=req)) is None
