@@ -279,7 +279,7 @@ pkg_add gtk4 mpv py3-gobject3 py3-cairo
 
 | Package | Purpose |
 |---|---|
-| `PyGObject` >= 3.48 | GTK4 bindings with native asyncio integration |
+| `PyGObject` >= 3.50 | GTK4 bindings with native asyncio integration |
 | `httpx[http2]` >= 0.27 | Async HTTP/2 client for Synology REST API |
 | `python-mpv` >= 1.0 | libmpv bindings for video rendering |
 | `PyOpenGL` >= 3.1 | OpenGL context for mpv render in GTK4 GLArea |
