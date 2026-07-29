@@ -65,9 +65,13 @@ class SurveillanceApp(Gtk.Application):
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
+        # Actions first: they depend on nothing, and PyGObject swallows an
+        # exception raised in a vfunc override, so anything failing later
+        # here would otherwise leave Ctrl+Q and Logout permanently dead
+        # while the window still comes up.
+        self._setup_actions()
         setup_async()
         self.config = load_config()
-        self._setup_actions()
 
     def apply_theme(self, theme: str) -> None:
         """Apply theme: 'auto' follows OS, 'dark' forces dark, 'light' forces light."""

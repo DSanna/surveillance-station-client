@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -40,6 +41,8 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 import tomli_w
+
+log = logging.getLogger(__name__)
 
 
 def _config_dir() -> Path:
@@ -153,12 +156,29 @@ def _load_theme(general: dict[str, Any]) -> str:
 
 
 def load_config() -> AppConfig:
-    """Load configuration from TOML file."""
+    """Load configuration from TOML file.
+
+    A file we cannot parse is moved to config.toml.bad rather than left in
+    place: the next save would otherwise write defaults straight over
+    whatever was still recoverable in it.
+    """
     if not CONFIG_FILE.exists():
         return AppConfig()
 
-    with open(CONFIG_FILE, "rb") as f:
-        data = tomllib.load(f)
+    try:
+        with open(CONFIG_FILE, "rb") as f:
+            data = tomllib.load(f)
+        return _config_from_data(data)
+    except (OSError, tomllib.TOMLDecodeError, AttributeError, TypeError, ValueError):
+        salvaged = CONFIG_FILE.with_suffix(".toml.bad")
+        with contextlib.suppress(OSError):
+            os.replace(CONFIG_FILE, salvaged)
+        log.exception("Unreadable config, starting with defaults; kept a copy at %s", salvaged)
+        return AppConfig()
+
+
+def _config_from_data(data: dict[str, Any]) -> AppConfig:
+    """Build an AppConfig from already-parsed TOML."""
 
     profiles: dict[str, ConnectionProfile] = {}
     for name, pdata in data.get("profiles", {}).items():
