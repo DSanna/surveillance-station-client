@@ -40,7 +40,7 @@ from gi.repository import Gtk  # type: ignore[import-untyped]
 from surveillance.api.auth import login
 from surveillance.api.client import OtpRequiredError, SurveillanceAPI
 from surveillance.config import ConnectionProfile, add_profile
-from surveillance.credentials import get_credentials, store_credentials
+from surveillance.credentials import delete_credentials, get_credentials, store_credentials
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -307,6 +307,11 @@ class LoginDialog(Gtk.Window):
         # no working keyring, and the login itself has already succeeded.
         if self.remember_check.get_active():
             store_credentials(profile.name, username, password)
+        else:
+            # Unticking it has to remove what a previous login stored,
+            # otherwise the old password stays in the keyring and comes
+            # back in the form the next time the profile is selected.
+            delete_credentials(profile.name)
 
     def _on_connect_error(self, error: Exception) -> None:
         if isinstance(error, OtpRequiredError):
