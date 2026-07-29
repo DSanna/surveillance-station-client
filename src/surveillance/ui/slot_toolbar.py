@@ -90,16 +90,9 @@ class SlotToolbar(Gtk.Revealer):
         toolbar.append(self._mute_btn)
         self.update_mute_icon()
 
-        # PTZ pad — only shown for PTZ-capable cameras. Reuses
-        # services.ptz.move() (v2, string-direction API) rather than
-        # the newer v6/numeric-direction Move DSM's own web UI uses for
-        # its "hover over the video, cursor becomes an arrow" click-to-pan
-        # mode — confirmed live (network capture) that mode sends
-        # direction as a number in steps of 8 (0/8/16/24 = right/up/
-        # left/down seen so far), with corner arrows in between implying
-        # it supports finer, possibly diagonal angles that v2's fixed
-        # up/down/left/right/home strings can't express. Not needed here
-        # since this is a discrete 4-button pad, not a free-angle one.
+        # PTZ pad — services.ptz.move(), a discrete 4-button pad, so the
+        # v2 up/down/left/right/home strings are enough; the newer
+        # numeric-direction Move exists for free-angle click-to-pan.
         self._ptz_btn = Gtk.Button()
         self._ptz_btn.add_css_class("flat")
         # No single stock icon reads as "pan/tilt", so overlay the
@@ -130,7 +123,7 @@ class SlotToolbar(Gtk.Revealer):
         self._zoom_btn.set_child(
             _icon_overlay(
                 ("system-search-symbolic", ICON_SIZE, 0),
-                ("list-add-symbolic", ICON_SIZE // 2, plus_offset),
+                ("list-add-symbolic", ICON_SIZE // 3, plus_offset),
             )
         )
         self._zoom_btn.set_visible(False)  # shown in assign() only if the camera is PTZ-capable
@@ -173,27 +166,15 @@ class SlotToolbar(Gtk.Revealer):
 
         # Volume popover — revealed on hovering the mute button specifically
         # (not the whole toolbar), matching DSM's own Monitor Center.
-        self._volume_popover = Gtk.Popover()
-        self._volume_popover.set_autohide(False)
-        self._volume_popover.set_position(Gtk.PositionType.TOP)
-        self._volume_popover.set_parent(self._mute_btn)
         self._volume_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self._volume_scale.set_size_request(100, -1)
         self._volume_scale.set_draw_value(False)
         self._volume_scale.set_value(50)
         self._volume_scale.connect("value-changed", self._on_volume_changed)
-        self._volume_popover.set_child(self._volume_scale)
+        self._volume_popover = self._make_popover(self._mute_btn, self._volume_scale)
 
-        # PTZ popover — 4 direction buttons (same Start/Stop press-release
-        # pattern as Zoom/Focus below, calling services.ptz.move() — see
-        # the comment where _ptz_btn is created for why v2/string rather
-        # than the newer v6/numeric Move DSM's own hover-video mode uses)
-        # plus a center Home button, single-click (direction="home", no
-        # Start/Stop suffix).
-        self._ptz_popover = Gtk.Popover()
-        self._ptz_popover.set_autohide(False)
-        self._ptz_popover.set_position(Gtk.PositionType.TOP)
-        self._ptz_popover.set_parent(self._ptz_btn)
+        # PTZ popover — 4 press-and-hold direction buttons plus a Home
+        # button, which is a single click (direction "home", no suffix).
         ptz_pad = Gtk.Grid()
         ptz_pad.set_row_homogeneous(True)
         ptz_pad.set_column_homogeneous(True)
@@ -208,84 +189,30 @@ class SlotToolbar(Gtk.Revealer):
         ):
             dir_btn = Gtk.Button()
             dir_btn.set_icon_name(icon)
-            dir_gesture = Gtk.GestureClick()
-            dir_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-            dir_gesture.connect("pressed", self._on_ptz_press, direction)
-            dir_gesture.connect("released", self._on_ptz_release, direction)
-            dir_btn.add_controller(dir_gesture)
+            self._attach_hold(dir_btn, "ptz", direction)
             ptz_pad.attach(dir_btn, col, row, 1, 1)
         home_btn = Gtk.Button()
         home_btn.set_icon_name("go-home-symbolic")
         home_btn.set_tooltip_text("Home")
-        # A plain "clicked" signal isn't reliable for a button living
-        # inside this hover-managed popover (same root cause as the
-        # direction buttons needing a capture-phase GestureClick — the
-        # button's own default-phase click gesture can lose the sequence
-        # to our hover handling), so this uses the same fix.
         home_gesture = Gtk.GestureClick()
         home_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         home_gesture.connect("released", self._on_ptz_home)
         home_btn.add_controller(home_gesture)
         ptz_pad.attach(home_btn, 1, 1, 1, 1)
-        self._ptz_popover.set_child(ptz_pad)
+        self._ptz_popover = self._make_popover(self._ptz_btn, ptz_pad)
 
-        # Zoom popover — 2 buttons, Start/Stop press-release pattern
-        # calling services.ptz.zoom() (text +/- labels).
-        self._zoom_popover = Gtk.Popover()
-        self._zoom_popover.set_autohide(False)
-        self._zoom_popover.set_position(Gtk.PositionType.TOP)
-        self._zoom_popover.set_parent(self._zoom_btn)
-        zoom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        zoom_out_btn = Gtk.Button(label="\u2212")
-        zoom_out_btn.set_tooltip_text("Zoom Out")
-        zoom_out_gesture = Gtk.GestureClick()
-        zoom_out_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        zoom_out_gesture.connect("pressed", self._on_zoom_press, "out")
-        zoom_out_gesture.connect("released", self._on_zoom_release, "out")
-        zoom_out_btn.add_controller(zoom_out_gesture)
-        zoom_box.append(zoom_out_btn)
-        zoom_in_btn = Gtk.Button(label="+")
-        zoom_in_btn.set_tooltip_text("Zoom In")
-        zoom_in_gesture = Gtk.GestureClick()
-        zoom_in_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        zoom_in_gesture.connect("pressed", self._on_zoom_press, "in")
-        zoom_in_gesture.connect("released", self._on_zoom_release, "in")
-        zoom_in_btn.add_controller(zoom_in_gesture)
-        zoom_box.append(zoom_in_btn)
-        self._zoom_popover.set_child(zoom_box)
-
-        # Focus popover — same shape as Zoom's, calling services.ptz.focus().
-        self._focus_popover = Gtk.Popover()
-        self._focus_popover.set_autohide(False)
-        self._focus_popover.set_position(Gtk.PositionType.TOP)
-        self._focus_popover.set_parent(self._focus_btn)
-        focus_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        focus_out_btn = Gtk.Button(label="\u2212")
-        focus_out_btn.set_tooltip_text("Focus Out")
-        focus_out_gesture = Gtk.GestureClick()
-        focus_out_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        focus_out_gesture.connect("pressed", self._on_focus_press, "out")
-        focus_out_gesture.connect("released", self._on_focus_release, "out")
-        focus_out_btn.add_controller(focus_out_gesture)
-        focus_box.append(focus_out_btn)
-        focus_in_btn = Gtk.Button(label="+")
-        focus_in_btn.set_tooltip_text("Focus In")
-        focus_in_gesture = Gtk.GestureClick()
-        focus_in_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        focus_in_gesture.connect("pressed", self._on_focus_press, "in")
-        focus_in_gesture.connect("released", self._on_focus_release, "in")
-        focus_in_btn.add_controller(focus_in_gesture)
-        focus_box.append(focus_in_btn)
-        self._focus_popover.set_child(focus_box)
+        # Zoom and Focus popovers — a minus/plus pair each, press and hold.
+        self._zoom_popover = self._make_popover(
+            self._zoom_btn, self._plus_minus_box("zoom", "Zoom Out", "Zoom In")
+        )
+        self._focus_popover = self._make_popover(
+            self._focus_btn, self._plus_minus_box("focus", "Focus Out", "Focus In")
+        )
 
         # Preset popover — a single dropdown, populated via set_presets()
         # once the camera's preset list has loaded (LiveView owns the API
         # call, same split as zoom/focus/PTZ). Selecting an entry jumps
         # immediately.
-        self._preset_popover = Gtk.Popover()
-        self._preset_popover.set_autohide(False)
-        self._preset_popover.set_position(Gtk.PositionType.TOP)
-        self._preset_popover.set_parent(self._preset_btn)
         self._preset_combo = Gtk.ComboBoxText()
         self._preset_combo.connect("changed", self._on_preset_changed)
         # Opening the combo's own dropdown list is a separate popup
@@ -303,21 +230,17 @@ class SlotToolbar(Gtk.Revealer):
         # silently a no-op. Clearing the selection whenever the popover
         # closes means the next pick is always a real change, even if it's
         # the same preset as last time.
+        self._preset_popover = self._make_popover(self._preset_btn, self._preset_combo)
         self._preset_popover.connect("closed", lambda _p: self._preset_combo.set_active(-1))
-        self._preset_popover.set_child(self._preset_combo)
 
         # Patrol popover — a dropdown, same shape as Preset's. Selecting a
         # route asks the NAS to run it; Surveillance Station drives the
         # camera from there, so there is nothing to stop client-side.
-        self._patrol_popover = Gtk.Popover()
-        self._patrol_popover.set_autohide(False)
-        self._patrol_popover.set_position(Gtk.PositionType.TOP)
-        self._patrol_popover.set_parent(self._patrol_btn)
         self._patrol_combo = Gtk.ComboBoxText()
         self._patrol_combo.connect("notify::popup-shown", self._on_combo_popup_shown)
         self._patrol_combo.connect("changed", self._on_patrol_changed)
+        self._patrol_popover = self._make_popover(self._patrol_btn, self._patrol_combo)
         self._patrol_popover.connect("closed", lambda _p: self._patrol_combo.set_active(-1))
-        self._patrol_popover.set_child(self._patrol_combo)
 
         # One shared debounced hide, armed on leaving *any* of the video,
         # the toolbar, or an open popover, and cancelled on entering *any*
@@ -371,6 +294,64 @@ class SlotToolbar(Gtk.Revealer):
         self._ptz_callback: object = None
         self._preset_callback: object = None
         self._patrol_callback: object = None
+
+    def _make_popover(self, parent: Gtk.Widget, child: Gtk.Widget) -> Gtk.Popover:
+        """A popover pinned above *parent*. Autohide is off: this class's
+        own hover tracking decides when it goes away."""
+        popover = Gtk.Popover()
+        popover.set_autohide(False)
+        popover.set_position(Gtk.PositionType.TOP)
+        popover.set_parent(parent)
+        popover.set_child(child)
+        return popover
+
+    def _plus_minus_box(self, axis: str, out_tooltip: str, in_tooltip: str) -> Gtk.Box:
+        """The minus/plus button pair the Zoom and Focus popovers share."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        for label, tooltip, control in (("\u2212", out_tooltip, "out"), ("+", in_tooltip, "in")):
+            button = Gtk.Button(label=label)
+            button.set_tooltip_text(tooltip)
+            self._attach_hold(button, axis, control)
+            box.append(button)
+        return box
+
+    def _attach_hold(self, button: Gtk.Button, axis: str, control: str) -> None:
+        """Make *button* send Start while held and Stop on release.
+
+        A capture-phase gesture rather than "clicked": these buttons live
+        in a hover-managed popover, and the button's own default-phase
+        click gesture can lose the sequence to that hover handling.
+        """
+        gesture = Gtk.GestureClick()
+        gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        gesture.connect("pressed", self._on_hold, axis, control, "Start")
+        gesture.connect("released", self._on_hold, axis, control, "Stop")
+        button.add_controller(gesture)
+
+    def _on_hold(
+        self,
+        gesture: Gtk.GestureClick,
+        n_press: int,
+        x: float,
+        y: float,
+        axis: str,
+        control: str,
+        move_type: str,
+    ) -> None:
+        held = move_type == "Start"
+        # Suppress auto-hide while the button is down: tearing the popover
+        # down mid-hold drops the "released" signal, so the matching Stop
+        # never gets sent and the motor keeps running server-side.
+        self._popover_button_held = held
+        if held:
+            self.cancel_hide()
+        callback = {
+            "ptz": self._ptz_callback,
+            "zoom": self._zoom_callback,
+            "focus": self._focus_callback,
+        }[axis]
+        if callback and callable(callback):
+            callback(self.index, control, move_type)
 
     def set_snapshot_trigger(self, callback: object) -> None:
         """Called once by the owning CameraSlot at construction — the
@@ -462,54 +443,9 @@ class SlotToolbar(Gtk.Revealer):
         "down", "left", or "right", move_type is "Start" or "Stop"."""
         self._ptz_callback = callback
 
-    def _on_ptz_press(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
-    ) -> None:
-        self._popover_button_held = True
-        self.cancel_hide()
-        if self._ptz_callback and callable(self._ptz_callback):
-            self._ptz_callback(self.index, direction, "Start")
-
-    def _on_ptz_release(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
-    ) -> None:
-        self._popover_button_held = False
-        if self._ptz_callback and callable(self._ptz_callback):
-            self._ptz_callback(self.index, direction, "Stop")
-
     def _on_ptz_home(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
         if self._ptz_callback and callable(self._ptz_callback):
             self._ptz_callback(self.index, "home", "")
-
-    def _on_zoom_press(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
-    ) -> None:
-        self._popover_button_held = True
-        self.cancel_hide()
-        if self._zoom_callback and callable(self._zoom_callback):
-            self._zoom_callback(self.index, direction, "Start")
-
-    def _on_zoom_release(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, direction: str
-    ) -> None:
-        self._popover_button_held = False
-        if self._zoom_callback and callable(self._zoom_callback):
-            self._zoom_callback(self.index, direction, "Stop")
-
-    def _on_focus_press(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, control: str
-    ) -> None:
-        self._popover_button_held = True
-        self.cancel_hide()
-        if self._focus_callback and callable(self._focus_callback):
-            self._focus_callback(self.index, control, "Start")
-
-    def _on_focus_release(
-        self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, control: str
-    ) -> None:
-        self._popover_button_held = False
-        if self._focus_callback and callable(self._focus_callback):
-            self._focus_callback(self.index, control, "Stop")
 
     def set_preset_callback(self, callback: object) -> None:
         """Callback(slot_index, preset_id)."""
@@ -612,23 +548,26 @@ class SlotToolbar(Gtk.Revealer):
         video area."""
         self.schedule_hide()
 
+    def _ptz_buttons(self) -> tuple[Gtk.Button, ...]:
+        return (
+            self._ptz_btn,
+            self._zoom_btn,
+            self._focus_btn,
+            self._preset_btn,
+            self._patrol_btn,
+        )
+
     def assign(self, camera: Camera) -> None:
         self._mute_btn.set_visible(camera.has_audio)
-        self._ptz_btn.set_visible(camera.is_ptz)
-        self._zoom_btn.set_visible(camera.is_ptz)
-        self._focus_btn.set_visible(camera.is_ptz)
-        self._preset_btn.set_visible(camera.is_ptz)
-        self._patrol_btn.set_visible(camera.is_ptz)
+        for button in self._ptz_buttons():
+            button.set_visible(camera.is_ptz)
 
     def clear(self) -> None:
         self.player.set_mute(True)
         self.update_mute_icon()
         self._mute_btn.set_visible(False)
-        self._ptz_btn.set_visible(False)
-        self._zoom_btn.set_visible(False)
-        self._focus_btn.set_visible(False)
-        self._preset_btn.set_visible(False)
-        self._patrol_btn.set_visible(False)
+        for button in self._ptz_buttons():
+            button.set_visible(False)
         self._preset_combo.remove_all()
         self._patrol_combo.remove_all()
         self.cancel_hide()
