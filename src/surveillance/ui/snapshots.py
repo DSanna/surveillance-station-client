@@ -774,7 +774,9 @@ class SnapshotsView(Gtk.Box):
         if self._last_download_dir:
             from gi.repository import Gio
 
-            uri = f"file://{self._last_download_dir}"
+            # Path.as_uri() percent-escapes; a bare f-string leaves "#"
+            # to truncate the path and "%" to form a broken escape.
+            uri = Path(self._last_download_dir).as_uri()
             try:
                 Gio.AppInfo.launch_default_for_uri(uri, None)
             except Exception as exc:
