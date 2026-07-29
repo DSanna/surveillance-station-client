@@ -274,10 +274,6 @@ class LoginDialog(Gtk.Window):
         # Save profile
         add_profile(self.app.config, profile)
 
-        # Save credentials if requested
-        if self.remember_check.get_active():
-            store_credentials(profile.name, username, password)
-
         self.app.set_api(api)
 
         # Get parent window and tell it to load cameras
@@ -286,6 +282,11 @@ class LoginDialog(Gtk.Window):
             parent.on_connected()
 
         self.close()
+
+        # Last, because it is the only step that can fail on a machine with
+        # no working keyring, and the login itself has already succeeded.
+        if self.remember_check.get_active():
+            store_credentials(profile.name, username, password)
 
     def _on_connect_error(self, error: Exception) -> None:
         if isinstance(error, OtpRequiredError):

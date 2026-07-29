@@ -28,25 +28,43 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 
 import keyring
 
 SERVICE_NAME = "surveillance-station"
 
+log = logging.getLogger(__name__)
 
-def store_credentials(profile_name: str, username: str, password: str) -> None:
-    """Store credentials for a connection profile."""
-    keyring.set_password(SERVICE_NAME, f"{profile_name}:username", username)
-    keyring.set_password(SERVICE_NAME, f"{profile_name}:password", password)
+
+def store_credentials(profile_name: str, username: str, password: str) -> bool:
+    """Store credentials for a connection profile.
+
+    Returns False when the keyring is unavailable or locked. Remembering
+    credentials is a convenience, so the caller carries on without it
+    rather than failing the login it has already completed.
+    """
+    try:
+        keyring.set_password(SERVICE_NAME, f"{profile_name}:username", username)
+        keyring.set_password(SERVICE_NAME, f"{profile_name}:password", password)
+    except keyring.errors.KeyringError:
+        log.warning("Could not save credentials to the keyring for profile %s", profile_name)
+        return False
+    return True
 
 
 def get_credentials(profile_name: str) -> tuple[str, str] | None:
     """Retrieve credentials for a connection profile.
 
-    Returns (username, password) or None if not found.
+    Returns (username, password), or None if they are not stored or the
+    keyring is unavailable or locked.
     """
-    username = keyring.get_password(SERVICE_NAME, f"{profile_name}:username")
-    password = keyring.get_password(SERVICE_NAME, f"{profile_name}:password")
+    try:
+        username = keyring.get_password(SERVICE_NAME, f"{profile_name}:username")
+        password = keyring.get_password(SERVICE_NAME, f"{profile_name}:password")
+    except keyring.errors.KeyringError:
+        log.warning("Could not read credentials from the keyring for profile %s", profile_name)
+        return None
     if username is None or password is None:
         return None
     return username, password
@@ -54,7 +72,7 @@ def get_credentials(profile_name: str) -> tuple[str, str] | None:
 
 def delete_credentials(profile_name: str) -> None:
     """Delete credentials for a connection profile."""
-    with contextlib.suppress(keyring.errors.PasswordDeleteError):
+    with contextlib.suppress(keyring.errors.KeyringError):
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:username")
-    with contextlib.suppress(keyring.errors.PasswordDeleteError):
+    with contextlib.suppress(keyring.errors.KeyringError):
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:password")
