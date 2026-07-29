@@ -115,6 +115,7 @@ class MpvGLArea(Gtk.GLArea):
         self._pan_x: float = 0.0
         self._pan_y: float = 0.0
         self._muted = False
+        self._volume = 100
 
         self.set_auto_render(False)
         self.set_hexpand(True)
@@ -147,6 +148,7 @@ class MpvGLArea(Gtk.GLArea):
                 demuxer_lavf_o="rtsp_transport=tcp",
                 tls_verify=self._tls_verify,
                 mute=self._muted,
+                volume=self._volume,
             )
 
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
@@ -422,7 +424,9 @@ class MpvGLArea(Gtk.GLArea):
 
     def set_volume(self, volume: int) -> None:
         """Set volume (0-100). Independent of mute — the level set here is
-        what's restored on unmute, silent or not in the meantime."""
+        what's restored on unmute, silent or not in the meantime. Stored
+        whether or not mpv has been realized yet, same as set_mute()."""
+        self._volume = volume
         if self._mpv:
             with contextlib.suppress(Exception):
                 self._mpv.volume = volume
