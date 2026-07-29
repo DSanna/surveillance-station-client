@@ -101,12 +101,17 @@ class CameraSlot(Gtk.Box):
         self._toolbar.set_snapshot_trigger(self._take_snapshot)
         self._player_overlay.add_overlay(self._toolbar)
 
-        slot_hover = Gtk.EventControllerMotion()
-        slot_hover.connect(
+        # On the player, not the overlay: the toolbar is an overlay child,
+        # so a pointer crossing between the two never leaves the overlay
+        # and it would emit nothing. Watching the video itself makes that
+        # crossing a leave/enter pair the toolbar's own hover tracking
+        # already knows how to handle.
+        video_hover = Gtk.EventControllerMotion()
+        video_hover.connect(
             "enter", lambda *_a: self._toolbar.notify_video_hover_enter(bool(self.camera))
         )
-        slot_hover.connect("leave", lambda *_a: self._toolbar.notify_video_hover_leave())
-        self._player_overlay.add_controller(slot_hover)
+        video_hover.connect("leave", lambda *_a: self._toolbar.notify_video_hover_leave())
+        self.player.add_controller(video_hover)
 
         # Click handlers — one on the header, one on the player.
         # GLArea consumes events so a CAPTURE gesture on the parent Box
