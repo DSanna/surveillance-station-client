@@ -186,18 +186,9 @@ class TestPtzPreset:
 
 class TestPtzPatrol:
     def test_from_api(self) -> None:
-        patrol = PtzPatrol.from_api(
-            {"id": 1, "name": "Perimeter", "sequence": [6, 7, 11, 14], "stayTime": 10}
-        )
+        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
         assert patrol.id == 1
         assert patrol.name == "Perimeter"
-        assert patrol.sequence == [6, 7, 11, 14]
-        assert patrol.stay_time == 10
-
-    def test_from_api_defaults(self) -> None:
-        patrol = PtzPatrol.from_api({"id": 1, "name": "Perimeter"})
-        assert patrol.sequence == []
-        assert patrol.stay_time == 5
 
 
 class TestApiInfo:

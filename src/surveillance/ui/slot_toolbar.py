@@ -65,9 +65,9 @@ def _icon_overlay(*icons: tuple[str, int, int]) -> Gtk.Overlay:
 class SlotToolbar(Gtk.Revealer):
     """Hover-revealed toolbar over a Live View slot's video.
 
-    Mute/volume, push-to-talk placeholder, PTZ/Zoom/Focus/Preset/Patrol
-    (shown only for PTZ-capable cameras), and Snapshot — slides up from
-    the bottom of the video on hover, matching DSM's own Monitor Center.
+    Mute/volume, PTZ/Zoom/Focus/Preset/Patrol (shown only for PTZ-capable
+    cameras), and Snapshot — slides up from the bottom of the video on
+    hover, matching DSM's own Monitor Center.
     """
 
     def __init__(self, index: int, player: MpvGLArea) -> None:
@@ -154,8 +154,7 @@ class SlotToolbar(Gtk.Revealer):
         self._preset_btn.set_tooltip_text("Preset")
         toolbar.append(self._preset_btn)
 
-        # Patrol — needs an explicit Start button (unlike Preset): starting
-        # a patrol is a bigger action than jumping to a fixed position.
+        # Patrol — like Preset, starts on selection.
         self._patrol_btn = Gtk.Button()
         self._patrol_btn.add_css_class("flat")
         self._patrol_btn.set_icon_name("media-playlist-repeat-symbolic")
@@ -307,21 +306,18 @@ class SlotToolbar(Gtk.Revealer):
         self._preset_popover.connect("closed", lambda _p: self._preset_combo.set_active(-1))
         self._preset_popover.set_child(self._preset_combo)
 
-        # Patrol popover — dropdown + explicit Start/Stop toggle button.
+        # Patrol popover — a dropdown, same shape as Preset's. Selecting a
+        # route asks the NAS to run it; Surveillance Station drives the
+        # camera from there, so there is nothing to stop client-side.
         self._patrol_popover = Gtk.Popover()
         self._patrol_popover.set_autohide(False)
         self._patrol_popover.set_position(Gtk.PositionType.TOP)
         self._patrol_popover.set_parent(self._patrol_btn)
-        patrol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self._patrol_combo = Gtk.ComboBoxText()
         self._patrol_combo.connect("notify::popup-shown", self._on_combo_popup_shown)
-        self._patrol_combo.connect("changed", self._on_patrol_selection_changed)
-        patrol_box.append(self._patrol_combo)
-        self._patrol_start_btn = Gtk.Button(label="Start")
-        self._patrol_start_btn.set_sensitive(False)  # enabled once a patrol is selected
-        self._patrol_start_btn.connect("clicked", self._on_patrol_toggle_clicked)
-        patrol_box.append(self._patrol_start_btn)
-        self._patrol_popover.set_child(patrol_box)
+        self._patrol_combo.connect("changed", self._on_patrol_changed)
+        self._patrol_popover.connect("closed", lambda _p: self._patrol_combo.set_active(-1))
+        self._patrol_popover.set_child(self._patrol_combo)
 
         # One shared debounced hide, armed on leaving *any* of the video,
         # the toolbar, or an open popover, and cancelled on entering *any*
@@ -374,15 +370,7 @@ class SlotToolbar(Gtk.Revealer):
         self._focus_callback: object = None
         self._ptz_callback: object = None
         self._preset_callback: object = None
-        # Patrol is run client-side (see PtzPatrol's docstring) by
-        # repeatedly invoking _preset_callback through the patrol's own
-        # preset sequence on a GLib timer — there's no separate
-        # "patrol" callback/API call involved.
-        self._patrols: list[PtzPatrol] = []
-        self._patrol_running = False
-        self._patrol_sequence: list[int] = []
-        self._patrol_step = 0
-        self._patrol_timer_id = 0
+        self._patrol_callback: object = None
 
     def set_snapshot_trigger(self, callback: object) -> None:
         """Called once by the owning CameraSlot at construction — the
@@ -534,14 +522,15 @@ class SlotToolbar(Gtk.Revealer):
         for p in presets:
             self._preset_combo.append(str(p.id), p.name)
 
+    def set_patrol_callback(self, callback: object) -> None:
+        """Callback(slot_index, patrol_id)."""
+        self._patrol_callback = callback
+
     def set_patrols(self, patrols: list[PtzPatrol]) -> None:
         """Populate the Patrol dropdown — see set_presets()."""
-        self._stop_patrol()
-        self._patrols = patrols
         self._patrol_combo.remove_all()
         for p in patrols:
             self._patrol_combo.append(str(p.id), p.name)
-        self._patrol_start_btn.set_sensitive(False)
 
     def _on_preset_changed(self, combo: Gtk.ComboBoxText) -> None:
         preset_id_str = combo.get_active_id()
@@ -550,46 +539,12 @@ class SlotToolbar(Gtk.Revealer):
         if self._preset_callback and callable(self._preset_callback):
             self._preset_callback(self.index, int(preset_id_str))
 
-    def _on_patrol_selection_changed(self, combo: Gtk.ComboBoxText) -> None:
-        self._patrol_start_btn.set_sensitive(combo.get_active_id() is not None)
-
-    def _on_patrol_toggle_clicked(self, btn: Gtk.Button) -> None:
-        if self._patrol_running:
-            self._stop_patrol()
-            return
-        patrol_id_str = self._patrol_combo.get_active_id()
+    def _on_patrol_changed(self, combo: Gtk.ComboBoxText) -> None:
+        patrol_id_str = combo.get_active_id()
         if not patrol_id_str:
             return
-        patrol = next((p for p in self._patrols if p.id == int(patrol_id_str)), None)
-        if not patrol or not patrol.sequence:
-            return
-        self._start_patrol(patrol)
-
-    def _start_patrol(self, patrol: PtzPatrol) -> None:
-        self._patrol_running = True
-        self._patrol_sequence = patrol.sequence
-        self._patrol_step = 0
-        self._patrol_start_btn.set_label("Stop")
-        self._advance_patrol()  # move to the first position immediately
-        self._patrol_timer_id = GLib.timeout_add_seconds(
-            max(1, patrol.stay_time), self._advance_patrol
-        )
-
-    def _advance_patrol(self) -> bool:
-        if not self._patrol_running or not self._patrol_sequence:
-            return False
-        preset_id = self._patrol_sequence[self._patrol_step]
-        self._patrol_step = (self._patrol_step + 1) % len(self._patrol_sequence)
-        if self._preset_callback and callable(self._preset_callback):
-            self._preset_callback(self.index, preset_id)
-        return True  # keep the GLib timer repeating
-
-    def _stop_patrol(self) -> None:
-        self._patrol_running = False
-        if self._patrol_timer_id:
-            GLib.source_remove(self._patrol_timer_id)
-            self._patrol_timer_id = 0
-        self._patrol_start_btn.set_label("Start")
+        if self._patrol_callback and callable(self._patrol_callback):
+            self._patrol_callback(self.index, int(patrol_id_str))
 
     def _on_combo_popup_shown(self, combo: Gtk.ComboBoxText, pspec: object) -> None:
         self._combo_popup_open = combo.get_property("popup-shown")
@@ -675,8 +630,6 @@ class SlotToolbar(Gtk.Revealer):
         self._preset_btn.set_visible(False)
         self._patrol_btn.set_visible(False)
         self._preset_combo.remove_all()
-        self._stop_patrol()  # cancels the GLib timer so it can't outlive this camera
-        self._patrols = []
         self._patrol_combo.remove_all()
         self.cancel_hide()
         self._hide_toolbar()

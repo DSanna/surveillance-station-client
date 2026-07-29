@@ -219,6 +219,9 @@ class CameraSlot(Gtk.Box):
     def set_preset_callback(self, callback: object) -> None:
         self._toolbar.set_preset_callback(callback)
 
+    def set_patrol_callback(self, callback: object) -> None:
+        self._toolbar.set_patrol_callback(callback)
+
     def set_presets(self, presets: list[PtzPreset]) -> None:
         self._toolbar.set_presets(presets)
 
@@ -399,6 +402,7 @@ class LiveView(Gtk.Box):
             slot.set_focus_callback(self._on_slot_focus)
             slot.set_ptz_callback(self._on_slot_ptz_move)
             slot.set_preset_callback(self._on_slot_preset)
+            slot.set_patrol_callback(self._on_slot_patrol)
             self.grid.attach(slot, c, r, 1, 1)
             self._slots.append(slot)
 
@@ -719,6 +723,15 @@ class LiveView(Gtk.Box):
         run_async(
             ptz.go_preset(self.app.api, camera.id, preset_id),
             error_callback=lambda e: log.error("PTZ go_preset failed: %s", e),
+        )
+
+    def _on_slot_patrol(self, slot_idx: int, patrol_id: int) -> None:
+        camera = self._slots[slot_idx].camera
+        if not camera or not self.app.api:
+            return
+        run_async(
+            ptz.run_patrol(self.app.api, camera.id, patrol_id),
+            error_callback=lambda e: log.error("PTZ run_patrol failed: %s", e),
         )
 
     def _on_slot_open_1x1(self, slot_idx: int) -> None:

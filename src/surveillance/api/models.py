@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 
 
@@ -239,25 +239,17 @@ class PtzPreset:
 
 @dataclass
 class PtzPatrol:
-    """PTZ patrol route — an ordered list of preset IDs with a dwell time
-    between each. DSM's own web UI runs a patrol client-side (repeatedly
-    calling PTZ::GoPreset through the sequence, looping until stopped)
-    rather than through any single continuous "run patrol" server command
-    — confirmed via live network capture — so callers wanting the same
-    behavior should walk sequence/stay_time themselves via ptz.go_preset()."""
+    """PTZ patrol route. Run it with ptz.run_patrol(); the route itself
+    lives on the NAS."""
 
     id: int
     name: str
-    sequence: list[int] = field(default_factory=list)
-    stay_time: int = 5
 
     @classmethod
     def from_api(cls, data: dict) -> PtzPatrol:  # type: ignore[type-arg]
         return cls(
             id=data.get("id", 0),
             name=data.get("name", ""),
-            sequence=data.get("sequence", []),
-            stay_time=data.get("stayTime", 5),
         )
 
 
