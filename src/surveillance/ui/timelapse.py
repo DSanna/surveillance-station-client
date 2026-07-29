@@ -238,6 +238,14 @@ class TimeLapseView(Gtk.Box):
         self._total = total
         log.debug("Loaded %d time lapse recordings (total=%d)", len(recordings), total)
 
+        if self._offset >= total and total:
+            # Deleting the last row of the last page shrinks the total under
+            # our feet; only the response reveals it, so step back and
+            # refetch rather than showing an empty "Page 2 of 1".
+            self._offset = ((total - 1) // _PAGE_SIZE) * _PAGE_SIZE
+            self._load_recordings()
+            return
+
         # Clear list
         while child := self.row_box.get_first_child():
             self.row_box.remove(child)

@@ -484,6 +484,14 @@ class RecordingsView(Gtk.Box):
         self._recordings = recordings
         self._total = total
         log.debug("Loaded %d recordings (total=%d)", len(recordings), total)
+
+        if self._offset >= total and total:
+            # Deleting the last row of the last page shrinks the total under
+            # our feet; only the response reveals it, so step back and
+            # refetch rather than showing an empty "Page 2 of 1".
+            self._offset = ((total - 1) // 50) * 50
+            self._load_recordings()
+            return
         if recordings:
             r = recordings[0]
             log.debug("First rec: id=%d cam='%s' cam_id=%d", r.id, r.camera_name, r.camera_id)

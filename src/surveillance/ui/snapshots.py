@@ -533,6 +533,13 @@ class SnapshotsView(Gtk.Box):
             self.row_box.append(row_box)
 
         total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        if self._page >= total_pages:
+            # Deleting the last row of the last page shrinks the total under
+            # our feet; only the response reveals it, so step back and
+            # refetch rather than showing an empty "Page 2 of 1".
+            self._page = total_pages - 1
+            self._load_snapshots()
+            return
         self.prev_btn.set_sensitive(self._page > 0)
         self.next_btn.set_sensitive(self._page < total_pages - 1)
         self.page_label.set_text(f"Page {self._page + 1} of {total_pages} ({total} total)")
