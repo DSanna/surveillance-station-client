@@ -43,10 +43,12 @@ PROTOCOL_LABELS: dict[str, str] = {
     "direct": "Direct RTSP URL",
 }
 
-# Protocols whose stream URL is an RTSP one, the only ones an audio track
-# reaches mpv over. "auto" and "websocket" go through ws_bridge, which
-# pipes bare NAL units with no container to carry audio; "mjpeg" is a
-# still-image stream.
+# Protocols whose stream URL is an RTSP one, so audio reaches mpv as soon
+# as the camera has a track. "auto" and "websocket" are not here because
+# they only carry audio when ws_bridge can mux it (see its module
+# docstring), which is not known until DSM reports the codec --
+# liveview's _update_slot_audio handles that case separately. "mjpeg" is
+# a still-image stream and never has audio.
 AUDIO_PROTOCOLS = frozenset({"rtsp", "rtsp_over_http", "multicast", "direct"})
 
 # Map protocol name -> API response field

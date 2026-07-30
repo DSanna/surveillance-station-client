@@ -205,7 +205,6 @@ class WebSocketBridge:
         # rate, and only then does ffmpeg start.
         self._aac_sample_rate = 16000
         self._aac_intervals: list[float] = []
-        self._aac_rate_locked = False
         self._aac_detecting = False
         self._pending_video_codec: str = ""
         self._aac_video_buffer: list[bytes] = []
@@ -538,7 +537,6 @@ class WebSocketBridge:
             await self._fall_back_to_video_only()
             return
 
-        self._aac_rate_locked = True
         log.debug(
             "WebSocket bridge for %s: AAC sample rate %dHz, starting muxed pipeline "
             "(%d buffered video, %d buffered audio frames)",
