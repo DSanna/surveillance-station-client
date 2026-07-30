@@ -240,10 +240,12 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 
 export LD_LIBRARY_PATH="${BUNDLEDIR}:${LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-# Bundled ffmpeg binary lives alongside the app itself (see BINARIES above) --
-# put it first on PATH so the subprocess lookup in ws_bridge.py finds it
-# even on a system with no ffmpeg installed at all.
-export PATH="${BUNDLEDIR}:${PATH}"
+# Bundled ffmpeg binary (see BINARIES above) -- put it first on PATH so the
+# subprocess lookup in ws_bridge.py finds it even on a system with no ffmpeg
+# installed at all. PyInstaller 6 puts collected binaries in _internal/ and
+# leaves only the launcher at the top, so both go on PATH: _internal is where
+# it actually lands today, the parent covers the pre-6 layout.
+export PATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}:${PATH}"
 
 exec "${BUNDLEDIR}/Surveillance" "$@"
 EOF
