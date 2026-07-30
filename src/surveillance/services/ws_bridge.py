@@ -557,17 +557,32 @@ class WebSocketBridge:
         # event loop hand control to mpv (via the asyncio.to_thread/sleep
         # yield points below) concurrently with the flush.
         self._ready_event.set()
-        # Paced, not dumped instantly: -use_wallclock_as_timestamps (both
-        # inputs) means ffmpeg derives its own frame timing from real
-        # elapsed time between writes -- flushing a whole buffer with
-        # near-zero real time between writes looks like a degenerate
-        # rate to ffmpeg's own estimation and can stall it entirely.
-        # ~25fps is a reasonable stand-in for real video pacing; audio
-        # uses its own just-detected real frame duration.
+        # Both buffers drain together, not video-then-audio: ffmpeg probes
+        # its inputs in order and will not start draining the video pipe
+        # until the audio input has satisfied -probesize/-analyzeduration.
+        # Writing every buffered NAL first can therefore fill the video
+        # pipe against an ffmpeg that is still waiting for audio that this
+        # coroutine has not sent yet, wedging the slot with no error. It
+        # also keeps wall-clock timestamps aligned, since both inputs use
+        # -use_wallclock_as_timestamps.
+        await asyncio.gather(self._flush_aac_video(), self._flush_aac_audio())
+
+    async def _flush_aac_video(self) -> None:
+        """Drain the video buffered during detection, paced at ~25fps.
+
+        Not dumped instantly: -use_wallclock_as_timestamps means ffmpeg
+        derives frame timing from real elapsed time between writes, and a
+        whole buffer written with near-zero time between frames looks like
+        a degenerate rate to its estimation and can stall it entirely.
+        """
         for nal in self._aac_video_buffer:
             await asyncio.to_thread(os.write, self._video_write_fd, nal)
             await asyncio.sleep(0.04)
         self._aac_video_buffer.clear()
+
+    async def _flush_aac_audio(self) -> None:
+        """Drain the audio buffered during detection, paced at the frame
+        duration implied by the sample rate just detected."""
         audio_frame_duration = 1024 / self._aac_sample_rate
         for buffered_payload in self._aac_audio_buffer:
             await self._handle_aac_audio_frame(buffered_payload)
