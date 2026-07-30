@@ -27,6 +27,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from surveillance.services.aac import adts_header, nearest_sample_rate, strip_au_header
 
 
@@ -79,3 +81,26 @@ class TestStripAuHeader:
     def test_removes_leading_two_bytes(self) -> None:
         frame = b"\x00\x01\x02\x03\x04"
         assert strip_au_header(frame) == b"\x02\x03\x04"
+
+
+class TestSampleRateDetectionRobustness:
+    """The rate is taken from the median of real WebSocket arrival
+    intervals, measured on the event loop that also serves every other
+    camera, so one late frame must not decide the whole session's pitch."""
+
+    @pytest.mark.parametrize("rate", [16000, 22050, 32000, 44100, 48000])
+    def test_median_survives_a_scheduling_hiccup(self, rate: int) -> None:
+        from statistics import median
+
+        from surveillance.services.aac import nearest_sample_rate
+        from surveillance.services.ws_bridge import _AAC_DETECTION_INTERVALS
+
+        nominal = 1024 / rate
+        intervals = [nominal] * (_AAC_DETECTION_INTERVALS - 1) + [nominal + 0.050]
+        assert nearest_sample_rate(median(intervals)) == rate
+
+    def test_enough_intervals_for_a_median(self) -> None:
+        from surveillance.services.ws_bridge import _AAC_DETECTION_INTERVALS
+
+        assert _AAC_DETECTION_INTERVALS >= 3
+        assert _AAC_DETECTION_INTERVALS % 2 == 1  # a true middle sample

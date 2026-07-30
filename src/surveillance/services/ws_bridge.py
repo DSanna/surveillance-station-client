@@ -46,6 +46,7 @@ import struct
 import subprocess
 import threading
 import time
+from statistics import median
 from typing import Any
 
 from surveillance.services.aac import adts_header, nearest_sample_rate, strip_au_header
@@ -79,6 +80,15 @@ _IDLE_TIMEOUT = 10.0  # seconds
 # arrived at all) -- so a camera that claims AAC but doesn't actually
 # deliver a steady audio stream can't block start()/mpv forever.
 _AAC_DETECTION_VIDEO_FRAME_CAP = 60
+
+# Inter-frame intervals to collect before locking the AAC sample rate.
+# Odd, because the rate comes from their median: these are wall-clock
+# arrival times measured on the one event loop that also serves every
+# other camera, so a single scheduling hiccup is normal. The rates sit
+# close together (48000 vs 44100 is 8.8% apart, about 0.9ms of interval
+# at 48kHz), so a mean would let one late frame pick the wrong one and
+# play the whole session at the wrong pitch.
+_AAC_DETECTION_INTERVALS = 11
 
 # ffmpeg -f value for each video codec DSM reports.
 _FFMPEG_VIDEO_FORMAT = {"H264": "h264", "H265": "hevc"}
@@ -436,7 +446,7 @@ class WebSocketBridge:
                 self._aac_intervals.append(interval)
         self._last_audio_write_time = now
         self._aac_audio_buffer.append(payload)
-        if len(self._aac_intervals) >= 5:
+        if len(self._aac_intervals) >= _AAC_DETECTION_INTERVALS:
             await self._finish_aac_detection()
 
     async def _aac_frames_look_valid(self) -> bool:
@@ -521,8 +531,7 @@ class WebSocketBridge:
         pipeline or fall back to video-only — flushing everything
         buffered during detection either way."""
         if self._aac_intervals:
-            avg = sum(self._aac_intervals) / len(self._aac_intervals)
-            self._aac_sample_rate = nearest_sample_rate(avg)
+            self._aac_sample_rate = nearest_sample_rate(median(self._aac_intervals))
         self._aac_detecting = False
 
         if not await self._aac_frames_look_valid():
