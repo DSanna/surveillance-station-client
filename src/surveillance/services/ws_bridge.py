@@ -108,9 +108,17 @@ _AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
 _PIPE_CAPACITY = 1024 * 1024
 
 
+# Linux-only (>= 2.6.35); CPython defines it only where the platform header
+# does. Looking it up on the fcntl module directly raises AttributeError on
+# the BSDs, which contextlib.suppress(OSError) would not catch.
+_F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", None)
+
+
 def _grow_pipe_buffer(fd: int) -> None:
+    if _F_SETPIPE_SZ is None:
+        return  # BSD pipe buffers are not tunable from userland
     with contextlib.suppress(OSError):
-        fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, _PIPE_CAPACITY)
+        fcntl.fcntl(fd, _F_SETPIPE_SZ, _PIPE_CAPACITY)
 
 
 class _StreamStalled(Exception):
