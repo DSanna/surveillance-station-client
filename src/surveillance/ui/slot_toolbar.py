@@ -464,15 +464,19 @@ class SlotToolbar(Gtk.Revealer):
         re-triggering the callback — used to revert the toggle if starting
         a session fails (e.g. the camera's speaker is already in use)."""
         self._mic_active = active
-        if not active:
-            self.schedule_hide()
         if active:
+            # Pin the toolbar open for as long as the mic is: schedule_hide
+            # refuses while _mic_active, and any hide already armed has to
+            # go with it.
+            self.cancel_hide()
+            self.set_reveal_child(True)
             self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
             self._mic_btn.add_css_class("mic-active")
             self._mic_btn.set_tooltip_text("Stop talking")
         else:
             self._mic_btn.remove_css_class("mic-active")
             self._mic_btn.set_tooltip_text("Push-to-talk")
+            self.schedule_hide()  # released the pin above
 
     def _on_mic_clicked(self, btn: Gtk.Button) -> None:
         self.set_mic_active(not self._mic_active)
@@ -576,6 +580,13 @@ class SlotToolbar(Gtk.Revealer):
         # any single leave would collapse things mid-transition.
         if self._popover_button_held:
             return  # re-armed by the next leave once _on_hold clears it
+        if self._mic_active:
+            # The lit mic button is the only thing telling the user their
+            # microphone is open and being sent to the camera. Hiding the
+            # toolbar would leave it live with nothing on screen saying so,
+            # so keep it up until push-to-talk stops (set_mic_active
+            # re-arms this).
+            return
         if self._combo_popup_open:
             # A ComboBoxText's own dropdown list is yet another separate
             # popup surface (below the popover, below the icon) — moving
