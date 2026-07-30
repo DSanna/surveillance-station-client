@@ -173,8 +173,17 @@ class PttSession:
         # an extra artificial delay.
         start = time.monotonic()
         try:
+            # The handshake below runs for about a second, and connect()
+            # alone may wait up to open_timeout. Only the send loop used to
+            # look at the stop flag, so tapping the button off during that
+            # window left the mic recording and still opened the camera's
+            # AudioOut channel afterwards.
+            if self._stop_event.is_set():
+                return
             if await check_occupied(api, self.camera_id):
                 raise PttOccupiedError(f"Camera {self.camera_id}'s speaker is already in use")
+            if self._stop_event.is_set():
+                return
 
             ws_url = _build_ws_url(api, self.camera_id)
             ssl_ctx = _build_ssl_context(api, ws_url)
