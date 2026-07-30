@@ -265,6 +265,7 @@ sudo dnf install \
 sudo zypper install \
     gtk4-devel \
     mpv-devel \
+    libportaudio2 \
     ffmpeg \
     python3-gobject \
     python3-gobject-cairo
@@ -275,7 +276,7 @@ sudo zypper install \
 <summary><b>FreeBSD</b></summary>
 
 ```sh
-pkg install gtk4 mpv ffmpeg py311-gobject3 py311-cairo
+pkg install gtk4 mpv portaudio ffmpeg py311-gobject3 py311-cairo
 ```
 </details>
 
@@ -283,7 +284,7 @@ pkg install gtk4 mpv ffmpeg py311-gobject3 py311-cairo
 <summary><b>OpenBSD</b></summary>
 
 ```sh
-pkg_add gtk4 mpv ffmpeg py3-gobject3 py3-cairo
+pkg_add gtk4 mpv portaudio ffmpeg py3-gobject3 py3-cairo
 ```
 </details>
 
@@ -300,6 +301,7 @@ pkg_add gtk4 mpv ffmpeg py3-gobject3 py3-cairo
 | `keyring` >= 25.0 | Secure credential storage |
 | `tomli-w` >= 1.0 | TOML config writing |
 | `websockets` >= 13.0 | WebSocket stream bridge for live view |
+| `sounddevice` >= 0.5 | PortAudio bindings for push-to-talk mic capture |
 
 ---
 
