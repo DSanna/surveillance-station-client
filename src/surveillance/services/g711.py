@@ -31,8 +31,10 @@ Python 3.12 and removed in 3.13. Rather than take on the `audioop-lts`
 backport package for one function, this reimplements CPython's own
 algorithm directly (Modules/audioop.c: audioop_lin2ulaw_impl ->
 st_14linear2ulaw, itself derived from SoX's public-domain g711.c) --
-verified bit-for-bit against the real audioop.lin2ulaw across all 65536
-possible 16-bit sample values (see tests/test_services.py).
+verified bit-for-bit against an independent implementation of the same
+algorithm across all 65536 possible 16-bit sample values (see
+tests/test_services.py -- audioop itself cannot be used as the reference,
+being absent from the very versions this module exists to serve).
 """
 
 from __future__ import annotations

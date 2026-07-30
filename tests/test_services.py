@@ -713,21 +713,39 @@ class TestG711:
     dependency-free reimplementation, verified bit-for-bit against every
     possible 16-bit sample value."""
 
-    def test_bit_exact_against_audioop(self) -> None:
-        import warnings
+    @staticmethod
+    def _reference_ulaw(sample: int) -> int:
+        """ITU-T G.711 mu-law, as CPython's audioop implemented it.
+
+        Written out here rather than compared against audioop itself:
+        that module was removed in 3.13, which is both what CI runs and
+        the whole reason services/g711.py exists, so importing it would
+        skip or fail the test on exactly the versions that matter.
+        """
+        pcm = sample >> 2  # 16-bit sample into the encoder's 14-bit domain
+        if pcm < 0:
+            pcm, mask = -pcm, 0x7F
+        else:
+            mask = 0xFF
+        pcm = min(pcm, 8158)
+        pcm += 33
+        seg = 8
+        for i, bound in enumerate((0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF)):
+            if pcm <= bound:
+                seg = i
+                break
+        uval = 0x7F if seg >= 8 else (seg << 4) | ((pcm >> (seg + 1)) & 0x0F)
+        return (uval ^ mask) & 0xFF
+
+    def test_bit_exact_over_full_16_bit_range(self) -> None:
+        import struct
 
         from surveillance.services.g711 import lin2ulaw
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            import audioop  # deprecated stdlib, only imported here for this comparison test
-
-            for sample in range(-32768, 32768, 137):  # every 137th value, plus edges below
-                frag = sample.to_bytes(2, "little", signed=True)
-                assert lin2ulaw(frag) == audioop.lin2ulaw(frag, 2)
-            for sample in (-32768, -1, 0, 1, 32767):
-                frag = sample.to_bytes(2, "little", signed=True)
-                assert lin2ulaw(frag) == audioop.lin2ulaw(frag, 2)
+        samples = range(-32768, 32768)
+        encoded = lin2ulaw(struct.pack("<%dh" % len(samples), *samples))
+        expected = bytes(self._reference_ulaw(s) for s in samples)
+        assert encoded == expected
 
     def test_rejects_odd_length(self) -> None:
         from surveillance.services.g711 import lin2ulaw
