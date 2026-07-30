@@ -96,17 +96,12 @@ class SlotToolbar(Gtk.Revealer):
         # held open for the exact duration of a physical button press,
         # which doesn't fit a click-based UI as naturally). Only shown
         # for cameras with a speaker (has_speaker).
-        # _mic_requested is the user's own click-toggle intent (drives what
-        # the *next* click does); _mic_active is purely the visual "actively
-        # recording" indicator, deliberately delayed ~1s behind it (see
-        # _on_mic_clicked) — mic startup has a real, unavoidable latency
-        # (PortAudio/ALSA stream warm-up plus the CheckOccupied/WebSocket
-        # handshake, confirmed live to lose up to ~1s of speech otherwise),
-        # and an instantly-red button invites talking before anything is
-        # actually listening.
-        self._mic_requested = False
+        # The indicator tracks the microphone exactly: PttSession.run()
+        # opens the input stream before the CheckOccupied/WebSocket
+        # handshake and buffers what it captures, so the mic is live from
+        # the tap onwards and the button has to say so from the tap
+        # onwards too.
         self._mic_active = False
-        self._mic_delay_timer_id = 0
         self._mic_btn = Gtk.Button()
         self._mic_btn.add_css_class("flat")
         self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
@@ -469,6 +464,8 @@ class SlotToolbar(Gtk.Revealer):
         re-triggering the callback — used to revert the toggle if starting
         a session fails (e.g. the camera's speaker is already in use)."""
         self._mic_active = active
+        if not active:
+            self.schedule_hide()
         if active:
             self._mic_btn.set_icon_name("audio-input-microphone-symbolic")
             self._mic_btn.add_css_class("mic-active")
@@ -477,26 +474,10 @@ class SlotToolbar(Gtk.Revealer):
             self._mic_btn.remove_css_class("mic-active")
             self._mic_btn.set_tooltip_text("Push-to-talk")
 
-    def _cancel_mic_delay(self) -> None:
-        if self._mic_delay_timer_id:
-            GLib.source_remove(self._mic_delay_timer_id)
-            self._mic_delay_timer_id = 0
-
-    def _apply_mic_delay(self) -> bool:
-        self._mic_delay_timer_id = 0
-        if self._mic_requested:  # still on — could've been tapped off within the 1s
-            self.set_mic_active(True)
-        return False  # one-shot
-
     def _on_mic_clicked(self, btn: Gtk.Button) -> None:
-        self._mic_requested = not self._mic_requested
-        self._cancel_mic_delay()
-        if self._mic_requested:
-            self._mic_delay_timer_id = GLib.timeout_add(1000, self._apply_mic_delay)
-        else:
-            self.set_mic_active(False)  # stopping should feel instant
+        self.set_mic_active(not self._mic_active)
         if self._mic_callback and callable(self._mic_callback):
-            self._mic_callback(self.index, self._mic_requested)
+            self._mic_callback(self.index, self._mic_active)
 
     def _on_volume_changed(self, scale: Gtk.Scale) -> None:
         volume = int(scale.get_value())
@@ -635,8 +616,6 @@ class SlotToolbar(Gtk.Revealer):
 
     def assign(self, camera: Camera) -> None:
         self._mute_btn.set_visible(camera.has_audio)
-        self._cancel_mic_delay()
-        self._mic_requested = False
         self.set_mic_active(False)
         self._mic_btn.set_visible(camera.has_speaker)
         for button in self._ptz_buttons():
@@ -646,8 +625,6 @@ class SlotToolbar(Gtk.Revealer):
         self.player.set_mute(True)
         self.update_mute_icon()
         self._mute_btn.set_visible(False)
-        self._cancel_mic_delay()
-        self._mic_requested = False
         self.set_mic_active(False)
         self._mic_btn.set_visible(False)
         for button in self._ptz_buttons():
