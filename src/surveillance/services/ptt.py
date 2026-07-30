@@ -120,11 +120,12 @@ class PttSession:
         """Signal a running session to wind down and close. Thread-safe."""
         get_loop().call_soon_threadsafe(self._stop_event.set)
 
-    def _start_capture(self) -> "asyncio.Queue[bytes]":
+    def _open_stream(self, queue: "asyncio.Queue[bytes]", loop: Any) -> None:
+        """Open the PortAudio input stream. Runs in a worker thread: opening
+        a capture device talks to ALSA/PulseAudio and routinely blocks for
+        a hundred milliseconds or more, and this app has one event loop
+        serving every camera."""
         import sounddevice as sd  # noqa: PLC0415
-
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
-        loop = asyncio.get_running_loop()
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             if status:
@@ -139,13 +140,21 @@ class PttSession:
             callback=callback,
         )
         self._stream.start()
+
+    async def _start_capture(self) -> "asyncio.Queue[bytes]":
+        queue: asyncio.Queue[bytes] = asyncio.Queue()
+        await asyncio.to_thread(self._open_stream, queue, asyncio.get_running_loop())
         return queue
 
-    def _stop_capture(self) -> None:
+    def _close_stream(self) -> None:
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+    async def _stop_capture(self) -> None:
+        """Closing the device blocks for the same reasons opening it does."""
+        await asyncio.to_thread(self._close_stream)
 
     async def run(self, api: SurveillanceAPI) -> None:
         """Open the AudioOut channel and stream mic audio until stop() is called.
@@ -156,7 +165,7 @@ class PttSession:
         occupied, the buffered capture is discarded and PttOccupiedError is
         raised without ever opening the AudioOut socket.
         """
-        queue = self._start_capture()
+        queue = await self._start_capture()
         # Pacing clock starts here, at the moment capture actually begins --
         # not once CheckOccupied/connect finish -- so that whatever buffers
         # up in the queue during that handshake has *already-past* targets
@@ -201,4 +210,4 @@ class PttSession:
                     if delay > 0:
                         await asyncio.sleep(delay)
         finally:
-            self._stop_capture()
+            await self._stop_capture()
