@@ -55,8 +55,10 @@ class _RedactFormatter(logging.Formatter):
 
 
 def main() -> None:
+    # Every occurrence, not just the first: what is left of argv goes to
+    # Gio.Application, which rejects a flag it does not know.
     debug = "--debug" in sys.argv
-    if debug:
+    while "--debug" in sys.argv:
         sys.argv.remove("--debug")
 
     level = logging.DEBUG if debug else logging.WARNING
