@@ -43,6 +43,7 @@ import os
 import sys
 import types
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -426,6 +427,28 @@ class TestPipeLifetime:
         second = WebSocketBridge("wss://nas/stream", False, "sid")
         assert await second.start() == f"fd://{fd}"
         await second.stop()
+
+    async def test_no_leak_when_a_later_pipe_fails(self) -> None:
+        """_start_muxed opens three pipes before spawning ffmpeg. A failure
+        on the second or third must not strand the ones already open: this
+        runs again on every reconnect until the bridge gives up."""
+        real_pipe = os.pipe
+        calls = {"n": 0}
+
+        def _third_pipe_fails() -> tuple[int, int]:
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise OSError(24, "Too many open files")
+            return real_pipe()
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        before = set(os.listdir("/proc/self/fd"))
+        with (
+            patch("os.pipe", _third_pipe_fails),
+            pytest.raises(OSError),
+        ):
+            await bridge._start_muxed("H264", "PCMU")
+        assert not set(os.listdir("/proc/self/fd")) - before
 
     async def test_stop_closes_both_ends(self, connect: Any) -> None:
         connect(_FakeWS([_codec_frame()], hang=True))

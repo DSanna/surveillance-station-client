@@ -325,11 +325,38 @@ class WebSocketBridge:
         exceed 500KB on its own, and a too-small probesize leaves
         ffmpeg's stream analysis unable to get past the first real frame.
         """
-        video_r, video_w = os.pipe()
-        audio_r, audio_w = os.pipe()
-        out_r, out_w = os.pipe()
-        for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
-            _grow_pipe_buffer(fd)
+        video_r = video_w = audio_r = audio_w = out_r = out_w = -1
+        try:
+            video_r, video_w = os.pipe()
+            audio_r, audio_w = os.pipe()
+            out_r, out_w = os.pipe()
+            for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
+                _grow_pipe_buffer(fd)
+            await self._spawn_ffmpeg(video_codec, audio_codec, video_r, audio_r, out_w)
+        except OSError:
+            # Either a pipe or the spawn itself failed. Whichever fds exist
+            # have no subprocess to inherit them now, and this runs again on
+            # every reconnect attempt until the bridge gives up, so leaking
+            # them here would compound quickly.
+            for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
+                if fd >= 0:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+            raise
+        os.close(video_r)
+        os.close(audio_r)
+        os.close(out_w)
+        self._video_write_fd = video_w
+        self._audio_write_fd = audio_w
+        self._read_fd = out_r
+        self._audio_active = True
+
+    async def _spawn_ffmpeg(
+        self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
+    ) -> None:
+        """Build ffmpeg's argument list around the caller's pipe fds and
+        start it. Kept apart from _start_muxed only so the fd cleanup there
+        covers the pipes and the spawn under one except OSError."""
         audio_args = ["-probesize", "16384", "-analyzeduration", "300000"]
         if audio_codec in _AAC_AUDIO_CODECS:
             audio_args += ["-use_wallclock_as_timestamps", "1"]
@@ -380,30 +407,13 @@ class WebSocketBridge:
             "1",
             "pipe:1",
         ]
-        try:
-            self._ffmpeg_proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=subprocess.DEVNULL,
-                stdout=out_w,
-                stderr=subprocess.DEVNULL,
-                pass_fds=[video_r, audio_r],
-            )
-        except OSError:
-            # Spawn itself failed (e.g. ffmpeg isn't installed) -- none of
-            # these 6 fds have a subprocess to inherit them now, and this
-            # runs again on every reconnect attempt until the bridge gives
-            # up, so leaking them here would compound quickly.
-            for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-            raise
-        os.close(video_r)
-        os.close(audio_r)
-        os.close(out_w)
-        self._video_write_fd = video_w
-        self._audio_write_fd = audio_w
-        self._read_fd = out_r
-        self._audio_active = True
+        self._ffmpeg_proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=subprocess.DEVNULL,
+            stdout=out_w,
+            stderr=subprocess.DEVNULL,
+            pass_fds=[video_r, audio_r],
+        )
 
     async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
         """Handle a close notice or codec-info frame (anything that isn't
