@@ -132,6 +132,23 @@ def _raise_for_status(resp: httpx.Response) -> None:
     raise HttpStatusError(resp.status_code, resp.reason_phrase)
 
 
+def _json_or_raise(resp: httpx.Response) -> Any:
+    """Decode a response body, turning a non-JSON one into an ApiError.
+
+    A reverse proxy in front of DSM answers a request it will not forward
+    with an HTML login page under a 200, and httpx then raises ValueError
+    from resp.json(). Callers only handle ApiError, so it has to become one.
+    Code 119 is what _raw_download already reports for the same page, and it
+    is in SESSION_ERRORS, so request() retries it once after a re-login.
+    """
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise ApiError(
+            119, "Server returned a non-JSON response (session expired or blocked)"
+        ) from exc
+
+
 class SurveillanceAPI:
     """Async client for Synology Surveillance Station REST API."""
 
@@ -178,7 +195,7 @@ class SurveillanceAPI:
             },
         )
         _raise_for_status(resp)
-        result = resp.json()
+        result = _json_or_raise(resp)
 
         if not result.get("success"):
             raise ApiError(result.get("error", {}).get("code", 100), table=COMMON_ERRORS)
@@ -239,7 +256,7 @@ class SurveillanceAPI:
             get_kwargs["timeout"] = timeout
         resp = await self.client.get(path, **get_kwargs)
         _raise_for_status(resp)
-        result = resp.json()
+        result = _json_or_raise(resp)
 
         if not result.get("success"):
             code = result.get("error", {}).get("code", 100)
@@ -313,7 +330,7 @@ class SurveillanceAPI:
 
         content_type = resp.headers.get("content-type", "")
         if "json" in content_type:
-            result = resp.json()
+            result = _json_or_raise(resp)
             if not result.get("success"):
                 code = result.get("error", {}).get("code", 100)
                 syno_msg = result.get("error", {}).get("message", "")

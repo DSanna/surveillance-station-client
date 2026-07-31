@@ -168,6 +168,37 @@ class TestHttpStatusError:
         assert _raise_for_status(httpx.Response(200, request=req)) is None
 
 
+class TestNonJsonResponse:
+    def test_html_body_becomes_an_api_error(self) -> None:
+        """A proxy in front of DSM answers with a login page under a 200.
+        Callers only handle ApiError, so a bare ValueError must not escape."""
+        import httpx
+
+        from surveillance.api.client import ApiError, _json_or_raise
+
+        resp = httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body>Login</body></html>",
+            request=httpx.Request("GET", "https://nas:5001/webapi/entry.cgi"),
+        )
+        with pytest.raises(ApiError) as excinfo:
+            _json_or_raise(resp)
+        assert excinfo.value.code == 119, "must be a session error so request() retries once"
+
+    def test_json_body_is_returned(self) -> None:
+        import httpx
+
+        from surveillance.api.client import _json_or_raise
+
+        resp = httpx.Response(
+            200,
+            json={"success": True, "data": {"ok": 1}},
+            request=httpx.Request("GET", "https://nas:5001/webapi/entry.cgi"),
+        )
+        assert _json_or_raise(resp) == {"success": True, "data": {"ok": 1}}
+
+
 class TestErrorNamespaces:
     def test_auth_and_surveillance_codes_differ(self) -> None:
         from surveillance.api.client import ApiError, _error_table
