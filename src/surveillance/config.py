@@ -30,15 +30,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef]
 
 import tomli_w
 
