@@ -767,7 +767,7 @@ class WebSocketBridge:
                 self._log_reconnect(clean_close)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY) if delay else 0.25
                 await asyncio.sleep(delay)
-        except (asyncio.CancelledError, BrokenPipeError):
+        except asyncio.CancelledError:
             log.debug("WebSocket bridge cancelled")
         finally:
             self._close_write_fd()
