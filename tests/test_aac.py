@@ -43,21 +43,27 @@ def _parse_adts(header: bytes) -> tuple[int, int, int]:
 
 
 class TestAdtsHeader:
-    def test_round_trips_rate_channels_and_length(self) -> None:
+    def test_round_trips_rate_and_length(self) -> None:
         freq_table = {8000: 11, 16000: 8, 44100: 4, 48000: 3}
         for rate, expected_idx in freq_table.items():
-            for channels in (1, 2):
-                header = adts_header(413, sample_rate=rate, channels=channels)
-                freq_idx, ch, frame_len = _parse_adts(header)
-                assert freq_idx == expected_idx
-                assert ch == channels
-                assert frame_len == 413 + 7
+            header = adts_header(413, sample_rate=rate)
+            freq_idx, ch, frame_len = _parse_adts(header)
+            assert freq_idx == expected_idx
+            assert ch == 2
+            assert frame_len == 413 + 7
 
     def test_sync_word_and_length(self) -> None:
-        header = adts_header(100, sample_rate=8000, channels=2)
+        header = adts_header(100, sample_rate=8000)
         assert len(header) == 7
         assert header[0] == 0xFF
         assert (header[1] & 0xF0) == 0xF0
+
+    def test_rejects_a_frame_longer_than_the_length_field(self) -> None:
+        """13 bits, header included. Past that the excess is dropped and the
+        header describes a much shorter frame, which no reader can recover."""
+        assert _parse_adts(adts_header(8184, sample_rate=16000))[2] == 8191
+        with pytest.raises(ValueError, match="exceeds what an ADTS header"):
+            adts_header(8185, sample_rate=16000)
 
 
 class TestNearestSampleRate:

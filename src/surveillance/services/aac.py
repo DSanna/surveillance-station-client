@@ -54,6 +54,9 @@ _AU_HEADER_LEN = 2  # 13-bit size + 3-bit index, the AAC-hbr default
 _SAMPLES_PER_FRAME = 1024
 _STANDARD_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 
+# aac_frame_length is 13 bits and counts the header in.
+_ADTS_MAX_FRAME_LEN = 0x1FFF
+
 _ADTS_FREQ_INDEX = {
     96000: 0,
     88200: 1,
@@ -85,13 +88,25 @@ def nearest_sample_rate(interval_seconds: float) -> int:
     return min(_STANDARD_SAMPLE_RATES, key=lambda r: abs(r - measured))
 
 
-def adts_header(payload_length: int, sample_rate: int, channels: int = 2) -> bytes:
-    """Build a 7-byte ADTS header (no CRC, AAC-LC) for an AAC frame of
-    *payload_length* bytes -- lets ffmpeg's plain "aac" demuxer read an
-    otherwise-bare AAC stream via ADTS sync-word auto-detection."""
+def adts_header(payload_length: int, sample_rate: int) -> bytes:
+    """Build a 7-byte ADTS header (no CRC, AAC-LC, stereo) for an AAC frame
+    of *payload_length* bytes -- lets ffmpeg's plain "aac" demuxer read an
+    otherwise-bare AAC stream via ADTS sync-word auto-detection.
+
+    Raises ValueError past what the header can describe. A 1024-sample
+    AAC-LC frame never comes anywhere near that, so this catches a caller
+    feeding in something that is not one frame rather than a real camera,
+    which matters because the alternative is a silently wrong length: the
+    field is 13 bits and the excess would just be dropped.
+    """
     freq_idx = _ADTS_FREQ_INDEX[sample_rate]
     profile_id = 1  # AAC-LC (object type 2) -> ADTS profile field = object_type - 1
+    channels = 2
     frame_len = payload_length + 7
+    if frame_len > _ADTS_MAX_FRAME_LEN:
+        raise ValueError(
+            f"AAC frame of {payload_length} bytes exceeds what an ADTS header can describe"
+        )
     h = bytearray(7)
     h[0] = 0xFF
     h[1] = 0xF1
