@@ -302,6 +302,7 @@ pkg_add gtk4 mpv portaudio ffmpeg py3-gobject3 py3-cairo
 | `tomli-w` >= 1.0 | TOML config writing |
 | `websockets` >= 13.0 | WebSocket stream bridge for live view |
 | `sounddevice` >= 0.5 | PortAudio bindings for push-to-talk mic capture |
+| `cryptography` >= 42.0 | AES for offline license activation |
 
 ---
 
