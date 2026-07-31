@@ -143,6 +143,30 @@ class AppConfig:
             self.snapshot_dir = str(DATA_DIR / "snapshots")
 
 
+# Floor for the poll_interval_* settings. They are only reachable by hand
+# editing the file, and they go straight to GLib.timeout_add_seconds(), where
+# 0 is not "off" but a source that fires as fast as the main loop can run it.
+MIN_POLL_INTERVAL = 5
+
+
+def _poll_interval(general: dict[str, Any], key: str, default: int) -> int:
+    """Read a poll interval, falling back on anything GLib cannot use.
+
+    timeout_add_seconds() raises TypeError on a string and OverflowError on a
+    negative, and busy loops on 0, so a typo in the config file would either
+    break the connect path or hammer the NAS.
+    """
+    try:
+        value = int(general.get(key, default))
+    except (TypeError, ValueError):
+        log.warning("Config: %s is not a number, using %ds", key, default)
+        return default
+    if value < MIN_POLL_INTERVAL:
+        log.warning("Config: %s of %ds is below the %ds minimum", key, value, MIN_POLL_INTERVAL)
+        return MIN_POLL_INTERVAL
+    return value
+
+
 def _load_theme(general: dict[str, Any]) -> str:
     """Read theme setting with backward compat for old dark_theme bool."""
     theme = general.get("theme")
@@ -220,9 +244,9 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
         layout_cameras=session.get("layout_cameras", {}),
-        poll_interval_cameras=general.get("poll_interval_cameras", 30),
-        poll_interval_alerts=general.get("poll_interval_alerts", 30),
-        poll_interval_homemode=general.get("poll_interval_homemode", 60),
+        poll_interval_cameras=_poll_interval(general, "poll_interval_cameras", 30),
+        poll_interval_alerts=_poll_interval(general, "poll_interval_alerts", 30),
+        poll_interval_homemode=_poll_interval(general, "poll_interval_homemode", 60),
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
         camera_overrides=overrides,
         camera_protocols=protocols,

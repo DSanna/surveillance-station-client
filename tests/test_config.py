@@ -30,8 +30,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from surveillance.config import (
+    MIN_POLL_INTERVAL,
     AppConfig,
     ConnectionProfile,
+    _config_from_data,
     _write_config,
     add_profile,
     load_config,
@@ -82,6 +84,31 @@ class TestAppConfig:
     def test_snapshot_dir_default(self) -> None:
         config = AppConfig()
         assert "snapshots" in config.snapshot_dir
+
+
+class TestPollIntervals:
+    """A hand-edited interval reaches GLib.timeout_add_seconds() directly, so
+    anything it cannot use has to be caught while the config is loaded."""
+
+    def test_zero_is_raised_to_the_minimum(self) -> None:
+        cfg = _config_from_data({"general": {"poll_interval_cameras": 0}})
+        assert cfg.poll_interval_cameras == MIN_POLL_INTERVAL
+
+    def test_negative_is_raised_to_the_minimum(self) -> None:
+        cfg = _config_from_data({"general": {"poll_interval_alerts": -5}})
+        assert cfg.poll_interval_alerts == MIN_POLL_INTERVAL
+
+    def test_non_numeric_falls_back_to_the_default(self) -> None:
+        cfg = _config_from_data({"general": {"poll_interval_homemode": "often"}})
+        assert cfg.poll_interval_homemode == 60
+
+    def test_numeric_string_is_accepted(self) -> None:
+        cfg = _config_from_data({"general": {"poll_interval_cameras": "45"}})
+        assert cfg.poll_interval_cameras == 45
+
+    def test_a_usable_value_is_left_alone(self) -> None:
+        cfg = _config_from_data({"general": {"poll_interval_cameras": 120}})
+        assert cfg.poll_interval_cameras == 120
 
 
 class TestSaveLoadConfig:

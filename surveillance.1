@@ -125,6 +125,11 @@ which records whether the camera sidebar is shown, and
 .IR dismissed_update_version ,
 the release tag whose update notice has been dismissed.
 .PP
+.IR poll_interval_cameras ", " poll_interval_alerts " and " poll_interval_homemode
+are in seconds and default to 30, 30 and 60. The minimum is 5: a smaller or
+non-numeric value is reported in the log and replaced, since 0 would poll the
+NAS continuously.
+.PP
 The
 .B [session]
 section stores the grid layout, active page, camera assignments, and recording
