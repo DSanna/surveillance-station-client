@@ -165,14 +165,17 @@ class PttSession:
         occupied, the buffered capture is discarded and PttOccupiedError is
         raised without ever opening the AudioOut socket.
         """
-        queue = await self._start_capture()
-        # Pacing clock starts here, at the moment capture actually begins --
-        # not once CheckOccupied/connect finish -- so that whatever buffers
-        # up in the queue during that handshake has *already-past* targets
-        # below and drains immediately instead of being paced out on top of
-        # an extra artificial delay.
-        start = time.monotonic()
+        # Inside the try: _open_stream() assigns self._stream before calling
+        # start() on it, so a device that opens but fails to start is already
+        # ours to close, and only the finally below does that.
         try:
+            queue = await self._start_capture()
+            # Pacing clock starts here, at the moment capture actually begins --
+            # not once CheckOccupied/connect finish -- so that whatever buffers
+            # up in the queue during that handshake has *already-past* targets
+            # below and drains immediately instead of being paced out on top of
+            # an extra artificial delay.
+            start = time.monotonic()
             # The handshake below runs for about a second, and connect()
             # alone may wait up to open_timeout. Only the send loop used to
             # look at the stop flag, so tapping the button off during that

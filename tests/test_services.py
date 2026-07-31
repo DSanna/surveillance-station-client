@@ -792,6 +792,41 @@ class TestPttService:
         ):
             await session.run(api)
 
+    @pytest.mark.asyncio
+    async def test_capture_is_closed_when_the_device_fails_to_start(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """_open_stream() assigns self._stream before start()ing it, so a
+        device that opens but refuses to start is already ours to close."""
+        from surveillance.services.ptt import PttSession
+
+        closed = []
+
+        class _FailsToStart:
+            def start(self) -> None:
+                raise RuntimeError("device busy")
+
+            def stop(self) -> None:
+                closed.append("stop")
+
+            def close(self) -> None:
+                closed.append("close")
+
+        session = PttSession(39)
+
+        def _open(*_args: object) -> None:
+            session._stream = _FailsToStart()
+            session._stream.start()
+
+        with (
+            patch.object(session, "_open_stream", _open),
+            pytest.raises(RuntimeError, match="device busy"),
+        ):
+            await session.run(api)
+
+        assert closed == ["stop", "close"], "the open capture device was left running"
+        assert session._stream is None
+
     def test_build_ws_url(self, api: SurveillanceAPI) -> None:
         from surveillance.services.ptt import _build_ws_url
 
