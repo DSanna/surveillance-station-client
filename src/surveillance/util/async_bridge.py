@@ -47,37 +47,50 @@ T = TypeVar("T")
 
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
+_setup_lock = threading.Lock()
 
 
 def setup_async() -> asyncio.AbstractEventLoop:
     """Start a background asyncio event loop thread.
 
-    Must be called once at startup (from the GTK main thread).
+    Called once at startup (from the GTK main thread), and again from
+    get_loop() only if something reaches the loop before that.
     Returns the event loop (running in the background thread).
     """
     global _loop, _thread
 
-    if _loop is not None and _loop.is_running():
-        return _loop
+    with _setup_lock:
+        if _loop is not None:
+            return _loop
 
-    _loop = asyncio.new_event_loop()
+        # The thread body takes the loop as an argument rather than reading
+        # the global: the global is not assigned until start() returns, and
+        # a second setup_async() in that window would leave both threads
+        # calling run_forever() on the same loop.
+        loop = asyncio.new_event_loop()
 
-    def _run_loop() -> None:
-        asyncio.set_event_loop(_loop)
-        _loop.run_forever()
+        def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
 
-    _thread = threading.Thread(target=_run_loop, daemon=True, name="asyncio-bridge")
-    _thread.start()
-
-    return _loop
+        _thread = threading.Thread(
+            target=_run_loop, args=(loop,), daemon=True, name="asyncio-bridge"
+        )
+        _thread.start()
+        _loop = loop
+        return loop
 
 
 def get_loop() -> asyncio.AbstractEventLoop:
-    """Get the background asyncio event loop."""
-    global _loop
-    if _loop is None or not _loop.is_running():
-        _loop = setup_async()
-    return _loop
+    """Get the background asyncio event loop.
+
+    Deliberately not gated on is_running(): the loop is not running yet for
+    the moment between the thread starting and run_forever() being reached,
+    and treating that as "no loop" used to build a second one. Nothing stops
+    the loop once it exists, so having it is enough. Work submitted before
+    it starts is queued by call_soon_threadsafe() and runs when it does.
+    """
+    return _loop if _loop is not None else setup_async()
 
 
 def run_async(
