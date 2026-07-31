@@ -388,7 +388,8 @@ surveillance-station-client/
 │   │   ├── events.py                   event list
 │   │   ├── licenses.py                 license management
 │   │   ├── timelapse.py                time lapse browser
-│   │   └── notifications.py            alert popover
+│   │   ├── notifications.py            alert popover
+│   │   └── labels.py                   combo label helpers shared by the browser pages
 │   └── util/
 │       └── async_bridge.py             GLib + asyncio bridge
 └── tests/

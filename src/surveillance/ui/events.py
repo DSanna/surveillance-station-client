@@ -54,6 +54,7 @@ from surveillance.services.recording import (
     preset_range,
 )
 from surveillance.ui.advanced_search import AdvancedSearchDialog
+from surveillance.ui.labels import truncate_label
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -81,17 +82,6 @@ def _format_event_type(event_type: int) -> str:
 
 
 _PAGE_SIZE = 100
-_COMBO_LABEL_MAX_LEN = 22
-
-
-def _truncate_label(text: str, max_len: int = _COMBO_LABEL_MAX_LEN) -> str:
-    """Cap a combo entry's display text so a long camera/type name can't
-    keep growing the dropdown's width — GTK sizes a closed ComboBoxText
-    from the longest entry ever appended, and GTK CSS has no max-width to
-    cap that."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 1] + "…"
 
 
 class EventsView(Gtk.Box):
@@ -346,7 +336,7 @@ class EventsView(Gtk.Box):
         added = False
         for cam in self.window.sidebar.cameras:
             if cam.id not in self._known_camera_ids:
-                self.camera_combo.append(str(cam.id), _truncate_label(cam.name))
+                self.camera_combo.append(str(cam.id), truncate_label(cam.name))
                 self._known_camera_ids.add(cam.id)
                 added = True
         if added and self._camera_id is None and self._search_camera_ids is None:
@@ -607,7 +597,7 @@ class EventsView(Gtk.Box):
         self.event_type_combo.append("all", "All types")
         for type_code in types_present:
             self.event_type_combo.append(
-                str(type_code), _truncate_label(_format_event_type(type_code))
+                str(type_code), truncate_label(_format_event_type(type_code))
             )
 
         if previous_selection in valid_ids:
@@ -790,7 +780,7 @@ class EventsView(Gtk.Box):
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids = set()
         if camera_id not in self._known_camera_ids:
-            self.camera_combo.append(str(camera_id), _truncate_label(name))
+            self.camera_combo.append(str(camera_id), truncate_label(name))
             self._known_camera_ids.add(camera_id)
 
     def on_camera_selected(self, camera: Camera) -> None:

@@ -58,6 +58,7 @@ from surveillance.services.snapshot import (
     list_snapshots,
 )
 from surveillance.ui.advanced_search import AdvancedSearchDialog
+from surveillance.ui.labels import truncate_label
 from surveillance.util.async_bridge import run_async
 
 _THUMB_WIDTH = 120
@@ -86,17 +87,6 @@ if TYPE_CHECKING:
     from surveillance.ui.window import MainWindow
 
 log = logging.getLogger(__name__)
-
-_COMBO_LABEL_MAX_LEN = 22
-
-
-def _truncate_label(text: str, max_len: int = _COMBO_LABEL_MAX_LEN) -> str:
-    """Cap a combo entry's display text so a long camera name can't keep
-    growing the dropdown's width — GTK sizes a closed ComboBoxText from the
-    longest entry ever appended, and GTK CSS has no max-width to cap that."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 1] + "…"
 
 
 class SnapshotsView(Gtk.Box):
@@ -288,7 +278,7 @@ class SnapshotsView(Gtk.Box):
         added = False
         for cam in self.window.sidebar.cameras:
             if cam.id not in self._known_camera_ids:
-                self.camera_combo.append(str(cam.id), _truncate_label(cam.name))
+                self.camera_combo.append(str(cam.id), truncate_label(cam.name))
                 self._known_camera_ids.add(cam.id)
                 added = True
         if added and self._multi_camera_filter is not None:
@@ -299,7 +289,7 @@ class SnapshotsView(Gtk.Box):
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids = set()
         if camera_id not in self._known_camera_ids:
-            self.camera_combo.append(str(camera_id), _truncate_label(name))
+            self.camera_combo.append(str(camera_id), truncate_label(name))
             self._known_camera_ids.add(camera_id)
 
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
