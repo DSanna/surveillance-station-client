@@ -314,6 +314,13 @@ class LoginDialog(Gtk.Window):
             delete_credentials(profile.name)
 
     def _on_connect_error(self, error: Exception) -> None:
+        # Same guard as _on_connect_success: this arrives on the GTK thread
+        # after the dialog may already have been closed, and _on_close_request
+        # has dropped the API by then. Without it the OTP branch below would
+        # put a modal dialog on screen parented to a window the user dismissed.
+        if self._dismissed:
+            return
+
         if isinstance(error, OtpRequiredError):
             # Clear stored device_id since it did not bypass OTP
             if self._current_profile.device_id:
