@@ -809,9 +809,12 @@ class WebSocketBridge:
     def close_write_end(self) -> None:
         """Close the write end of the pipe(s) immediately.
 
-        This unblocks any os.write call stuck in the thread pool and
-        signals EOF to ffmpeg (if muxing) or mpv (if not) on the read
-        end. Safe to call from any thread, idempotent.
+        Signals EOF to ffmpeg (if muxing) or mpv (if not) on the read end.
+        A thread pool thread already blocked in os.write() on that fd does
+        not come back here: on Linux, closing an fd does not interrupt a
+        write another thread is inside. It returns once the readers are
+        gone, which stop() arranges by closing _read_fd. Safe to call from
+        any thread, idempotent.
         """
         self._stopping = True
         self._close_write_fd()
