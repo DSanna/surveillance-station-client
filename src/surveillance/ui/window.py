@@ -295,8 +295,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Poll home mode
         def _poll_homemode() -> bool:
-            if not self._homemode_available or not self.app.api:
-                return self._homemode_available
+            if not self._homemode_available:
+                # Returning False is GLib destroying this source, so drop the
+                # id with it. _stop_polling() would otherwise call
+                # source_remove() on a source that is already gone.
+                self._homemode_poll_id = 0
+                return False
+            if not self.app.api:
+                return True
             from surveillance.services.homemode import get_homemode
 
             def _homemode_error(e: Exception) -> None:
@@ -322,8 +328,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Poll alerts
         def _poll_alerts() -> bool:
-            if not self._alerts_available or not self.app.api:
-                return self._alerts_available
+            if not self._alerts_available:
+                self._alerts_poll_id = 0
+                return False
+            if not self.app.api:
+                return True
             from surveillance.services.event import count_unread_alerts
 
             def _alerts_error(e: Exception) -> None:
