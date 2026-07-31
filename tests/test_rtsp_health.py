@@ -27,11 +27,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
+
+from surveillance.ui.mpv_widget import MpvGLArea
 from surveillance.ui.rtsp_health import RtspHealthMonitor
 
 
 class _FakePlayer:
-    def __init__(self, positions: list[float | None]) -> None:
+    def __init__(self, positions: Sequence[float | None]) -> None:
         self._positions = positions
         self._i = 0
         self.play_calls = 0
@@ -49,12 +53,18 @@ class _FakePlayer:
         self.play_calls += 1
 
 
-def _monitor(positions: list[float | None]) -> tuple[RtspHealthMonitor, _FakePlayer, list]:
+def _monitor(positions: Sequence[float | None]) -> tuple[RtspHealthMonitor, _FakePlayer, list]:
     gave_up: list[str] = []
     recovered: list[bool] = []
     player = _FakePlayer(positions)
+    # The monitor only ever reads time_pos and calls stop()/play(), which is
+    # all _FakePlayer provides, so it stands in for the real widget here.
     mon = RtspHealthMonitor(
-        player, "rtsp://cam/live", "Front", gave_up.append, lambda: recovered.append(True)
+        cast("MpvGLArea", player),
+        "rtsp://cam/live",
+        "Front",
+        gave_up.append,
+        lambda: recovered.append(True),
     )
     mon.stop()  # cancel the real GLib timer; we drive _check() manually
     return mon, player, [gave_up, recovered]

@@ -165,7 +165,7 @@ class TestHttpStatusError:
         from surveillance.api.client import _raise_for_status
 
         req = httpx.Request("GET", "https://nas:5001/webapi/entry.cgi")
-        assert _raise_for_status(httpx.Response(200, request=req)) is None
+        _raise_for_status(httpx.Response(200, request=req))  # must not raise
 
 
 class TestNonJsonResponse:
