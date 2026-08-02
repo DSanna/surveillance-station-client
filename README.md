@@ -349,8 +349,7 @@ surveillance-station-client/
 ├── scripts/
 │   └── dump_event_map.py               diagnostic tool for extending EVENT_BITMASK.md
 ├── data/
-│   ├── org.surveillance.desktop
-│   └── style.css
+│   └── org.surveillance.desktop
 ├── .github/workflows/
 │   ├── lint.yml                        CI: ruff + mypy
 │   └── release.yml                     AppImage build + GitHub release
@@ -360,6 +359,7 @@ surveillance-station-client/
 │   ├── config.py                       TOML config + XDG paths
 │   ├── credentials.py                  keyring wrapper
 │   ├── data/
+│   │   ├── style.css
 │   │   └── event_bits.json             event_map bit -> label table (see EVENT_BITMASK.md)
 │   ├── api/
 │   │   ├── client.py                   SurveillanceAPI (httpx)

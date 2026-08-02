@@ -163,13 +163,11 @@ a = Analysis(
     pathex=[],
     ${BINARIES_LINE}
     datas=[
-        ('${SCRIPT_DIR}/data/style.css', 'surveillance/data'),
-        # event_map bit -> label table, loaded at runtime via
-        # importlib.resources.files("surveillance") / "data" / "event_bits.json"
-        # (see services/event_bits.py) -- PyInstaller's collect_submodules()
-        # above only picks up .py files, not this package-relative data
-        # file, so it needs its own explicit datas entry or the Events
-        # page silently decodes every flag as "Unknown" in a built AppImage.
+        # PyInstaller's collect_submodules() above only picks up .py files,
+        # not package data, so src/surveillance/data/*'s contents each need
+        # their own explicit datas entry or the built AppImage silently
+        # misses them (no styling; Events decodes every flag as "Unknown").
+        ('${SCRIPT_DIR}/src/surveillance/data/style.css', 'surveillance/data'),
         ('${SCRIPT_DIR}/src/surveillance/data/event_bits.json', 'surveillance/data'),
     ],
     hiddenimports=hiddenimports,
