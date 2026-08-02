@@ -284,6 +284,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self.headerbar.set_page(last_page)
         self.sidebar.set_active_page(last_page)
 
+        # This bypasses show_page(), which normally pauses Live View's
+        # streams on navigating away — so without this, the session-restore
+        # triggered by login (see _restore_live_session) would start every
+        # camera in the last-used layout playing (with audio, if unmuted)
+        # even though a different page is what's actually shown.
+        if last_page != "live":
+            live_view = self.stack.get_child_by_name("live")
+            if live_view and hasattr(live_view, "pause_streams"):
+                live_view.pause_streams()
+
     def _start_polling(self) -> None:
         """Start background polling for alerts and home mode."""
         self._stop_polling()
