@@ -343,6 +343,41 @@ class TestEventService:
         assert event.reserved == 0
 
     @pytest.mark.asyncio
+    async def test_list_granular_events_reserved_field_passthrough(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """The event_map RLE tuple's 3rd element (reserved) must round-trip
+        onto Event.reserved — it carries Object Removal Detection on
+        Hikvision via overflow once the 32-bit flag budget is exhausted
+        (see EVENT_BITMASK.md), and was previously discarded entirely."""
+        from surveillance.services.event import list_granular_events
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 36,
+                        "event": [{"id": 1, "start": from_time, "stop": from_time + 100}],
+                        "event_map": [[1, 1, 1]],  # flag=1 (non-event) but reserved=1
+                    }
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            events = await list_granular_events(
+                api, [36], {36: "Cam 83"}, from_time, from_time + 100
+            )
+
+        # flag=1 alone is a non-event flag, but reserved=1 still means
+        # something happened (Object Removal Detection) — must not be
+        # dropped just because the main flag looks quiet.
+        assert len(events) == 1
+        assert events[0].event_type == 1
+        assert events[0].reserved == 1
+
+    @pytest.mark.asyncio
     async def test_list_granular_events_unrecognized_flag_passes_through(
         self, api: SurveillanceAPI
     ) -> None:

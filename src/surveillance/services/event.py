@@ -137,11 +137,15 @@ async def list_granular_events(
 
             t = from_time
             parent_idx = 0
-            for value, flag, _reserved in cam.get("event_map", []):
+            for value, flag, reserved in cam.get("event_map", []):
                 duration = value * _EVENT_MAP_INTERVAL_SEC
                 run_start, run_stop = t, t + duration
                 t = run_stop
-                if flag in _EVENT_MAP_NON_EVENT_FLAGS:
+                # A flag of 0/1 alone means "nothing happened" — but not if
+                # `reserved` is set: that's Object Removal Detection firing
+                # via overflow with nothing else in this bucket (see
+                # EVENT_BITMASK.md), a real event that must not be dropped.
+                if flag in _EVENT_MAP_NON_EVENT_FLAGS and not reserved:
                     continue
 
                 parent, parent_idx = _advance_to_parent(recordings, parent_idx, run_start)
@@ -161,6 +165,7 @@ async def list_granular_events(
                         mount_id=cam.get("mountId", 0),
                         arch_id=cam.get("archId", 0),
                         seek_offset=max(0, run_start - parent.get("start", run_start)),
+                        reserved=reserved,
                     )
                 )
 
