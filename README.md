@@ -27,7 +27,7 @@
 - **PTZ Control** &mdash; Pan/Tilt, Zoom, Focus, Preset, and Patrol controls for PTZ-capable cameras, in the same per-slot hover toolbar as Live View's audio controls. Picking a patrol asks Surveillance Station to run that saved route; the NAS drives the camera, so it keeps going after you switch cameras or quit. Routes are created and edited in Surveillance Station itself, and there is no stop control, the same as Synology's own clients.
 - **Snapshots** &mdash; Browse saved snapshots, filter by camera and time range, view, download, or delete. Take a snapshot straight from a Live View slot's right-click menu, which saves it to the snapshot database and offers a local copy. The full-size viewer supports scroll-to-zoom and click-and-drag panning.
 - **Time Lapse** &mdash; Browse, play back, download, lock/unlock, and delete Smart Time Lapse recordings. Filter by time lapse task.
-- **Events & Alerts** &mdash; Browse real motion and person-detected events with their type and time, filter by event type (quick filter plus a multi-select in advanced search) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
+- **Events & Alerts** &mdash; Browse real events decoded from each camera's own detected categories (motion, audio, tampering, person/vehicle/pet, and more, brand-dependent &mdash; see `EVENT_BITMASK.md`) with their type and time, filter by event type (quick filter plus a multi-select in advanced search, matching Any or All of the selected types) and by camera. Notification bell with unread badge and alert popover, polled every 30 seconds.
 - **Home Mode** &mdash; Toggle Surveillance Station home mode directly from the header bar.
 - **License Management** &mdash; View, add, and delete camera licenses. Online and offline activation.
 - **Session Persistence** &mdash; Grid layout, active page, camera assignments, sidebar visibility, and recording search filters (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
@@ -343,8 +343,11 @@ surveillance-station-client/
 ├── pyproject.toml
 ├── README.md
 ├── surveillance.1                      man page
+├── EVENT_BITMASK.md                    event_map bitmask reverse-engineering reference
 ├── build-appimage.sh                   AppImage build script
 ├── appimage_entry.py                   PyInstaller entry point
+├── scripts/
+│   └── dump_event_map.py               diagnostic tool for extending EVENT_BITMASK.md
 ├── data/
 │   ├── org.surveillance.desktop
 │   └── style.css
@@ -356,6 +359,8 @@ surveillance-station-client/
 │   ├── app.py                          Gtk.Application
 │   ├── config.py                       TOML config + XDG paths
 │   ├── credentials.py                  keyring wrapper
+│   ├── data/
+│   │   └── event_bits.json             event_map bit -> label table (see EVENT_BITMASK.md)
 │   ├── api/
 │   │   ├── client.py                   SurveillanceAPI (httpx)
 │   │   ├── auth.py                     login / logout / SID
@@ -370,6 +375,7 @@ surveillance-station-client/
 │   │   ├── g711.py                     G.711 mu-law encoder
 │   │   ├── snapshot.py                 snapshot management
 │   │   ├── event.py                    events + alerts
+│   │   ├── event_bits.py               event_map bitmask decoder (see EVENT_BITMASK.md)
 │   │   ├── homemode.py                 home mode toggle
 │   │   ├── license.py                  license management
 │   │   └── timelapse.py                time lapse management
@@ -396,6 +402,7 @@ surveillance-station-client/
     ├── conftest.py
     ├── test_api_client.py
     ├── test_config.py
+    ├── test_event_bits.py
     ├── test_liveview_persistence.py
     ├── test_models.py
     ├── test_services.py
@@ -450,7 +457,7 @@ Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
 | `SYNO.SurveillanceStation.PTZ` | Pan, tilt, zoom, presets, patrols |
 | `SYNO.SurveillanceStation.AudioOut` | Push-to-talk busy-check (CheckOccupied) — the actual audio upload is a raw WebSocket, not a REST call |
 | `SYNO.SurveillanceStation.Recording` | List, stream, download recordings |
-| `SYNO.SurveillanceStation.RecordingPicker` | Motion/person event intervals for the Events page |
+| `SYNO.SurveillanceStation.RecordingPicker` | Per-camera event intervals for the Events page, decoded bit-by-bit into brand-aware categories &mdash; see `EVENT_BITMASK.md` |
 | `SYNO.SurveillanceStation.SnapShot` | List, take, download, delete snapshots |
 | `SYNO.SurveillanceStation.TimeLapse` | Time lapse task listing |
 | `SYNO.SurveillanceStation.TimeLapse.Recording` | Time lapse recording management |

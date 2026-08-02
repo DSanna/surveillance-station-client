@@ -162,7 +162,16 @@ a = Analysis(
     ['${SCRIPT_DIR}/appimage_entry.py'],
     pathex=[],
     ${BINARIES_LINE}
-    datas=[('${SCRIPT_DIR}/data/style.css', 'surveillance/data')],
+    datas=[
+        ('${SCRIPT_DIR}/data/style.css', 'surveillance/data'),
+        # event_map bit -> label table, loaded at runtime via
+        # importlib.resources.files("surveillance") / "data" / "event_bits.json"
+        # (see services/event_bits.py) -- PyInstaller's collect_submodules()
+        # above only picks up .py files, not this package-relative data
+        # file, so it needs its own explicit datas entry or the Events
+        # page silently decodes every flag as "Unknown" in a built AppImage.
+        ('${SCRIPT_DIR}/src/surveillance/data/event_bits.json', 'surveillance/data'),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={

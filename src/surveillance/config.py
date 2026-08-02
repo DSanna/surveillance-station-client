@@ -128,7 +128,14 @@ class AppConfig:
     events_search_from_time: str = ""
     events_search_to_time: str = ""
     events_search_time_preset: str = "today"
-    events_search_event_types: list[int] = field(default_factory=list)
+    # Filter keys (e.g. "08", "25:hikvision"), not raw event_map flag
+    # values — see services.event_bits. A config saved before that switch
+    # has int-typed entries here; _config_from_data() drops them on load
+    # rather than misinterpreting them as filter keys.
+    events_search_event_types: list[str] = field(default_factory=list)
+    # False ("Any"/OR, the default) or True ("All"/AND) — see
+    # ui.events.EventsView._search_event_types_match_all.
+    events_search_event_types_match_all: bool = False
     snapshots_search_camera_ids: list[int] = field(default_factory=list)
     snapshots_search_from_time: str = ""
     snapshots_search_to_time: str = ""
@@ -256,7 +263,12 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         events_search_from_time=session.get("events_search_from_time", ""),
         events_search_to_time=session.get("events_search_to_time", ""),
         events_search_time_preset=session.get("events_search_time_preset", "today"),
-        events_search_event_types=session.get("events_search_event_types", []),
+        events_search_event_types=[
+            v for v in session.get("events_search_event_types", []) if isinstance(v, str)
+        ],
+        events_search_event_types_match_all=session.get(
+            "events_search_event_types_match_all", False
+        ),
         snapshots_search_camera_ids=session.get("snapshots_search_camera_ids", []),
         snapshots_search_from_time=session.get("snapshots_search_from_time", ""),
         snapshots_search_to_time=session.get("snapshots_search_to_time", ""),
@@ -326,6 +338,7 @@ def _write_config(config: AppConfig) -> None:
             "events_search_to_time": config.events_search_to_time,
             "events_search_time_preset": config.events_search_time_preset,
             "events_search_event_types": config.events_search_event_types,
+            "events_search_event_types_match_all": config.events_search_event_types_match_all,
             "snapshots_search_camera_ids": config.snapshots_search_camera_ids,
             "snapshots_search_from_time": config.snapshots_search_from_time,
             "snapshots_search_to_time": config.snapshots_search_to_time,

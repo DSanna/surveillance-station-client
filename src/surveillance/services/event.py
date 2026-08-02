@@ -60,25 +60,9 @@ _EVENT_MAP_NON_EVENT_FLAGS = {0, 1}
 # request, it just gives DSM enough room to actually finish it.
 _EVENT_MAP_REQUEST_TIMEOUT = 120.0
 
-# Bit 0 is set on every real event flag we've seen (257, 513, 33554689, ...)
-# and looks like a generic "something happened here" marker. Confirmed flag
-# values so far, each checked against the actual recorded video (not just
-# inferred from camera settings):
-#   513  (bit0|bit9)        plain Motion Detection, no smart detector
-#   257  (bit0|bit8)        "enhanced"/dynamic motion, not a person — often
-#                            environmental (e.g. a lamp switching on/off).
-#                            Consistent with CAM 67, which produces this flag
-#                            with Person Detection disabled: bit8 alone does
-#                            NOT mean a person was classified.
-#   33554689 (bit0|bit8|bit25)  person detected — bit25 is what actually
-#                            carries the classification; bit8 alone doesn't.
-# Any other flag value is unconfirmed. Event.event_type is always the *raw*
-# flag value, never a guess beyond what's listed here — see EVENT_TYPES in
-# ui/events.py, which only names these three and shows everything else as a
-# bare numeric type.
-MOTION_EVENT_FLAG = 513
-UNKNOWN_MOTION_FLAG = 257
-PERSON_DETECTED_FLAG = 33554689
+# Event.event_type is always the *raw* flag value, never a guess. See
+# services.event_bits for the decoder and data/event_bits.json for the bit
+# table (brand-dependent); EVENT_BITMASK.md documents how it was derived.
 
 
 def _advance_to_parent(

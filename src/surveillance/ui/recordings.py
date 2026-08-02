@@ -348,10 +348,12 @@ class RecordingsView(Gtk.Box):
             camera_ids: list[int] | None,
             from_dt: datetime | None,
             to_dt: datetime | None,
-            _event_type_ids: list[int] | None,
+            _event_type_ids: list[str] | None,
+            _event_types_match_all: bool,
         ) -> None:
             # Recordings has no event-type filter (Events-only feature) —
-            # the dialog always passes this 4th argument regardless of page.
+            # the dialog always passes these last two arguments regardless
+            # of page.
             self._search_camera_ids = camera_ids
             self._search_from_time = int(from_dt.timestamp()) if from_dt else None
             self._search_to_time = int(to_dt.timestamp()) if to_dt else None
