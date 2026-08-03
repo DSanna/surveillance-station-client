@@ -312,13 +312,25 @@ class WebSocketBridge:
         ffmpeg stops draining that input's pipe, and once the pipe's own
         OS buffer fills too, our write to it blocks forever.
 
-        -use_wallclock_as_timestamps is set for video always, and for
-        PCMU audio deliberately isn't: PCMU is a fixed-rate raw format
-        (8kHz mulaw), so ffmpeg derives smooth, sample-accurate
-        timestamps just by counting bytes, immune to our own
-        asyncio/thread-pool scheduling jitter. AAC arrives as discrete
-        compressed frames rather than a fixed-rate byte stream, so it
-        uses wallclock timestamps instead, same as video.
+        -use_wallclock_as_timestamps is set on both inputs, and has to
+        be. Raw Annex B NALs carry no timing, so the host clock is the
+        only timeline video can have; putting audio on that same clock
+        is what stops the two from diverging. Deriving audio timestamps
+        from the byte count instead (as this did for PCMU, whose 8kHz
+        mulaw is fixed-rate enough that ffmpeg can) paces audio off the
+        camera's sampling clock while video runs off ours, so any offset
+        between the two, plus every dropped audio packet, shifts the
+        audio timeline permanently earlier. mpv paces playback off the
+        audio track, so that shift is not a one-off skew: it is a
+        playback rate slower than the arrival rate, and the backlog
+        grows for as long as the stream runs.
+
+        aresample=async=1000 then covers what the byte count used to.
+        It resamples away the millisecond-scale jitter our own
+        asyncio/thread-pool scheduling leaves in the wallclock stamps,
+        and only falls back to inserting silence for a gap large enough
+        to be a genuine packet loss. Both codecs decode to PCM for it,
+        since a filter cannot run on a copied stream.
 
         The video -probesize is deliberately large (2MB, versus 16KB for
         audio): a single H.265 keyframe from an 8MP/4K-class camera can
@@ -357,10 +369,13 @@ class WebSocketBridge:
         """Build ffmpeg's argument list around the caller's pipe fds and
         start it. Kept apart from _start_muxed only so the fd cleanup there
         covers the pipes and the spawn under one except OSError."""
-        audio_args = ["-probesize", "16384", "-analyzeduration", "300000"]
-        if audio_codec in _AAC_AUDIO_CODECS:
-            audio_args += ["-use_wallclock_as_timestamps", "1"]
-        audio_args += [
+        audio_args = [
+            "-probesize",
+            "16384",
+            "-analyzeduration",
+            "300000",
+            "-use_wallclock_as_timestamps",
+            "1",
             "-thread_queue_size",
             "4096",
             *_FFMPEG_AUDIO_ARGS[audio_codec],
@@ -387,18 +402,22 @@ class WebSocketBridge:
             *audio_args,
             "-c:v",
             "copy",
+            # Decoding to PCM is what lets -af run at all, and it is
+            # required for AAC regardless: stream-copying it straight
+            # from ffmpeg's ADTS demuxer into Matroska fails outright
+            # however correct the ADTS headers are (confirmed live:
+            # "Error parsing AAC extradata, unable to determine
+            # samplerate" / "Could not write header" even with a
+            # verified-correct, consistent sample rate from the very
+            # first frame), because that demuxer does not populate the
+            # extradata Matroska's muxer needs for -c:a copy.
             "-c:a",
-            # AAC stream-copied straight from ffmpeg's ADTS demuxer into
-            # Matroska fails outright regardless of how correct the
-            # ADTS headers are (confirmed live: "Error parsing AAC
-            # extradata, unable to determine samplerate" / "Could not
-            # write header" even with a verified-correct, consistent
-            # sample rate from the very first frame) -- the ADTS
-            # demuxer apparently doesn't populate the extradata
-            # Matroska's muxer needs for -c:a copy. Decoding to raw PCM
-            # instead sidesteps the whole problem the same way PCMU's
-            # already-raw audio never has it.
-            "copy" if audio_codec not in _AAC_AUDIO_CODECS else "pcm_s16le",
+            "pcm_s16le",
+            # Keeps the audio timeline glued to the wallclock stamps
+            # without passing our scheduling jitter through as clicks.
+            # See _start_muxed for why both inputs are on one clock.
+            "-af",
+            "aresample=async=1000",
             "-f",
             "matroska",
             "-live",

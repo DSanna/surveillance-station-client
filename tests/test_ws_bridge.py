@@ -406,6 +406,63 @@ class TestAudioMuxDecision:
         await bridge.stop()
 
 
+def _input_sections(args: tuple[str, ...]) -> list[list[str]]:
+    """Split an ffmpeg argv into one option list per -i input. Everything
+    after the last -i is output options, so it forms no section."""
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for arg in args:
+        if arg == "-i":
+            sections.append(current)
+            current = []
+        else:
+            current.append(arg)
+    return sections
+
+
+async def _capture_spawn_args(monkeypatch: pytest.MonkeyPatch, audio_codec: str) -> tuple[str, ...]:
+    """Run _spawn_ffmpeg against a mocked exec and return the argv it built."""
+    captured: list[tuple[str, ...]] = []
+
+    async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+        captured.append(args)
+        return _FakeFfmpegProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+    bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+    await bridge._spawn_ffmpeg("H264", audio_codec, 11, 12, 13)
+    return captured[0]
+
+
+class TestFfmpegTimestampArgs:
+    """Raw Annex B NALs carry no timing, so ffmpeg stamps video from the
+    host clock. Audio has to come off that same clock: timestamps derived
+    from the byte count follow the camera's own sampling clock instead,
+    and since mpv paces playback off the audio track, any offset between
+    the two clocks (plus every dropped audio packet) becomes playback
+    permanently slower than arrival, with the backlog growing for as long
+    as the stream runs."""
+
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_both_inputs_are_stamped_from_the_host_clock(
+        self, monkeypatch: pytest.MonkeyPatch, audio_codec: str
+    ) -> None:
+        sections = _input_sections(await _capture_spawn_args(monkeypatch, audio_codec))
+        assert len(sections) == 2
+        for section in sections:
+            assert "-use_wallclock_as_timestamps" in section
+
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_audio_is_decoded_and_resampled(
+        self, monkeypatch: pytest.MonkeyPatch, audio_codec: str
+    ) -> None:
+        """The resampler absorbs the scheduling jitter that byte-count
+        timestamps used to hide, and it can only run on a decoded stream."""
+        args = await _capture_spawn_args(monkeypatch, audio_codec)
+        assert args[args.index("-c:a") + 1] == "pcm_s16le"
+        assert args[args.index("-af") + 1].startswith("aresample=async=")
+
+
 class TestPipeLifetime:
     async def test_descriptors_are_recycled(self, connect: Any) -> None:
         """Why playback must stop before a bridge closes its pipe.
