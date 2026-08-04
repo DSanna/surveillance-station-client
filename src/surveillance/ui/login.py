@@ -40,7 +40,11 @@ from gi.repository import Gtk  # type: ignore[import-untyped]
 from surveillance.api.auth import login
 from surveillance.api.client import OtpRequiredError, SurveillanceAPI
 from surveillance.config import ConnectionProfile, add_profile
-from surveillance.credentials import delete_credentials, get_credentials, store_credentials
+from surveillance.credentials import (
+    delete_credentials_async,
+    get_credentials_async,
+    store_credentials_async,
+)
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -181,11 +185,18 @@ class LoginDialog(Gtk.Window):
                 self.port_entry.set_text(str(profile.port))
                 self.https_check.set_active(profile.https)
                 self.verify_ssl_check.set_active(profile.verify_ssl)
-                # Try to load saved credentials
-                creds = get_credentials(profile.name)
-                if creds:
+                # Try to load saved credentials. Off the main thread: a
+                # locked keyring blocks until the user answers the unlock
+                # prompt, which would freeze the dialog meanwhile.
+                wanted = profile.name
+
+                def _fill(creds: tuple[str, str] | None, wanted: str = wanted) -> None:
+                    if not creds or self.profile_combo.get_active_id() != wanted:
+                        return  # the user moved to another profile
                     self.user_entry.set_text(creds[0])
                     self.pass_entry.set_text(creds[1])
+
+                run_async(get_credentials_async(profile.name), callback=_fill)
         else:
             self.name_entry.set_text("")
             self.host_entry.set_text("")
@@ -305,13 +316,14 @@ class LoginDialog(Gtk.Window):
 
         # Last, because it is the only step that can fail on a machine with
         # no working keyring, and the login itself has already succeeded.
+        # Off the main thread for the same reason the lookup is.
         if self.remember_check.get_active():
-            store_credentials(profile.name, username, password)
+            run_async(store_credentials_async(profile.name, username, password))
         else:
             # Unticking it has to remove what a previous login stored,
             # otherwise the old password stays in the keyring and comes
             # back in the form the next time the profile is selected.
-            delete_credentials(profile.name)
+            run_async(delete_credentials_async(profile.name))
 
     def _on_connect_error(self, error: Exception) -> None:
         # Same guard as _on_connect_success: this arrives on the GTK thread
