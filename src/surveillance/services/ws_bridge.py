@@ -455,7 +455,7 @@ class WebSocketBridge:
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
-        await asyncio.to_thread(os.write, self._audio_write_fd, payload)
+        await asyncio.to_thread(self._write_pipe, True, payload)
 
     async def _handle_aac_audio_frame(self, payload: bytes) -> None:
         """Write a real AAC frame to ffmpeg's audio input, after
@@ -469,7 +469,7 @@ class WebSocketBridge:
         """
         frame = strip_au_header(payload)
         header = adts_header(len(frame), self._aac_sample_rate)
-        await asyncio.to_thread(os.write, self._audio_write_fd, header + frame)
+        await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, payload: bytes) -> None:
         """Buffer a raw (still AU-header-prefixed) AAC frame while
@@ -568,7 +568,7 @@ class WebSocketBridge:
         self._audio_active = False
         self._ready_event.set()
         for nal in self._aac_video_buffer:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
         self._aac_video_buffer.clear()
         self._aac_audio_buffer.clear()
 
@@ -637,7 +637,7 @@ class WebSocketBridge:
         a degenerate rate to its estimation and can stall it entirely.
         """
         for nal in self._aac_video_buffer:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
             await asyncio.sleep(0.04)
         self._aac_video_buffer.clear()
 
@@ -658,7 +658,7 @@ class WebSocketBridge:
             if len(self._aac_video_buffer) >= _AAC_DETECTION_VIDEO_FRAME_CAP:
                 await self._finish_aac_detection()
         else:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
 
     async def _dispatch_audio_frame(self, payload: bytes) -> None:
         """Route a real audio payload to whichever handler matches the
@@ -849,6 +849,30 @@ class WebSocketBridge:
         if self._stopping:
             return ""
         return self._error or "stream ended"
+
+    def _write_pipe(self, audio: bool, data: bytes) -> None:
+        """Write to one of the pipes through a private copy of the fd.
+
+        Runs in a worker thread. The descriptor is read and duplicated
+        under the lock _close_write_fd() takes, so a teardown racing this
+        cannot close it between the read and the write(2) -- the next
+        bridge's os.pipe() gets the same numbers back, so a late write
+        would land in another camera's stream, or in whatever else
+        happened to claim the number.
+
+        A duplicate rather than holding the lock across the write: a write
+        to a pipe mpv has not drained blocks until it does, and
+        close_write_end() is called from the GTK main thread.
+        """
+        with self._fd_lock:
+            fd = self._audio_write_fd if audio else self._video_write_fd
+            if fd < 0:
+                return
+            dup = os.dup(fd)
+        try:
+            os.write(dup, data)
+        finally:
+            os.close(dup)
 
     def _close_write_fd(self) -> None:
         """Atomically close the write fd(s). Thread-safe, idempotent."""
