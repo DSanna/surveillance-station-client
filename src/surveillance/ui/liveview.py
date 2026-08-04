@@ -356,6 +356,16 @@ class CameraSlot(Gtk.Box):
             self._ws_bridge = None
             bridge.close_write_end()
             run_async(bridge.stop())
+
+    def stop_ptt(self) -> None:
+        """End any push-to-talk session on this slot.
+
+        Deliberately separate from stop_stream(): push-to-talk is its own
+        audio-out channel to the camera, so a routine video restart (a
+        protocol change, a status flap, a new stream URL) must not cut a
+        conversation short. Only the paths where the slot itself stops
+        being used call this.
+        """
         if self._ptt_session is not None:
             self._ptt_session.stop()
             self._ptt_session = None
@@ -363,6 +373,7 @@ class CameraSlot(Gtk.Box):
 
     def clear(self) -> None:
         self.stop_stream()
+        self.stop_ptt()
         self.player.reset_zoom()
         self._toolbar.clear()
         self.camera = None
@@ -459,6 +470,7 @@ class LiveView(Gtk.Box):
                     slot.player.set_mute(True)
                     slot._update_mute_icon()
                     slot.stop_stream()
+                    slot.stop_ptt()
 
         self._active = new_active
 
@@ -882,6 +894,7 @@ class LiveView(Gtk.Box):
         if camera.status != CameraStatus.ENABLED:
             slot._stream_lost = False  # showing "offline", not a lost stream
             slot.stop_stream()
+            slot.stop_ptt()  # the camera is not reachable to talk to either
             slot.player.reset_zoom()  # the placeholder card is never zoomed
             slot.set_status("offline")
             slot.player.play(OFFLINE_PLACEHOLDER_URL)
@@ -1134,6 +1147,7 @@ class LiveView(Gtk.Box):
             slot._update_mute_icon()
             if slot.camera:
                 slot.stop_stream()
+                slot.stop_ptt()
 
     def resume_streams(self) -> None:
         """Restart streams for all visible slots that have a camera assigned."""
