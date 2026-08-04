@@ -348,7 +348,10 @@ def _write_config(config: AppConfig) -> None:
     # previous config intact instead of a truncated or empty one — the
     # SIGINT/SIGTERM handlers in __main__ are os._exit(), which would
     # otherwise skip the flush and lose every profile.
-    tmp = CONFIG_FILE.with_suffix(".toml.new")
+    # Per-process temp name: a fixed one is the same inode for every
+    # writer, so two instances sharing a $HOME could interleave their
+    # writes into it and rename a spliced file over the real config.
+    tmp = CONFIG_FILE.with_suffix(f".toml.{os.getpid()}.new")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with open(fd, "wb") as f:
