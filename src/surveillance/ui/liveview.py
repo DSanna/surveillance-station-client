@@ -918,6 +918,13 @@ class LiveView(Gtk.Box):
     def _on_stream_url(self, result: tuple[int, int, str]) -> None:
         slot_idx, cam_id, url = result
         slot = self._slots[slot_idx]
+        if self._streams_paused:
+            # The user left the Live View page while this URL was being
+            # fetched. A slot keeps its own visible flag when the page is
+            # unmapped, so that alone would not stop us starting a stream
+            # nobody is watching and pause_streams() has already been past.
+            # resume_streams() starts it again on return.
+            return
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
             slot.stop_stream()
