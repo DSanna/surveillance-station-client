@@ -141,7 +141,11 @@ The
 .B [camera_protocols]
 section selects the stream protocol per camera (auto, websocket,
 mjpeg, rtsp_over_http, rtsp, multicast, direct).
-Auto tries: websocket, mjpeg, rtsp_over_http, rtsp, multicast.
+.B auto
+is the same as
+.BR websocket ;
+there is no fallback between protocols, so pick one explicitly if
+WebSocket does not work for a camera.
 .IR websocket
 uses a WebSocket stream bridged to mpv via an in-memory pipe, muxing in
 real audio via ffmpeg when the camera's audio codec is PCMU or AAC.

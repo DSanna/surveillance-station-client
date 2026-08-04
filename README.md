@@ -181,7 +181,8 @@ last_page = "live"             # last active page
 [camera_protocols]
 # Stream protocol per camera ID:
 # auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
-# Auto tries: websocket → mjpeg → rtsp_over_http → rtsp → multicast.
+# "auto" is the same as "websocket"; there is no fallback between
+# protocols, so pick one explicitly if WebSocket does not work.
 # "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe,
 # muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 # "direct" uses the URL from [camera_overrides].
