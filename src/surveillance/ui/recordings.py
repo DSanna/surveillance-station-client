@@ -245,10 +245,19 @@ class RecordingsView(Gtk.Box):
         """
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids: set[int] = set()
+        added = False
         for cam in self.window.sidebar.cameras:
             if cam.id not in self._known_camera_ids:
                 self.camera_combo.append(str(cam.id), truncate_label(cam.name))
                 self._known_camera_ids.add(cam.id)
+                added = True
+        if added:
+            # The construction-time load runs before the sidebar's camera
+            # fetch returns, so a filter restored from the config was
+            # summarised with no names to look the ids up in. No reload:
+            # only the label was wrong, the query already asked for the
+            # right cameras.
+            self._update_filter_summary()
 
     def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
         """Add a camera to the combo if not already present."""
