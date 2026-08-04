@@ -27,12 +27,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Snapshot
+from surveillance.services.download import write_download
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
@@ -126,14 +126,13 @@ async def download_snapshot(
     snapshot_id: int,
     output_path: Path,
 ) -> Path:
-    """Download a snapshot to disk."""
+    """Download a snapshot to disk.
+
+    Raises ValueError if the server returned an error body rather than an
+    image. A partial file from a failed write is removed.
+    """
     data = await fetch_snapshot_image(api, snapshot_id)
-    # Off the loop thread: one event loop serves the whole app, so a
-    # multi-hundred-MB write here would stall every live stream and
-    # every poll until it finished.
-    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
-    await asyncio.to_thread(output_path.write_bytes, data)
-    return output_path
+    return await write_download(data, output_path, f"Snapshot {snapshot_id}")
 
 
 async def delete_snapshot(api: SurveillanceAPI, snapshot_id: int, ds_id: int = 0) -> None:

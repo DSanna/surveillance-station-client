@@ -27,12 +27,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Recording, TimeLapseRecording, TimeLapseTask
+from surveillance.services.download import write_download
 from surveillance.services.recording import RECORDING_DOWNLOAD_VERSION
 
 if TYPE_CHECKING:
@@ -154,9 +154,9 @@ async def download_recording(
 ) -> Path:
     """Download a time lapse recording to disk.
 
-    Raises ValueError if the server returned an empty body or an HTML
-    login page (which happens when the session expires) instead of a
-    recording.
+    Raises ValueError if the server returned an empty body, an HTML login
+    page (which happens when the session expires) or a JSON error instead
+    of a recording. A partial file from a failed write is removed.
     """
     data = await api.download(
         api="SYNO.SurveillanceStation.Recording",
@@ -164,16 +164,4 @@ async def download_recording(
         version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id), "recEvtType": "3"},
     )
-    if not data:
-        raise ValueError(f"Recording {recording_id}: empty response (session may have expired)")
-    head = data[:16].lstrip().lower()
-    if head.startswith((b"<!doctype", b"<html")):
-        raise ValueError(
-            f"Recording {recording_id}: server returned HTML (session expired or access denied)"
-        )
-    # Off the loop thread: one event loop serves the whole app, so a
-    # multi-hundred-MB write here would stall every live stream and
-    # every poll until it finished.
-    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
-    await asyncio.to_thread(output_path.write_bytes, data)
-    return output_path
+    return await write_download(data, output_path, f"Time lapse recording {recording_id}")
