@@ -267,11 +267,13 @@ class SnapshotsView(Gtk.Box):
         after the async camera list loads (or after a re-login, when the
         combo already holds rows) does not duplicate every entry.
 
-        Reloads when a camera filter is active, because SnapShot::List
-        identifies a camera by name only: rows are matched to the filter
-        through the sidebar's name-to-id map, and the construction-time
-        load can beat the sidebar's own fetch, leaving every row
-        unmatched and the page empty.
+        Reloads whenever cameras were newly appended, because SnapShot::List
+        identifies a camera by name only: every row, filtered or not, gets
+        its camera id through the sidebar's name-to-id map, and the
+        construction-time load can beat the sidebar's own fetch. Without a
+        reload the rows keep the id they were resolved with against an
+        empty map, which leaves each one with a dead camera button
+        claiming the camera is no longer on this NAS.
         """
         if not hasattr(self, "_known_camera_ids"):
             self._known_camera_ids: set[int] = set()
@@ -281,7 +283,7 @@ class SnapshotsView(Gtk.Box):
                 self.camera_combo.append(str(cam.id), truncate_label(cam.name))
                 self._known_camera_ids.add(cam.id)
                 added = True
-        if added and self._multi_camera_filter is not None:
+        if added:
             self._load_snapshots()
 
     def _ensure_camera_in_combo(self, camera_id: int, name: str) -> None:
