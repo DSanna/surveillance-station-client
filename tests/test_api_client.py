@@ -141,6 +141,28 @@ class TestSurveillanceAPI:
         assert api._client is None
 
 
+class TestLogout:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_clears_credentials_so_nothing_can_re_login(self, api: SurveillanceAPI) -> None:
+        """request() re-logins on a session error whenever the username and
+        password are still set, which after a logout would open a fresh
+        session behind the user's back."""
+        from surveillance.api.auth import logout
+
+        api.username = "admin"
+        api.password = "secret"  # noqa: S105
+        respx.get(url__regex=r".*").mock(
+            return_value=Response(200, json={"success": True, "data": {}})
+        )
+
+        await logout(api)
+
+        assert api.sid == ""
+        assert not api.username
+        assert not api.password
+
+
 class TestHttpStatusError:
     def test_message_has_no_credentials(self) -> None:
         import httpx

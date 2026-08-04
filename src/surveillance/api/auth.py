@@ -92,7 +92,14 @@ async def login(
 
 
 async def logout(api: SurveillanceAPI) -> None:
-    """Logout from Synology, invalidating the session."""
+    """Logout from Synology, invalidating the session.
+
+    Clears the stored credentials along with the SID. request() and
+    download() re-login automatically on a session error whenever both are
+    still set, so leaving them behind let a poll or a download that was
+    already in flight open a brand new session moments after the user
+    logged out.
+    """
     if not api.sid:
         return
 
@@ -107,3 +114,5 @@ async def logout(api: SurveillanceAPI) -> None:
         pass
     finally:
         api.sid = ""
+        api.username = ""
+        api.password = ""
