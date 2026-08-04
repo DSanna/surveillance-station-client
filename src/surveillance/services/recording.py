@@ -197,6 +197,11 @@ _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.Or
 
 _MAX_THUMBNAIL_CACHE = 128
 
+# Bumped by clear_snapshot_cache(); a fetch that started before the bump
+# still returns its image to the row that asked, but does not put it in
+# the cache the next NAS will read.
+_cache_generation = 0
+
 
 def _cache_put(
     cache: collections.OrderedDict[int, bytes], key: int, value: bytes, limit: int
@@ -208,7 +213,19 @@ def _cache_put(
 
 
 def clear_snapshot_cache() -> None:
-    """Clear the thumbnail cache."""
+    """Clear the thumbnail cache and disown fetches already in flight.
+
+    Called on disconnect from the GTK thread while up to _thumbnail
+    semaphore's worth of GetThumbnail requests are still running on the
+    asyncio thread, plus however many are queued behind it. Clearing
+    alone would let those finish and re-populate the cache with the old
+    NAS's entries, and the key is a bare recording id with no notion of
+    which server it came from, so logging into a second NAS could show
+    the first one's thumbnail for a colliding id.
+    """
+    global _cache_generation
+
+    _cache_generation += 1
     _recording_thumbnail_cache.clear()
 
 
@@ -222,6 +239,8 @@ async def fetch_recording_thumbnail(
     """
     if rec.id in _recording_thumbnail_cache:
         return _recording_thumbnail_cache[rec.id]
+
+    generation = _cache_generation
 
     async with _thumbnail_semaphore:
         if rec.id in _recording_thumbnail_cache:
@@ -256,12 +275,13 @@ async def fetch_recording_thumbnail(
                 if b64:
                     image_data = base64.b64decode(b64)
                     if image_data:
-                        _cache_put(
-                            _recording_thumbnail_cache,
-                            rec.id,
-                            image_data,
-                            _MAX_THUMBNAIL_CACHE,
-                        )
+                        if generation == _cache_generation:
+                            _cache_put(
+                                _recording_thumbnail_cache,
+                                rec.id,
+                                image_data,
+                                _MAX_THUMBNAIL_CACHE,
+                            )
                         return image_data
         except Exception as exc:
             log.debug(
