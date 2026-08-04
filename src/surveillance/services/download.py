@@ -59,9 +59,12 @@ def check_download_content(data: bytes, label: str) -> None:
             "The session may have expired — try logging out and back in."
         )
 
-    # Detect HTML responses (login redirect, DSM error page).
-    stripped = data[:100].lstrip()
-    if stripped[:9].lower() == b"<!doctype" or stripped[:6].lower() == b"<html>":
+    # Detect HTML responses (login redirect, DSM error page). Matched as a
+    # prefix: an exact "<html>" comparison missed a root tag carrying any
+    # attribute, so a doctype-less "<html lang=..>" login page was written
+    # out as if it were the media file.
+    stripped = data[:100].lstrip().lower()
+    if stripped.startswith((b"<!doctype", b"<html")):
         raise ValueError(
             f"{label}: server returned an HTML page instead of a media file. "
             "This usually means the session expired or the request was rejected. "

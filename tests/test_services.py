@@ -781,6 +781,23 @@ class TestDownloadRecordingValidation:
         assert not out.exists()
 
     @pytest.mark.asyncio
+    async def test_html_tag_with_attributes_raises(
+        self, api: SurveillanceAPI, tmp_path: Path
+    ) -> None:
+        """A login page with no doctype and an attribute on the root tag is
+        still HTML, not video."""
+        from surveillance.services.recording import download_recording
+
+        body = b'<html lang="en"><body>login</body></html>'
+        out = tmp_path / "out.mp4"
+        with (
+            patch.object(api, "download", new_callable=AsyncMock, return_value=body),
+            pytest.raises(ValueError, match="HTML"),
+        ):
+            await download_recording(api, 1, out)
+        assert not out.exists()
+
+    @pytest.mark.asyncio
     async def test_successful_download_writes_file(
         self, api: SurveillanceAPI, tmp_path: Path
     ) -> None:
