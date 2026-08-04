@@ -499,9 +499,20 @@ class WebSocketBridge:
         one.
         """
         buf = bytearray()
-        for raw in self._aac_audio_buffer:
-            frame = strip_au_header(raw)
-            buf += adts_header(len(frame), self._aac_sample_rate) + frame
+        try:
+            for raw in self._aac_audio_buffer:
+                frame = strip_au_header(raw)
+                buf += adts_header(len(frame), self._aac_sample_rate) + frame
+        except ValueError:
+            # A frame too long for an ADTS header to describe means this
+            # camera is not using the framing we assume -- which is exactly
+            # what this check exists to catch, so treat it as "not ours"
+            # rather than letting it escape and kill the pump.
+            log.info(
+                "WebSocket bridge for %s: AAC frames are not in the expected framing",
+                self._label,
+            )
+            return False
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -570,6 +581,11 @@ class WebSocketBridge:
         if self._aac_intervals:
             self._aac_sample_rate = nearest_sample_rate(median(self._aac_intervals))
         self._aac_detecting = False
+        # Detection is over either way. Left populated, these would make a
+        # reconnect that re-enters detection finish instantly off the
+        # previous session's measurements.
+        self._aac_intervals.clear()
+        self._last_audio_write_time = None
 
         if not await self._aac_frames_look_valid():
             await self._fall_back_to_video_only()
