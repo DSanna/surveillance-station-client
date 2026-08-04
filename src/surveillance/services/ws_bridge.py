@@ -215,6 +215,7 @@ class WebSocketBridge:
         self._stopping = False
         self._connected_at: float | None = None
         self._fast_failures = 0
+        self._attempt_got_data = False
 
     @property
     def audio_active(self) -> bool:
@@ -230,12 +231,20 @@ class WebSocketBridge:
     def _note_attempt_outcome(self, connected: bool, attempt_start: float) -> bool:
         """Track consecutive failed-to-connect attempts; return True to give up.
 
-        A connection that stayed up a little while is a fresh, healthy
-        attempt — only a run of failures that never even establish a real
-        connection should give up, so a camera that is genuinely
+        A connection that stayed up a little while *and delivered data* is a
+        fresh, healthy attempt — only a run of failures that never establish
+        a working stream should give up, so a camera that is genuinely
         unreachable doesn't retry forever.
+
+        Uptime alone is not enough to call an attempt healthy: the idle
+        timeout is longer than the fast-failure threshold, so a socket the
+        NAS accepts but never feeds would score as healthy on every pass,
+        reset the streak forever, and leave start() waiting on a codec-info
+        frame that is never coming.
         """
-        attempt_uptime = time.monotonic() - attempt_start if connected else 0.0
+        attempt_uptime = (
+            time.monotonic() - attempt_start if connected and self._attempt_got_data else 0.0
+        )
         if attempt_uptime >= _FAST_FAILURE_THRESHOLD:
             self._fast_failures = 0
             return False
@@ -661,6 +670,7 @@ class WebSocketBridge:
             except TimeoutError:
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
+            self._attempt_got_data = True
             if not isinstance(message, bytes) or len(message) < 4:
                 continue
             (hdr_len,) = struct.unpack(">I", message[:4])
@@ -746,6 +756,7 @@ class WebSocketBridge:
             while not self._stopping:
                 clean_close = False
                 connected = False
+                self._attempt_got_data = False
                 attempt_start = time.monotonic()
                 try:
                     log.debug("WebSocket connecting for %s: %s", self._label, self._ws_url)

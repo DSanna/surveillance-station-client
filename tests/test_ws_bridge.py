@@ -258,6 +258,32 @@ class TestUptime:
         await bridge.stop()
 
 
+class TestAttemptScoring:
+    """A long attempt only counts as healthy if it actually delivered data."""
+
+    def test_connected_but_silent_never_resets_the_streak(self) -> None:
+        import time
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        # Longer than _FAST_FAILURE_THRESHOLD, which is what the idle
+        # timeout produces: without the data check this scored as healthy
+        # every pass and the bridge reconnected forever.
+        long_ago = time.monotonic() - (ws_bridge._FAST_FAILURE_THRESHOLD + 5.0)
+        outcomes = [bridge._note_attempt_outcome(True, long_ago) for _ in range(10)]
+        assert any(outcomes), "a connected-but-silent stream must eventually give up"
+        assert bridge._error
+
+    def test_a_long_attempt_that_delivered_data_stays_healthy(self) -> None:
+        import time
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        long_ago = time.monotonic() - (ws_bridge._FAST_FAILURE_THRESHOLD + 5.0)
+        for _ in range(10):
+            bridge._attempt_got_data = True
+            assert bridge._note_attempt_outcome(True, long_ago) is False
+        assert bridge._fast_failures == 0
+
+
 class _FakeFfmpegProc:
     """Stand-in for asyncio.subprocess.Process -- avoids spawning a real
     ffmpeg in these unit tests, which only care about the mux/fallback
