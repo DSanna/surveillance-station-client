@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import platform
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -38,6 +39,10 @@ from surveillance.api.models import ApiInfo
 from surveillance.config import ConnectionProfile
 
 log = logging.getLogger(__name__)
+
+# Big enough that a multi-hundred-MB recording does not cost one thread
+# hop per 64 KiB of it, small enough to keep memory flat.
+_DOWNLOAD_CHUNK_SIZE = 1 << 20
 
 # Codes 100-119 are shared by every Synology API. Above that the
 # namespaces diverge: SYNO.API.Auth and Surveillance Station both define
@@ -369,6 +374,105 @@ class SurveillanceAPI:
             raise ApiError(100, "Server returned an empty response body")
 
         return content
+
+    async def _raw_stream_download(
+        self,
+        api: str,
+        method: str,
+        version: int = 1,
+        extra_params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Stream binary data from an API endpoint (no auto-reconnect).
+
+        Everything DSM can report instead of a file — an HTTP status, a
+        JSON error, an HTML login page — is raised before the first chunk
+        is yielded, so a caller that has started receiving data knows the
+        response really is the file.
+        """
+        path = self._get_api_path(api)
+        ver = self._get_api_version(api, version)
+
+        params: dict[str, Any] = {
+            "api": api,
+            "version": ver,
+            "method": method,
+        }
+        if self.sid:
+            params["_sid"] = self.sid
+        if extra_params:
+            params.update(extra_params)
+
+        async with self.client.stream("GET", path, params=params) as resp:
+            if not resp.is_success:
+                await resp.aread()
+            _raise_for_status(resp)
+
+            content_type = resp.headers.get("content-type", "")
+            if "json" in content_type:
+                await resp.aread()
+                result = _json_or_raise(resp)
+                code = result.get("error", {}).get("code", 100)
+                syno_msg = result.get("error", {}).get("message", "")
+                raise ApiError(code, syno_msg)
+            if "text/html" in content_type:
+                # DSM redirected to the login page — the session has expired.
+                log.warning(
+                    "Download endpoint returned HTML (content-type=%s); session may have expired",
+                    content_type,
+                )
+                raise ApiError(
+                    119,
+                    "Server returned an HTML page — session expired or access denied",
+                )
+
+            empty = True
+            async for chunk in resp.aiter_bytes(_DOWNLOAD_CHUNK_SIZE):
+                if chunk:
+                    empty = False
+                    yield chunk
+            if empty:
+                raise ApiError(100, "Server returned an empty response body")
+
+    async def stream_download(
+        self,
+        api: str,
+        method: str,
+        version: int = 1,
+        extra_params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Stream binary data with auto-reconnect on session errors.
+
+        Unlike download(), the body never has to fit in memory, so a
+        multi-gigabyte recording costs one chunk rather than the whole
+        file (twice over, while httpx joins its chunk list).
+
+        The re-login retry only applies before any data has been handed
+        out — a stream that fails midway cannot be resumed transparently.
+        """
+        started = False
+        try:
+            async for chunk in self._raw_stream_download(api, method, version, extra_params):
+                started = True
+                yield chunk
+        except ApiError as e:
+            if started or e.code not in SESSION_ERRORS or not (self.username and self.password):
+                raise
+            log.info("Session error %d during download, attempting re-login", e.code)
+            try:
+                await login(
+                    self,
+                    self.username,
+                    self.password,
+                    device_id=self.device_id,
+                    device_name=platform.node(),
+                )
+            except (AuthError, ApiError) as relogin_exc:
+                raise SessionExpiredError(str(relogin_exc)) from e
+        else:
+            return
+
+        async for chunk in self._raw_stream_download(api, method, version, extra_params):
+            yield chunk
 
     async def download(
         self,

@@ -27,14 +27,32 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
 from surveillance.api.models import CameraStatus, HomeModeInfo, LicenseInfo, TimeLapseTask
 from surveillance.config import ConnectionProfile
+
+
+def _stream_mock(data: bytes) -> MagicMock:
+    """Stand-in for SurveillanceAPI.stream_download.
+
+    It is an async generator function, not a coroutine, so AsyncMock is the
+    wrong shape: calling it must return something `async for` can iterate.
+    """
+
+    def _call(**kwargs: object) -> AsyncIterator[bytes]:
+        async def _gen() -> AsyncIterator[bytes]:
+            if data:
+                yield data
+
+        return _gen()
+
+    return MagicMock(side_effect=_call)
 
 
 @pytest.fixture
@@ -748,7 +766,7 @@ class TestDownloadRecordingValidation:
 
         out = tmp_path / "out.mp4"
         with (
-            patch.object(api, "download", new_callable=AsyncMock, return_value=b""),
+            patch.object(api, "stream_download", _stream_mock(b"")),
             pytest.raises(ValueError, match="empty response"),
         ):
             await download_recording(api, 1, out)
@@ -761,7 +779,7 @@ class TestDownloadRecordingValidation:
         body = b"<!DOCTYPE html><html><body>login</body></html>"
         out = tmp_path / "out.mp4"
         with (
-            patch.object(api, "download", new_callable=AsyncMock, return_value=body),
+            patch.object(api, "stream_download", _stream_mock(body)),
             pytest.raises(ValueError, match="HTML"),
         ):
             await download_recording(api, 1, out)
@@ -774,7 +792,7 @@ class TestDownloadRecordingValidation:
         body = b"\n  <html><body>login</body></html>"
         out = tmp_path / "out.mp4"
         with (
-            patch.object(api, "download", new_callable=AsyncMock, return_value=body),
+            patch.object(api, "stream_download", _stream_mock(body)),
             pytest.raises(ValueError, match="HTML"),
         ):
             await download_recording(api, 1, out)
@@ -791,7 +809,7 @@ class TestDownloadRecordingValidation:
         body = b'<html lang="en"><body>login</body></html>'
         out = tmp_path / "out.mp4"
         with (
-            patch.object(api, "download", new_callable=AsyncMock, return_value=body),
+            patch.object(api, "stream_download", _stream_mock(body)),
             pytest.raises(ValueError, match="HTML"),
         ):
             await download_recording(api, 1, out)
@@ -806,10 +824,54 @@ class TestDownloadRecordingValidation:
         # Minimal ftyp-box header so it looks like a real MP4
         body = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 8
         out = tmp_path / "out.mp4"
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=body):
+        with patch.object(api, "stream_download", _stream_mock(body)):
             result = await download_recording(api, 42, out)
         assert result == out
         assert out.read_bytes() == body
+
+
+class TestStreamToFile:
+    """Downloads are written as they arrive so a large recording never has
+    to fit in memory."""
+
+    @pytest.mark.asyncio
+    async def test_joins_every_chunk_in_order(self, tmp_path: Path) -> None:
+        from surveillance.services.download import stream_to_file
+
+        parts = [b"\x00\x00\x00\x18ftypisom", b"middle" * 500, b"tail"]
+
+        async def _gen() -> AsyncIterator[bytes]:
+            for part in parts:
+                yield part
+
+        out = tmp_path / "rec.mp4"
+        await stream_to_file(_gen(), out, "Recording 1")
+        assert out.read_bytes() == b"".join(parts)
+
+    @pytest.mark.asyncio
+    async def test_removes_the_partial_file_when_the_stream_dies(self, tmp_path: Path) -> None:
+        from surveillance.services.download import stream_to_file
+
+        async def _gen() -> AsyncIterator[bytes]:
+            yield b"\x00\x00\x00\x18ftypisom" + b"x" * 2000
+            raise OSError("connection reset")
+
+        out = tmp_path / "rec.mp4"
+        with pytest.raises(OSError, match="connection reset"):
+            await stream_to_file(_gen(), out, "Recording 1")
+        assert not out.exists()
+
+    @pytest.mark.asyncio
+    async def test_rejects_an_error_page_before_writing(self, tmp_path: Path) -> None:
+        from surveillance.services.download import stream_to_file
+
+        async def _gen() -> AsyncIterator[bytes]:
+            yield b'<html lang="en"><body>login</body></html>'
+
+        out = tmp_path / "rec.mp4"
+        with pytest.raises(ValueError, match="HTML"):
+            await stream_to_file(_gen(), out, "Recording 1")
+        assert not out.exists()
 
 
 class TestG711:

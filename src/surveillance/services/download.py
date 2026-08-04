@@ -37,9 +37,14 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Enough of the body to recognise an error page or a JSON error before
+# any of it is written out.
+_VALIDATE_HEAD_BYTES = 1024
 
 
 def check_download_content(data: bytes, label: str) -> None:
@@ -83,6 +88,54 @@ def check_download_content(data: bytes, label: str) -> None:
             raise ValueError(
                 f"{label}: API returned error code {code}" + (f" — {msg}" if msg else "")
             )
+
+
+async def stream_to_file(chunks: AsyncIterator[bytes], output_path: Path, label: str) -> Path:
+    """Write a streamed download to disk as it arrives.
+
+    Memory stays flat whatever the file size, so a multi-gigabyte
+    recording no longer has to fit in RAM. The first bytes are validated
+    before anything is written, and a partial file is removed if the
+    transfer or the write fails part-way through.
+
+    Writes run off the loop thread: one event loop serves the whole app,
+    so blocking it on disk I/O would stall every live stream and poll.
+    """
+    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
+
+    head = bytearray()
+    checked = False
+    total = 0
+    handle = await asyncio.to_thread(output_path.open, "wb")
+    try:
+        async for chunk in chunks:
+            if not checked:
+                head += chunk
+                if len(head) < _VALIDATE_HEAD_BYTES:
+                    continue
+                check_download_content(bytes(head), label)
+                checked = True
+                pending = bytes(head)
+                head.clear()
+            else:
+                pending = chunk
+            total += len(pending)
+            await asyncio.to_thread(handle.write, pending)
+
+        if not checked:
+            # The whole file was smaller than the validation window.
+            check_download_content(bytes(head), label)
+            total += len(head)
+            await asyncio.to_thread(handle.write, bytes(head))
+    except BaseException:
+        await asyncio.to_thread(handle.close)
+        with contextlib.suppress(OSError):
+            output_path.unlink()
+        raise
+
+    await asyncio.to_thread(handle.close)
+    log.info("%s downloaded: %s (%d bytes)", label, output_path, total)
+    return output_path
 
 
 async def write_download(data: bytes, output_path: Path, label: str) -> Path:

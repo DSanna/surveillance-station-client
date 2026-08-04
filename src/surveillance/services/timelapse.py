@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Recording, TimeLapseRecording, TimeLapseTask
-from surveillance.services.download import write_download
+from surveillance.services.download import stream_to_file
 from surveillance.services.recording import RECORDING_DOWNLOAD_VERSION
 
 if TYPE_CHECKING:
@@ -158,10 +158,10 @@ async def download_recording(
     page (which happens when the session expires) or a JSON error instead
     of a recording. A partial file from a failed write is removed.
     """
-    data = await api.download(
+    chunks = api.stream_download(
         api="SYNO.SurveillanceStation.Recording",
         method="Download",
         version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id), "recEvtType": "3"},
     )
-    return await write_download(data, output_path, f"Time lapse recording {recording_id}")
+    return await stream_to_file(chunks, output_path, f"Time lapse recording {recording_id}")

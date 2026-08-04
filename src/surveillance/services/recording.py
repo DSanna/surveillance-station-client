@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Recording
-from surveillance.services.download import write_download
+from surveillance.services.download import stream_to_file
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
@@ -184,13 +184,13 @@ async def download_recording(
         OSError: File-system write failure (partial file is cleaned up).
     """
     log.debug("Downloading recording %d to %s", recording_id, output_path)
-    data = await api.download(
+    chunks = api.stream_download(
         api="SYNO.SurveillanceStation.Recording",
         method="Download",
         version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id)},
     )
-    return await write_download(data, output_path, f"Recording {recording_id}")
+    return await stream_to_file(chunks, output_path, f"Recording {recording_id}")
 
 
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
