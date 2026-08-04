@@ -939,6 +939,13 @@ class LiveView(Gtk.Box):
 
         def _on_ready(pipe_url: str) -> None:
             s = self._slots[slot_idx]
+            if s._ws_bridge is not bridge:
+                # The slot tore this bridge down (or replaced it) while
+                # start() was still resolving. Its read fd is closed by now
+                # and the next bridge's os.pipe() hands the same numbers
+                # back, so playing this pipe_url would point mpv at another
+                # camera's stream.
+                return
             if s.get_visible() and s.camera and s.camera.id == cam_id:
                 log.info(
                     "WebSocket bridge ready, playing pipe: %s (audio_active=%s)",
