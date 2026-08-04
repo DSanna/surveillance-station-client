@@ -45,6 +45,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_LICENSE_SERVER_URL = "https://synosurveillance.synology.com:443/license_activation.php"
+
+
+class OfflineLicenseError(RuntimeError):
+    """Synology's offline license server refused an activation request."""
+
 
 async def load_licenses(api: SurveillanceAPI) -> LicenseInfo:
     """Load license information from the NAS."""
@@ -129,6 +135,50 @@ def _offline_encrypt(content: str, serial: str, seed: int) -> str:
     return base64.b64encode(ciphertext).decode()
 
 
+async def _offline_request(
+    serial: str, model: str, payload: dict[str, Any]
+) -> tuple[dict[str, Any], int]:
+    """Send one encrypted request to Synology's offline license server.
+
+    Returns the decoded reply together with the seed it was encrypted
+    with: activation has to hand that same seed back to the NAS as
+    encSeed for the reply to be accepted.
+    """
+    seed = random.randint(100000, 999999)
+    cipher_text = _offline_encrypt(json.dumps(payload), serial, seed)
+
+    async with httpx.AsyncClient(verify=True, timeout=30.0) as client:
+        resp = await client.get(
+            _LICENSE_SERVER_URL,
+            params={
+                "cipherText": cipher_text,
+                "dsSN": serial,
+                "dsModel": model,
+                "seed": str(seed),
+            },
+        )
+        resp.raise_for_status()
+        result: dict[str, Any] = resp.json()
+    return result, seed
+
+
+def _check_offline_reply(result: dict[str, Any]) -> None:
+    """Raise if the license server reported a failure.
+
+    A rejection still comes back as HTTP 200, so the body is the only
+    thing that says whether it worked. Synology's own client reads the
+    same three fields in this order before it touches the payload.
+    """
+    if not result.get("success"):
+        code = result.get("error_code") or (result.get("error") or {}).get("code")
+        detail = f" (error {code})" if code else ""
+        raise OfflineLicenseError(f"The license server rejected the request{detail}")
+    if result.get("has_blocked"):
+        blocked = result.get("checkList") or {}
+        keys = ", ".join(str(k) for k in blocked) if blocked else "unknown"
+        raise OfflineLicenseError(f"The license server blocked these keys: {keys}")
+
+
 async def offline_get_timestamp(
     api: SurveillanceAPI,
     serial: str = "",
@@ -137,34 +187,25 @@ async def offline_get_timestamp(
     """Get timestamp from Synology license server."""
     if not serial or not model:
         serial, model = await get_device_info(api)
-    seed = random.randint(100000, 999999)
-    payload = json.dumps({"method": "GetTimestamp"})
-    cipher_text = _offline_encrypt(payload, serial, seed)
-
-    async with httpx.AsyncClient(verify=True, timeout=30.0) as client:
-        resp = await client.get(
-            "https://synosurveillance.synology.com:443/license_activation.php",
-            params={
-                "cipherText": cipher_text,
-                "dsSN": serial,
-                "dsModel": model,
-                "seed": str(seed),
-            },
-        )
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
-        ts = int(result.get("timestamp", 0))
-        if not ts:
-            raise RuntimeError("License server returned no timestamp")
-        return ts
+    result, _ = await _offline_request(serial, model, {"method": "GetTimestamp"})
+    ts = int(result.get("timestamp", 0))
+    if not ts:
+        raise RuntimeError("License server returned no timestamp")
+    return ts
 
 
-async def offline_activate(api: SurveillanceAPI, license_keys: list[str]) -> dict[str, Any]:
-    """Activate licenses offline via Synology license server."""
+async def offline_activate(api: SurveillanceAPI, license_keys: list[str]) -> None:
+    """Activate licenses offline.
+
+    Two steps, both required: Synology's license server signs the keys and
+    returns an encData blob, and that blob is what actually installs them.
+    Sending the keys to the server without passing encData on to the NAS
+    activates nothing, so the two calls belong in one operation.
+    """
     serial, model = await get_device_info(api)
-    seed = random.randint(100000, 999999)
-
-    payload = json.dumps(
+    result, seed = await _offline_request(
+        serial,
+        model,
         {
             "method": "Add",
             "dsModel": model,
@@ -173,52 +214,49 @@ async def offline_activate(api: SurveillanceAPI, license_keys: list[str]) -> dic
             "licenseList": license_keys,
             "version": 2,
             "blOffline": True,
-        }
+        },
     )
-    cipher_text = _offline_encrypt(payload, serial, seed)
+    _check_offline_reply(result)
 
-    async with httpx.AsyncClient(verify=True, timeout=30.0) as client:
-        resp = await client.get(
-            "https://synosurveillance.synology.com:443/license_activation.php",
-            params={
-                "cipherText": cipher_text,
-                "dsSN": serial,
-                "dsModel": model,
-                "seed": str(seed),
-            },
-        )
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
-        return result
+    enc_data = result.get("encData", "")
+    if not enc_data:
+        raise OfflineLicenseError("The license server returned no activation data")
+
+    await api.request(
+        api="SYNO.SurveillanceStation.License",
+        method="AddKey",
+        version=1,
+        extra_params={
+            "licenseList": ",".join(license_keys),
+            "encSeed": str(seed),
+            "encData": enc_data,
+        },
+    )
 
 
-async def offline_deactivate(api: SurveillanceAPI, license_keys: list[str]) -> dict[str, Any]:
-    """Deactivate licenses offline via Synology license server."""
+async def offline_deactivate(
+    api: SurveillanceAPI, license_keys: list[str], license_ids: list[int]
+) -> None:
+    """Deactivate licenses offline.
+
+    Releasing the keys at Synology's license server only frees them for
+    use elsewhere; the licenses stay installed until the NAS is told to
+    delete them, so both calls are needed here too.
+    """
     serial, model = await get_device_info(api)
     timestamp = await offline_get_timestamp(api, serial, model)
-    seed = random.randint(100000, 999999)
 
     lic_list = [{"dsModel": model, "dsSerial": serial, "key": key} for key in license_keys]
-    payload = json.dumps(
+    result, _ = await _offline_request(
+        serial,
+        model,
         {
             "method": "Delete",
             "licenseList": lic_list,
             "timestamp": timestamp,
             "blOffline": True,
-        }
+        },
     )
-    cipher_text = _offline_encrypt(payload, serial, seed)
+    _check_offline_reply(result)
 
-    async with httpx.AsyncClient(verify=True, timeout=30.0) as client:
-        resp = await client.get(
-            "https://synosurveillance.synology.com:443/license_activation.php",
-            params={
-                "cipherText": cipher_text,
-                "dsSN": serial,
-                "dsModel": model,
-                "seed": str(seed),
-            },
-        )
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
-        return result
+    await delete_license(api, license_ids)

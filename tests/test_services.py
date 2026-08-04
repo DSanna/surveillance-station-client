@@ -437,6 +437,93 @@ class TestLicenseService:
             call_kwargs = mock.call_args
             assert call_kwargs[1]["extra_params"]["licenseList"] == "KEY-1,KEY-2"
 
+    @pytest.mark.asyncio
+    async def test_offline_activate_sends_encdata_to_the_nas(self, api: SurveillanceAPI) -> None:
+        """The license server's encData is what installs the keys, so it has
+        to reach the NAS along with the seed it was signed under."""
+        from surveillance.services import license as lic_mod
+
+        reply = {"success": True, "encData": "SIGNED-BLOB"}
+        with (
+            patch.object(
+                lic_mod, "get_device_info", new_callable=AsyncMock, return_value=("SN", "DS")
+            ),
+            patch.object(
+                lic_mod, "_offline_request", new_callable=AsyncMock, return_value=(reply, 424242)
+            ),
+            patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock,
+        ):
+            await lic_mod.offline_activate(api, ["KEY-1", "KEY-2"])
+
+        params = mock.call_args[1]["extra_params"]
+        assert mock.call_args[1]["method"] == "AddKey"
+        assert params["licenseList"] == "KEY-1,KEY-2"
+        assert params["encData"] == "SIGNED-BLOB"
+        assert params["encSeed"] == "424242"
+
+    @pytest.mark.asyncio
+    async def test_offline_activate_rejects_a_failed_reply(self, api: SurveillanceAPI) -> None:
+        """A rejection arrives as HTTP 200, so nothing may reach the NAS."""
+        from surveillance.services import license as lic_mod
+
+        reply = {"success": False, "error_code": 407}
+        with (
+            patch.object(
+                lic_mod, "get_device_info", new_callable=AsyncMock, return_value=("SN", "DS")
+            ),
+            patch.object(
+                lic_mod, "_offline_request", new_callable=AsyncMock, return_value=(reply, 1)
+            ),
+            patch.object(api, "request", new_callable=AsyncMock) as mock,
+            pytest.raises(lic_mod.OfflineLicenseError, match="407"),
+        ):
+            await lic_mod.offline_activate(api, ["KEY-1"])
+
+        mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_offline_activate_reports_blocked_keys(self, api: SurveillanceAPI) -> None:
+        from surveillance.services import license as lic_mod
+
+        reply = {"success": True, "has_blocked": True, "checkList": {"KEY-1": 1}}
+        with (
+            patch.object(
+                lic_mod, "get_device_info", new_callable=AsyncMock, return_value=("SN", "DS")
+            ),
+            patch.object(
+                lic_mod, "_offline_request", new_callable=AsyncMock, return_value=(reply, 1)
+            ),
+            patch.object(api, "request", new_callable=AsyncMock) as mock,
+            pytest.raises(lic_mod.OfflineLicenseError, match="KEY-1"),
+        ):
+            await lic_mod.offline_activate(api, ["KEY-1"])
+
+        mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_offline_deactivate_deletes_on_the_nas(self, api: SurveillanceAPI) -> None:
+        """Releasing a key at Synology leaves it installed until the NAS is
+        told to delete it."""
+        from surveillance.services import license as lic_mod
+
+        with (
+            patch.object(
+                lic_mod, "get_device_info", new_callable=AsyncMock, return_value=("SN", "DS")
+            ),
+            patch.object(lic_mod, "offline_get_timestamp", new_callable=AsyncMock, return_value=99),
+            patch.object(
+                lic_mod,
+                "_offline_request",
+                new_callable=AsyncMock,
+                return_value=({"success": True}, 1),
+            ),
+            patch.object(api, "request", new_callable=AsyncMock, return_value={}) as mock,
+        ):
+            await lic_mod.offline_deactivate(api, ["KEY-1"], [7])
+
+        assert mock.call_args[1]["method"] == "DeleteKey"
+        assert mock.call_args[1]["extra_params"]["lic_list"] == "7"
+
     def test_offline_encrypt(self) -> None:
         from surveillance.services.license import _offline_encrypt
 
