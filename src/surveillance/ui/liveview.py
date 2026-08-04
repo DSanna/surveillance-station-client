@@ -879,8 +879,8 @@ class LiveView(Gtk.Box):
         """
         slot = self._slots[slot_idx]
         was_lost = slot._stream_lost
-        slot._stream_lost = False
         if camera.status != CameraStatus.ENABLED:
+            slot._stream_lost = False  # showing "offline", not a lost stream
             slot.stop_stream()
             slot.player.reset_zoom()  # the placeholder card is never zoomed
             slot.set_status("offline")
@@ -928,6 +928,11 @@ class LiveView(Gtk.Box):
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
             slot.stop_stream()
+            # Only now is a stream really starting. Holding the flag until
+            # here keeps the retry armed when the URL fetch itself fails,
+            # which is the likeliest outcome when the NAS being unreachable
+            # is what killed the stream in the first place.
+            slot._stream_lost = False
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
