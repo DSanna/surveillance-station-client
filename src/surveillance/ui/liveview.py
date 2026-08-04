@@ -757,15 +757,22 @@ class LiveView(Gtk.Box):
         slot._ptt_session = session
         run_async(
             session.run(self.app.api),
-            error_callback=lambda e, s=slot: self._on_ptt_ended(s, e),
+            error_callback=lambda e, s=slot, sess=session: self._on_ptt_ended(s, sess, e),
         )
 
-    def _on_ptt_ended(self, slot: CameraSlot, exc: BaseException) -> None:
+    def _on_ptt_ended(self, slot: CameraSlot, session: PttSession, exc: BaseException) -> None:
         """A push-to-talk session ended on its own (occupied camera, dropped
-        connection, ...) rather than the user tapping to stop — that path
-        is handled directly in _on_slot_mic_toggle() and never reaches here,
-        since PttSession.run() returns normally (no exception) once stop()
-        makes it fall out of its send loop."""
+        connection, ...) rather than the user tapping to stop.
+
+        stop() only sets an event the send loop polls, so a session still in
+        the handshake keeps running and can raise long after the user tapped
+        off: check_occupied() reports an occupied camera without rechecking
+        the flag, and connect() has its own timeout. By then the slot may
+        already own a newer session, so the failure has to be matched against
+        the session that produced it before anything is cleared.
+        """
+        if slot._ptt_session is not session:
+            return  # a newer session owns the mic now
         if isinstance(exc, PttOccupiedError):
             log.info("Push-to-talk: %s", exc)
         else:
