@@ -158,7 +158,12 @@ class SurveillanceAPI:
         self.sid = ""
         self.username = ""
         self.password = ""
-        self.device_id = ""
+        # Seeded from the profile so the automatic re-login in request()
+        # and download() can present the trusted-device token minted by an
+        # earlier run. Left empty it would re-login without one, which the
+        # NAS answers by demanding an OTP code no background retry can
+        # supply. login() overwrites it whenever the server issues a new one.
+        self.device_id = profile.device_id
         self._api_info: dict[str, ApiInfo] = {}
         self._client: httpx.AsyncClient | None = None
 

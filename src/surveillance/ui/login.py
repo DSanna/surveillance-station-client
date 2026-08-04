@@ -322,10 +322,14 @@ class LoginDialog(Gtk.Window):
             return
 
         if isinstance(error, OtpRequiredError):
-            # Clear stored device_id since it did not bypass OTP
+            # Clear stored device_id since it did not bypass OTP. The API
+            # object is reused for the OTP retry and seeds its own copy from
+            # the profile, so drop the rejected token there as well.
             if self._current_profile.device_id:
                 self._current_profile.device_id = ""
                 add_profile(self.app.config, self._current_profile)
+            if self._current_api is not None:
+                self._current_api.device_id = ""
             self.status_label.set_text("")
             self.connect_btn.set_sensitive(True)
             self._show_otp_dialog()
