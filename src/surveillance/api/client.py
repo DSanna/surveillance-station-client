@@ -166,9 +166,16 @@ class SurveillanceAPI:
         self.device_id = profile.device_id
         self._api_info: dict[str, ApiInfo] = {}
         self._client: httpx.AsyncClient | None = None
+        self._closed = False
 
     @property
     def client(self) -> httpx.AsyncClient:
+        if self._closed:
+            # Logout drops this object and closes it while polls and
+            # downloads may still be in flight. Rebuilding the pool here
+            # would hand those coroutines a connection nobody owns or will
+            # ever close, so make it a plain failure they already handle.
+            raise ApiError(0, "API client is closed")
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
@@ -183,10 +190,16 @@ class SurveillanceAPI:
         return self._client
 
     async def close(self) -> None:
-        """Close the HTTP client."""
+        """Close the HTTP client permanently.
+
+        The object is not reusable afterwards: the client property refuses
+        to build a replacement pool rather than resurrecting one behind a
+        caller that has already been dropped.
+        """
+        self._closed = True
         if self._client and not self._client.is_closed:
             await self._client.aclose()
-            self._client = None
+        self._client = None
 
     async def discover_apis(self) -> None:
         """Discover available APIs via SYNO.API.Info."""
