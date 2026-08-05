@@ -280,6 +280,7 @@ class TestBuildFilterOptions:
         assert labels["28:reolink"] == "28 - Unknown (Reolink)"
 
         assert event_matches_key(1 << 28, 0, "*", "28")
+        assert event_matches_key(1 << 28, 0, "reolink", "28:reolink")
         assert not event_matches_key(1 << 28, 0, "reolink", "28")
 
     def test_unmapped_bit_gets_one_option_per_unrecognized_vendor(self) -> None:
@@ -306,4 +307,3 @@ class TestBuildFilterOptions:
         occurrences = [(513, 0, "Vivotek"), (513, 0, "hikvision")]
         options = build_filter_options(occurrences)
         assert [key for key, _label, _notes in options] == ["09"]
-        assert event_matches_key(1 << 28, 0, "reolink", "28:reolink")
