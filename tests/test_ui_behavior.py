@@ -233,15 +233,20 @@ class TestRecordingFilterParams:
 class TestPresetRange:
     """preset_range() returns correct (from_time, to_time) windows."""
 
-    def test_today_range_starts_at_midnight(self) -> None:
+    def test_today_range_is_full_day(self) -> None:
+        """ "to" must be a fixed end-of-day, not "now"."""
         from surveillance.services.recording import preset_range
 
         from_ts, to_ts = preset_range("today")
         from_dt = datetime.fromtimestamp(from_ts)
+        to_dt = datetime.fromtimestamp(to_ts)
         assert from_dt.hour == 0
         assert from_dt.minute == 0
         assert from_dt.second == 0
-        assert to_ts >= from_ts
+        assert to_dt.hour == 23
+        assert to_dt.minute == 59
+        assert to_dt.second == 59
+        assert from_dt.date() == to_dt.date()
 
     def test_yesterday_range_is_full_day(self) -> None:
         from surveillance.services.recording import preset_range

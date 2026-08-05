@@ -311,12 +311,12 @@ class TestEventService:
     async def test_list_granular_events_decodes_event_map(self, api: SurveillanceAPI) -> None:
         """event_map is a run-length-encoded bitmap: [ticks, flag, reserved]
         entries at a fixed interval. This decodes a synthetic response
-        covering baseline (flag=1), a motion event (flag=513), and the
-        "not processed yet" placeholder (flag=0) seen at the live edge of a
-        still-recording segment — which must NOT produce a phantom event.
-        event_type is the raw flag value (see services.event module
-        docstring for why: only 513 is a confirmed classification)."""
-        from surveillance.services.event import MOTION_EVENT_FLAG, list_granular_events
+        covering baseline (flag=1), a real event (flag=513, bits {0,9} =
+        Audio detected — see EVENT_BITMASK.md), and the "not processed yet"
+        placeholder (flag=0) seen at the live edge of a still-recording
+        segment — which must NOT produce a phantom event. event_type is
+        always the raw flag value, never reclassified here."""
+        from surveillance.services.event import list_granular_events
 
         from_time = 1700000000
         mock_data = {
@@ -335,7 +335,7 @@ class TestEventService:
                         ],
                         "event_map": [
                             [2, 1, 0],  # 10s baseline
-                            [3, 513, 0],  # 15s motion event
+                            [3, 513, 0],  # 15s real event (Audio detected)
                             [4, 0, 0],  # 20s "not processed yet" — not an event
                         ],
                     }
@@ -352,12 +352,48 @@ class TestEventService:
         event = events[0]
         assert event.id == 555
         assert event.camera_name == "Front Door"
-        assert event.event_type == MOTION_EVENT_FLAG
+        assert event.event_type == 513
         assert event.start_time == from_time + 10
         assert event.stop_time == from_time + 25
         assert event.mount_id == 7
         assert event.arch_id == 3
         assert event.seek_offset == 10
+        assert event.reserved == 0
+
+    @pytest.mark.asyncio
+    async def test_list_granular_events_reserved_field_passthrough(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """The event_map RLE tuple's 3rd element (reserved) must round-trip
+        onto Event.reserved — it carries Object Removal Detection on
+        Hikvision via overflow once the 32-bit flag budget is exhausted
+        (see EVENT_BITMASK.md), and was previously discarded entirely."""
+        from surveillance.services.event import list_granular_events
+
+        from_time = 1700000000
+        mock_data = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 36,
+                        "event": [{"id": 1, "start": from_time, "stop": from_time + 100}],
+                        "event_map": [[1, 1, 1]],  # flag=1 (non-event) but reserved=1
+                    }
+                ]
+            ]
+        }
+
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            events = await list_granular_events(
+                api, [36], {36: "Cam 83"}, from_time, from_time + 100
+            )
+
+        # flag=1 alone is a non-event flag, but reserved=1 still means
+        # something happened (Object Removal Detection) — must not be
+        # dropped just because the main flag looks quiet.
+        assert len(events) == 1
+        assert events[0].event_type == 1
+        assert events[0].reserved == 1
 
     @pytest.mark.asyncio
     async def test_list_granular_events_unrecognized_flag_passes_through(

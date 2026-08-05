@@ -162,7 +162,14 @@ a = Analysis(
     ['${SCRIPT_DIR}/appimage_entry.py'],
     pathex=[],
     ${BINARIES_LINE}
-    datas=[('${SCRIPT_DIR}/data/style.css', 'surveillance/data')],
+    datas=[
+        # PyInstaller's collect_submodules() above only picks up .py files,
+        # not package data, so src/surveillance/data/*'s contents each need
+        # their own explicit datas entry or the built AppImage silently
+        # misses them (no styling; Events decodes every flag as "Unknown").
+        ('${SCRIPT_DIR}/src/surveillance/data/style.css', 'surveillance/data'),
+        ('${SCRIPT_DIR}/src/surveillance/data/event_bits.json', 'surveillance/data'),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={

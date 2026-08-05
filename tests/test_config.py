@@ -111,6 +111,33 @@ class TestPollIntervals:
         assert cfg.poll_interval_cameras == 120
 
 
+class TestEventsSearchEventTypesMigration:
+    """events_search_event_types switched from raw int flag values to
+    string filter keys (see services.event_bits) — a config saved before
+    that change has int entries, which must be dropped rather than
+    crashing or being misinterpreted as filter keys."""
+
+    def test_stale_int_entries_are_dropped(self) -> None:
+        cfg = _config_from_data({"session": {"events_search_event_types": [513, 257]}})
+        assert cfg.events_search_event_types == []
+
+    def test_string_entries_pass_through(self) -> None:
+        cfg = _config_from_data({"session": {"events_search_event_types": ["08", "25:hikvision"]}})
+        assert cfg.events_search_event_types == ["08", "25:hikvision"]
+
+    def test_mixed_entries_keep_only_strings(self) -> None:
+        cfg = _config_from_data({"session": {"events_search_event_types": ["08", 513]}})
+        assert cfg.events_search_event_types == ["08"]
+
+    def test_match_all_defaults_to_false(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.events_search_event_types_match_all is False
+
+    def test_match_all_round_trips(self) -> None:
+        cfg = _config_from_data({"session": {"events_search_event_types_match_all": True}})
+        assert cfg.events_search_event_types_match_all is True
+
+
 class TestSaveLoadConfig:
     def test_round_trip(self, tmp_path: Path, monkeypatch: object) -> None:
         import surveillance.config as cfg

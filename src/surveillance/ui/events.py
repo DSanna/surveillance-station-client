@@ -35,16 +35,18 @@ from typing import TYPE_CHECKING
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Pango", "1.0")
 
-from gi.repository import Gtk  # type: ignore[import-untyped]
+from gi.repository import Gtk, Pango  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Event, Recording
 from surveillance.config import load_search_filters, save_config, save_search_filters
-from surveillance.services.event import (
-    MOTION_EVENT_FLAG,
-    PERSON_DETECTED_FLAG,
-    UNKNOWN_MOTION_FLAG,
-    list_granular_events,
+from surveillance.services.event import list_granular_events
+from surveillance.services.event_bits import (
+    build_filter_options,
+    decode_flag,
+    event_matches_key,
+    event_matches_keys,
 )
 from surveillance.services.recording import (
     PRESET_LAST7D,
@@ -65,21 +67,8 @@ log = logging.getLogger(__name__)
 # Event.event_type here is the *raw* event_map flag value (see
 # services.event module docstring) — not Synology's documented "reason"
 # enum (0-10), which is a different field on a different, currently-unused
-# API path (Event::List's "mode"). Only the flag values below are confirmed
-# (against actual recorded video, not just camera settings); every other
-# flag is shown to the user as a bare number rather than a guess.
-EVENT_TYPES = {
-    MOTION_EVENT_FLAG: "Motion Detection",
-    UNKNOWN_MOTION_FLAG: "Unknown Motion",
-    PERSON_DETECTED_FLAG: "Person Detected",
-}
-
-
-def _format_event_type(event_type: int) -> str:
-    """Format as "Event type <id> (<description>)", with an honest
-    "(Unknown)" when we don't actually know what a flag value means."""
-    return f"Event type {event_type} ({EVENT_TYPES.get(event_type, 'Unknown')})"
-
+# API path (Event::List's "mode"). Decoded per-bit, per camera brand, by
+# services.event_bits — see EVENT_BITMASK.md for how each bit was confirmed.
 
 _PAGE_SIZE = 100
 
@@ -93,7 +82,9 @@ class EventsView(Gtk.Box):
         self.app = window.app
         self._events: list[Event] = []
         self._camera_id: int | None = None
-        self._event_type_filter: int | None = None
+        # Filter keys, not raw flag values — see services.event_bits
+        # (e.g. "08", "25:hikvision", "R0").
+        self._event_type_filter: str | None = None
         self._page: int = 0
         self._search_camera_ids: list[int] | None = None
         self._search_from_time: int | None = None
@@ -103,7 +94,17 @@ class EventsView(Gtk.Box):
         # feature, hidden on Recordings/Snapshots) — takes precedence over
         # the quick single-select Type: combo below when set. See
         # _render_events().
-        self._search_event_types: list[int] | None = None
+        self._search_event_types: list[str] | None = None
+        # False ("Any"/OR, the default) or True ("All"/AND) — only
+        # meaningful alongside _search_event_types. See _render_events().
+        self._search_event_types_match_all: bool = False
+        # camera_id -> vendor, refreshed alongside self._events in
+        # _load_events() — needed to decode event_type per camera brand.
+        self._camera_vendor: dict[int, str] = {}
+        # (key, label, notes) options built the last time the type filter
+        # combo was synced — reused by _type_filter_parts() and the
+        # advanced-search dialog so they don't each re-decode self._events.
+        self._type_options: list[tuple[str, str, str]] = []
         self._loading = False
         self._reload_pending = False
 
@@ -171,21 +172,31 @@ class EventsView(Gtk.Box):
         # Event type filter — client-side only: list_granular_events() already
         # classifies each event locally from event_map, so switching this
         # doesn't need a new server query, just re-rendering the list we have.
-        # Populated dynamically from whatever types are actually present in
+        # Populated dynamically from whatever bits are actually present in
         # the current unfiltered result (see _sync_event_type_combo) since
-        # event_type is a raw, mostly-unidentified flag value, not a fixed
+        # event_type is a raw flag decoded per camera brand, not a fixed
         # enum we can list up front.
+        #
+        # Gtk.DropDown, not Gtk.ComboBoxText: rows here can be too long to
+        # show in full, and ComboBoxText's rows are plain strings with no
+        # per-row widget to ellipsize or hang a tooltip off. A custom
+        # list-item factory gives each row a real label with both.
         type_filter_label = Gtk.Label(label="Event type:")
         toolbar.append(type_filter_label)
 
-        self.event_type_combo = Gtk.ComboBoxText()
-        self.event_type_combo.append("all", "All types")
-        self.event_type_combo.set_active_id("all")
-        self.event_type_combo.connect("changed", self._on_event_type_filter_changed)
-        # Same reasoning as camera_combo — entries like "Event type 33554689
-        # (Person Detected)" are long enough to cause the same squeeze.
-        self.event_type_combo.add_css_class("filter-combo")
-        toolbar.append(self.event_type_combo)
+        self.event_type_dropdown = Gtk.DropDown()
+        self.event_type_dropdown.set_model(Gtk.StringList.new(["All types"]))
+        # Index 0 is always the synthetic "All types" row; indices 1+ mirror
+        # self._type_options (rebuilt together in _sync_event_type_combo).
+        type_factory = Gtk.SignalListItemFactory()
+        type_factory.connect("setup", self._setup_event_type_row)
+        type_factory.connect("bind", self._bind_event_type_row)
+        self.event_type_dropdown.set_factory(type_factory)
+        self._event_type_notify_handler = self.event_type_dropdown.connect(
+            "notify::selected", self._on_event_type_filter_changed
+        )
+        self.event_type_dropdown.add_css_class("filter-combo")
+        toolbar.append(self.event_type_dropdown)
 
         search_btn = Gtk.Button()
         search_btn.set_icon_name("system-search-symbolic")
@@ -364,15 +375,16 @@ class EventsView(Gtk.Box):
         self._search_to_time = None
         self._search_time_preset = ""
         self._search_event_types = None
+        self._search_event_types_match_all = False
         self._camera_id = None
         self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id("all")
         self.camera_combo.handler_unblock_by_func(self._on_filter_changed)
 
         self._event_type_filter = None
-        self.event_type_combo.handler_block_by_func(self._on_event_type_filter_changed)
-        self.event_type_combo.set_active_id("all")
-        self.event_type_combo.handler_unblock_by_func(self._on_event_type_filter_changed)
+        self.event_type_dropdown.handler_block(self._event_type_notify_handler)
+        self.event_type_dropdown.set_selected(0)
+        self.event_type_dropdown.handler_unblock(self._event_type_notify_handler)
 
         self._sync_preset_buttons()
 
@@ -393,12 +405,14 @@ class EventsView(Gtk.Box):
             camera_ids: list[int] | None,
             from_dt: datetime | None,
             to_dt: datetime | None,
-            event_type_ids: list[int] | None,
+            event_type_ids: list[str] | None,
+            event_types_match_all: bool,
         ) -> None:
             self._search_camera_ids = camera_ids
             self._search_from_time = int(from_dt.timestamp()) if from_dt else None
             self._search_to_time = int(to_dt.timestamp()) if to_dt else None
             self._search_event_types = event_type_ids
+            self._search_event_types_match_all = event_types_match_all
             # Custom range clears preset
             self._search_time_preset = ""
             self._sync_preset_buttons()
@@ -418,8 +432,9 @@ class EventsView(Gtk.Box):
             from_time=from_time,
             to_time=to_time,
             title="Search Events",
-            event_types=list(EVENT_TYPES.items()),
+            event_types=[(key, label) for key, label, _notes in self._current_type_options()],
             selected_event_type_ids=self._search_event_types,
+            selected_event_types_match_all=self._search_event_types_match_all,
             show_extended_presets=False,
         )
         dialog.present()
@@ -477,6 +492,7 @@ class EventsView(Gtk.Box):
         # for that whole stretch rather than visibly working.
         self.page_label.set_text("Loading…")
         camera_names = {cam.id: cam.name for cam in self.window.sidebar.cameras}
+        self._camera_vendor = {cam.id: cam.vendor for cam in self.window.sidebar.cameras}
 
         run_async(
             list_granular_events(self.app.api, camera_ids, camera_names, from_time, to_time),
@@ -528,11 +544,13 @@ class EventsView(Gtk.Box):
         """Summarize the active event-type filter, advanced-search plural
         selection taking precedence over the quick single-select combo —
         same precedence _render_events() and the camera filter above use."""
+        labels = {key: label for key, label, _notes in self._type_options}
         if self._search_event_types:
-            names = [EVENT_TYPES.get(t, f"type {t}") for t in self._search_event_types]
-            return [f"Event types: {', '.join(names)}"]
+            names = [labels.get(t, t) for t in self._search_event_types]
+            mode = "all of" if self._search_event_types_match_all else "any of"
+            return [f"Event types ({mode}): {', '.join(names)}"]
         if self._event_type_filter is not None:
-            name = EVENT_TYPES.get(self._event_type_filter, f"type {self._event_type_filter}")
+            name = labels.get(self._event_type_filter, self._event_type_filter)
             return [f"Event type: {name}"]
         return []
 
@@ -572,6 +590,7 @@ class EventsView(Gtk.Box):
         # filter at all.
         if self.app.config.events_search_event_types:
             self._search_event_types = self.app.config.events_search_event_types
+        self._search_event_types_match_all = self.app.config.events_search_event_types_match_all
 
     def _save_search_to_config(self) -> None:
         """Save search filters to config."""
@@ -584,38 +603,70 @@ class EventsView(Gtk.Box):
             self._search_time_preset,
         )
         self.app.config.events_search_event_types = self._search_event_types or []
+        self.app.config.events_search_event_types_match_all = self._search_event_types_match_all
         save_config(self.app.config)
 
+    def _current_type_options(self) -> list[tuple[str, str, str]]:
+        """(key, label, notes) options for every bit actually present across
+        self._events, decoded per each event's own camera brand — the single
+        source both the quick combo and the advanced-search dialog build
+        their entries from, so they can never drift apart."""
+        occurrences = [
+            (e.event_type, e.reserved, self._camera_vendor.get(e.camera_id, ""))
+            for e in self._events
+        ]
+        return build_filter_options(occurrences)
+
+    def _setup_event_type_row(
+        self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem
+    ) -> None:
+        label = Gtk.Label(xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        # Caps the row's (and thus the closed dropdown's) natural width
+        # request directly — unlike ComboBoxText, no CSS max-width dance or
+        # manual string truncation needed. The full text always survives
+        # into the tooltip set in _bind_event_type_row.
+        label.set_max_width_chars(28)
+        list_item.set_child(label)
+
+    def _bind_event_type_row(
+        self, factory: Gtk.SignalListItemFactory, list_item: Gtk.ListItem
+    ) -> None:
+        label = list_item.get_child()
+        text = list_item.get_item().get_string()
+        label.set_text(text)
+        # Tooltip is just the full (untruncated) name — event_bits.json's
+        # `notes` are internal confidence/methodology caveats for
+        # contributors (see EVENT_BITMASK.md), not end-user-facing text.
+        label.set_tooltip_text(text)
+
     def _sync_event_type_combo(self) -> None:
-        """Repopulate the type filter from types actually present in self._events."""
-        types_present = sorted({e.event_type for e in self._events})
-        valid_ids = {"all", *(str(t) for t in types_present)}
-        previous_selection = self.event_type_combo.get_active_id()
+        """Repopulate the type filter from bits actually present in self._events."""
+        self._type_options = self._current_type_options()
+        previous_key = self._event_type_filter
 
-        self.event_type_combo.handler_block_by_func(self._on_event_type_filter_changed)
-        self.event_type_combo.remove_all()
-        self.event_type_combo.append("all", "All types")
-        for type_code in types_present:
-            self.event_type_combo.append(
-                str(type_code), truncate_label(_format_event_type(type_code))
-            )
+        self.event_type_dropdown.handler_block(self._event_type_notify_handler)
+        strings = ["All types"] + [label for _key, label, _notes in self._type_options]
+        self.event_type_dropdown.set_model(Gtk.StringList.new(strings))
 
-        if previous_selection in valid_ids:
-            self.event_type_combo.set_active_id(previous_selection)
-        else:
-            self.event_type_combo.set_active_id("all")
-            self._event_type_filter = None
-        self.event_type_combo.handler_unblock_by_func(self._on_event_type_filter_changed)
-
-    def _on_event_type_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
-        active = combo.get_active_id()
-        if active == "all":
-            self._event_type_filter = None
-        else:
-            try:
-                self._event_type_filter = int(active) if active else None
-            except ValueError:
+        new_position = 0
+        if previous_key is not None:
+            for i, (key, _label, _notes) in enumerate(self._type_options):
+                if key == previous_key:
+                    new_position = i + 1
+                    break
+            else:
                 self._event_type_filter = None
+        self.event_type_dropdown.set_selected(new_position)
+        self.event_type_dropdown.handler_unblock(self._event_type_notify_handler)
+
+    def _on_event_type_filter_changed(self, dropdown: Gtk.DropDown, _pspec: object) -> None:
+        position = dropdown.get_selected()
+        idx = position - 1
+        if position == 0 or idx >= len(self._type_options):
+            self._event_type_filter = None
+        else:
+            self._event_type_filter = self._type_options[idx][0]
         # Same reasoning as the camera filter: a quick pick takes precedence
         # over a prior Advanced Search plural event-type selection.
         self._search_event_types = None
@@ -634,15 +685,30 @@ class EventsView(Gtk.Box):
         underlying list is still the complete, correct result for the
         selected time range, unlike Recording::List's server-side paging.
         """
+
         # Advanced search's plural Event Types filter takes precedence over
         # the quick single-select Type: combo, same precedence the camera
         # filters use (see _load_events()).
+        def _vendor(e: Event) -> str:
+            return self._camera_vendor.get(e.camera_id, "")
+
         if self._search_event_types:
-            events = [e for e in self._events if e.event_type in self._search_event_types]
+            keys = self._search_event_types
+            match_all = self._search_event_types_match_all
+            events = [
+                e
+                for e in self._events
+                if event_matches_keys(e.event_type, e.reserved, _vendor(e), keys, match_all)
+            ]
         elif self._event_type_filter is None:
             events = self._events
         else:
-            events = [e for e in self._events if e.event_type == self._event_type_filter]
+            key = self._event_type_filter
+            events = [
+                e
+                for e in self._events
+                if event_matches_key(e.event_type, e.reserved, _vendor(e), key)
+            ]
 
         total_pages = max(1, (len(events) + _PAGE_SIZE - 1) // _PAGE_SIZE)
         self._page = max(0, min(self._page, total_pages - 1))
@@ -681,7 +747,13 @@ class EventsView(Gtk.Box):
         row.add_css_class("event-row")
         row._event = event  # type: ignore[attr-defined]
 
-        if event.event_type == MOTION_EVENT_FLAG:
+        vendor = self._camera_vendor.get(event.camera_id, "")
+        decoded = decode_flag(event.event_type, event.reserved, vendor)
+        is_motion = any(d.bit == 8 for d in decoded)
+        label_text = " + ".join(d.label for d in decoded) if decoded else "Unclassified"
+        tooltip_text = "\n".join(d.notes for d in decoded if d.notes)
+
+        if is_motion:
             row.add_css_class("motion")
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -696,9 +768,11 @@ class EventsView(Gtk.Box):
 
         # Top line: type badge + camera name
         top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        type_label = Gtk.Label(label=_format_event_type(event.event_type))
+        type_label = Gtk.Label(label=label_text)
         type_label.add_css_class("caption")
-        if event.event_type == MOTION_EVENT_FLAG:
+        if tooltip_text:
+            type_label.set_tooltip_text(tooltip_text)
+        if is_motion:
             type_label.add_css_class("accent")
         top_box.append(type_label)
 
@@ -760,9 +834,9 @@ class EventsView(Gtk.Box):
             camera_name=event.camera_name,
             start_time=event.start_time,
             stop_time=event.stop_time,
-            # NOT event.event_type: that holds this page's own type
-            # classification (see EVENT_TYPES) used for the type icon/label,
-            # not a real "recEvtType" value. The raw API response has no
+            # NOT event.event_type: that holds the raw event_map flag (see
+            # services.event_bits) used for the type icon/label, not a real
+            # "recEvtType" value. The raw API response has no
             # separate "type" field for playback purposes — Recording.from_api's
             # event_type always defaults to 0 in practice, and passing the
             # classification value instead as recEvtType to EventStream causes

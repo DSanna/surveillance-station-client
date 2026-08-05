@@ -44,7 +44,7 @@ from surveillance.util.async_bridge import setup_async
 log = logging.getLogger(__name__)
 
 APP_ID = "org.surveillance.app"
-CSS_PATH = Path(__file__).parent.parent.parent / "data" / "style.css"
+CSS_PATH = Path(__file__).parent / "data" / "style.css"
 
 
 class SurveillanceApp(Gtk.Application):
@@ -86,21 +86,18 @@ class SurveillanceApp(Gtk.Application):
 
     def _load_css(self) -> None:
         """Load application CSS."""
-        css_file = CSS_PATH
-        if not css_file.exists():
-            # Try installed location
-            css_file = Path(__file__).parent / "data" / "style.css"
-        if css_file.exists():
-            provider = Gtk.CssProvider()
-            provider.load_from_path(str(css_file))
-            display = Gdk.Display.get_default()
-            if not display:
-                return
-            Gtk.StyleContext.add_provider_for_display(
-                display,
-                provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-            )
+        if not CSS_PATH.exists():
+            return
+        provider = Gtk.CssProvider()
+        provider.load_from_path(str(CSS_PATH))
+        display = Gdk.Display.get_default()
+        if not display:
+            return
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
     def _setup_actions(self) -> None:
         """Set up application actions."""

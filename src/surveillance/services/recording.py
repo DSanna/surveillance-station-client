@@ -64,8 +64,14 @@ def preset_range(preset: str) -> tuple[int, int]:
     """Return (from_time, to_time) unix timestamps for a named time preset."""
     now = datetime.now()
     if preset == PRESET_TODAY:
+        # Full day (00:00:00-23:59:59), not "now" — "Today"/"Yesterday" name
+        # calendar days, so they're expected to cover the whole day
+        # regardless of when the query runs. "Last N" presets (Last 24h
+        # below, Last 7/30 days on recordings.py/snapshots.py) are relative
+        # to now by name, so ending at "now" there is correct as-is.
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return int(start.timestamp()), int(now.timestamp())
+        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        return int(start.timestamp()), int(end.timestamp())
     if preset == PRESET_YESTERDAY:
         yesterday = now - timedelta(days=1)
         start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)

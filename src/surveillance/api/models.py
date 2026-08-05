@@ -180,6 +180,12 @@ class Event:
     # Event::List, since id/mount_id/arch_id there refer to the whole
     # (much longer) recording file, not this specific moment within it.
     seek_offset: int = 0
+    # event_map's 3rd RLE tuple element. Only set when decoded from
+    # RecordingPicker::EnumInterval (see services.event.list_granular_events);
+    # 0 for events from Event::List. See EVENT_BITMASK.md / services.event_bits
+    # for what this carries (Object Removal Detection, on Hikvision, via
+    # overflow once the 32-bit event_type budget is exhausted).
+    reserved: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]

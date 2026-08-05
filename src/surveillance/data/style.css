@@ -13,6 +13,16 @@
     border-right: 1px solid @borders;
 }
 
+/* Hand-rolled Gtk.Frame look-alike for AdvancedSearchDialog's Event Types
+   group — a real Gtk.Frame's label-widget slot sizes to its own natural
+   width and won't stretch to fit a trailing Any/All combo flush right, so
+   that group uses a plain Box (hexpand works normally in box layout)
+   styled to match Cameras' native Frame border instead. */
+.search-group-frame {
+    border: 1px solid @borders;
+    border-radius: 6px;
+}
+
 .sidebar row {
     padding: 8px 12px;
 }

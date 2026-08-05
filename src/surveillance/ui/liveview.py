@@ -520,6 +520,11 @@ class LiveView(Gtk.Box):
                 self._restore_saved_audio_state(self._slots[phys], cam)
                 self._update_slot_audio(self._slots[phys], cam)
                 self._load_slot_ptz_extras(self._slots[phys], cam)
+                # While another page is shown the streams are paused; keep
+                # the assignment current but do not start playback behind
+                # the user's back — resume_streams() starts it on return.
+                if self._streams_paused:
+                    continue
                 self._start_stream(phys, cam)
             else:
                 # Saved state says this slot is empty (or a stale duplicate),

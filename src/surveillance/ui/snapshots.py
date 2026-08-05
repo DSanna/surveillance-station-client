@@ -30,8 +30,10 @@ starting video playback."""
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,7 +42,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # type: ignore[import-untyped]
+from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Snapshot
 from surveillance.config import load_search_filters, save_search_filters
@@ -59,16 +61,11 @@ from surveillance.services.snapshot import (
 )
 from surveillance.ui.advanced_search import AdvancedSearchDialog
 from surveillance.ui.labels import truncate_label
+from surveillance.ui.mpv_widget import MpvGLArea, attach_zoom_pan_controls
 from surveillance.util.async_bridge import run_async
 
 _THUMB_WIDTH = 120
 _THUMB_HEIGHT = 68
-
-# Multiplier over the "fit to window" size applied per scroll wheel tick,
-# in the viewer's zoom/pan (same feel as the video player's scroll-to-zoom).
-_IMG_ZOOM_MIN = 1.0
-_IMG_ZOOM_MAX = 4.0
-_IMG_ZOOM_STEP = 0.15
 
 # Server-side filtering + pagination is used whenever at most one camera
 # is selected (see services.snapshot.list_snapshots — camId/from/to/start
@@ -383,10 +380,12 @@ class SnapshotsView(Gtk.Box):
             camera_ids: list[int] | None,
             from_dt: datetime | None,
             to_dt: datetime | None,
-            _event_type_ids: list[int] | None,
+            _event_type_ids: list[str] | None,
+            _event_types_match_all: bool,
         ) -> None:
             # Snapshots has no event-type filter (Events-only feature) — the
-            # dialog always passes this 4th argument regardless of page.
+            # dialog always passes these last two arguments regardless of
+            # page.
             self._search_camera_ids = camera_ids
             self._search_from_time = int(from_dt.timestamp()) if from_dt else None
             self._search_to_time = int(to_dt.timestamp()) if to_dt else None
@@ -825,47 +824,28 @@ class SnapshotsView(Gtk.Box):
 
 
 class SnapshotViewerDialog(Gtk.Window):
-    """Full-size picture viewer for a single snapshot, with scroll-to-zoom
-    (centered on the cursor) and click-and-drag panning — same feel as the
-    video player, adapted for a static Gtk.Picture: zoom is implemented by
-    resizing the picture inside a Gtk.ScrolledWindow and panning is just
-    moving the scroll adjustments, rather than mpv render properties."""
+    """Full-size picture viewer for a single snapshot.
+
+    Reuses the mpv-based player widget (and its shared scroll-to-zoom/
+    drag-to-pan controls, see attach_zoom_pan_controls in mpv_widget.py)."""
 
     def __init__(self, parent: Gtk.Window, app: SurveillanceApp, snap: Snapshot) -> None:
         super().__init__()
         self.app = app
+        self._tmp_path: Path | None = None
+        self._closed = False
         ts = datetime.fromtimestamp(snap.create_time)
         self.set_title(f"{snap.camera_name} - {ts:%Y-%m-%d %H:%M:%S}")
         self.set_default_size(800, 600)
         self.set_transient_for(parent)
 
-        self.picture = Gtk.Picture()
-        self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        verify_ssl = app.api.profile.verify_ssl if app.api else True
+        self.player = MpvGLArea(tls_verify=verify_ssl)
+        self.set_child(self.player)
 
-        self._scroller = Gtk.ScrolledWindow()
-        self._scroller.set_child(self.picture)
-        self.set_child(self._scroller)
+        attach_zoom_pan_controls(self.player)
 
-        self._img_zoom = _IMG_ZOOM_MIN
-        self._img_w: int | None = None
-        self._img_h: int | None = None
-        self._pointer_x = 0.0
-        self._pointer_y = 0.0
-        self._drag_last_x = 0.0
-        self._drag_last_y = 0.0
-
-        motion = Gtk.EventControllerMotion()
-        motion.connect("motion", self._on_pointer_motion)
-        self.picture.add_controller(motion)
-
-        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
-        scroll.connect("scroll", self._on_scroll)
-        self.picture.add_controller(scroll)
-
-        drag = Gtk.GestureDrag(button=1)
-        drag.connect("drag-begin", self._on_drag_begin)
-        drag.connect("drag-update", self._on_drag_update)
-        self.picture.add_controller(drag)
+        self.connect("close-request", self._on_close)
 
         if app.api is not None:
             run_async(
@@ -880,82 +860,29 @@ class SnapshotViewerDialog(Gtk.Window):
         if not data:
             return
         try:
-            loader = GdkPixbuf.PixbufLoader()
-            loader.write(data)
-            loader.close()
-            pixbuf = loader.get_pixbuf()
-            if pixbuf:
-                texture = Gdk.Texture.new_for_pixbuf(pixbuf)
-                self.picture.set_paintable(texture)
-                self._img_w = texture.get_width()
-                self._img_h = texture.get_height()
+            # mpv plays from a path, not a byte buffer — write to a temp
+            # file rather than teaching MpvGLArea a separate in-memory
+            # source path for this one caller. Cleaned up in _on_close.
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                f.write(data)
+                tmp_path = Path(f.name)
+            if self._closed:
+                # Viewer closed while the download was still in flight —
+                # _on_close already ran and found _tmp_path still None, so
+                # nothing else will ever clean this file up.
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+                return
+            self._tmp_path = tmp_path
+            self.player.play(str(self._tmp_path))
         except Exception as exc:
-            log.warning("Failed to decode snapshot image: %s", exc)
+            log.warning("Failed to load snapshot image: %s", exc)
 
-    def _on_pointer_motion(self, controller: Gtk.EventControllerMotion, x: float, y: float) -> None:
-        self._pointer_x = x
-        self._pointer_y = y
-
-    def _on_scroll(self, controller: Gtk.EventControllerScroll, dx: float, dy: float) -> bool:
-        if not self._img_w or not self._img_h:
-            return True
-        # Scroll up (dy negative) zooms in, matching the video player.
-        new_zoom = max(_IMG_ZOOM_MIN, min(_IMG_ZOOM_MAX, self._img_zoom - dy * _IMG_ZOOM_STEP))
-        if new_zoom == self._img_zoom:
-            return True
-        self._img_zoom = new_zoom
-        self._apply_zoom(self._pointer_x, self._pointer_y)
-        return True
-
-    def _apply_zoom(self, cursor_x: float, cursor_y: float) -> None:
-        if not self._img_w or not self._img_h:
-            return
-        if self._img_zoom <= _IMG_ZOOM_MIN:
-            self.picture.set_size_request(-1, -1)
-            return
-
-        viewport_w = self._scroller.get_width()
-        viewport_h = self._scroller.get_height()
-        if viewport_w <= 0 or viewport_h <= 0:
-            return
-
-        fit_scale = min(viewport_w / self._img_w, viewport_h / self._img_h)
-        new_w = self._img_w * fit_scale * self._img_zoom
-        new_h = self._img_h * fit_scale * self._img_zoom
-
-        hadj = self._scroller.get_hadjustment()
-        vadj = self._scroller.get_vadjustment()
-        old_w = self.picture.get_width() or new_w
-        old_h = self.picture.get_height() or new_h
-        # Fraction of the currently-visible image under the cursor — used
-        # to keep that same point under the cursor after resizing.
-        frac_x = (hadj.get_value() + cursor_x) / old_w
-        frac_y = (vadj.get_value() + cursor_y) / old_h
-
-        self.picture.set_size_request(int(new_w), int(new_h))
-
-        # The adjustments' upper bound only updates after the next layout
-        # pass, so defer positioning until that's happened.
-        def _reposition() -> bool:
-            hadj.set_value(frac_x * new_w - cursor_x)
-            vadj.set_value(frac_y * new_h - cursor_y)
-            return False
-
-        GLib.idle_add(_reposition)
-
-    def _on_drag_begin(self, gesture: Gtk.GestureDrag, start_x: float, start_y: float) -> None:
-        self._drag_last_x = 0.0
-        self._drag_last_y = 0.0
-
-    def _on_drag_update(self, gesture: Gtk.GestureDrag, offset_x: float, offset_y: float) -> None:
-        # drag-update reports the offset cumulative from drag-begin, not
-        # incrementally, so track how much has already been applied.
-        dx = offset_x - self._drag_last_x
-        dy = offset_y - self._drag_last_y
-        self._drag_last_x = offset_x
-        self._drag_last_y = offset_y
-        hadj = self._scroller.get_hadjustment()
-        vadj = self._scroller.get_vadjustment()
-        # Content should follow the cursor (grab-and-drag feel).
-        hadj.set_value(hadj.get_value() - dx)
-        vadj.set_value(vadj.get_value() - dy)
+    def _on_close(self, window: Gtk.Window) -> bool:
+        self._closed = True
+        self.player.stop()
+        if self._tmp_path is not None:
+            with contextlib.suppress(OSError):
+                self._tmp_path.unlink()
+            self._tmp_path = None
+        return False

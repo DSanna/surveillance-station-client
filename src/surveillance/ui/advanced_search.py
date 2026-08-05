@@ -61,15 +61,16 @@ class AdvancedSearchDialog(Gtk.Window):
         parent: Gtk.Window,
         cameras: list[Camera],
         on_search: Callable[
-            [list[int] | None, datetime | None, datetime | None, list[int] | None], None
+            [list[int] | None, datetime | None, datetime | None, list[str] | None, bool], None
         ],
         on_reset: Callable[[], None],
         selected_ids: list[int] | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
         title: str = "Advanced Search",
-        event_types: list[tuple[int, str]] | None = None,
-        selected_event_type_ids: list[int] | None = None,
+        event_types: list[tuple[str, str]] | None = None,
+        selected_event_type_ids: list[str] | None = None,
+        selected_event_types_match_all: bool = False,
         show_extended_presets: bool = True,
     ) -> None:
         super().__init__(
@@ -79,7 +80,7 @@ class AdvancedSearchDialog(Gtk.Window):
         )
         self._cameras = cameras
         self._camera_checks: dict[int, Gtk.CheckButton] = {}
-        self._event_type_checks: dict[int, Gtk.CheckButton] = {}
+        self._event_type_checks: dict[str, Gtk.CheckButton] = {}
         self._time_range_set = from_time is not None or to_time is not None
         self._on_search = on_search
         self._on_reset = on_reset
@@ -203,7 +204,44 @@ class AdvancedSearchDialog(Gtk.Window):
         filters_row.append(cam_frame)
 
         if event_types is not None:
-            type_frame = Gtk.Frame(label="Event Types")
+            # Not a Gtk.Frame: its label-widget slot sizes to the label's
+            # own natural width and never stretches to the frame's width,
+            # so a trailing Any/All combo can't be pushed flush right that
+            # way — a spacer has nothing to expand into. Plain Box (normal
+            # box layout, hexpand works as expected) styled via CSS
+            # (.search-group-frame) to match Cameras' native Frame border.
+            type_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            type_outer.add_css_class("search-group-frame")
+            type_outer.set_hexpand(True)
+
+            type_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            type_header.set_margin_top(6)
+            type_header.set_margin_start(8)
+            type_header.set_margin_end(8)
+            type_header.append(Gtk.Label(label="Event Types"))
+            type_header_spacer = Gtk.Box()
+            type_header_spacer.set_hexpand(True)
+            type_header.append(type_header_spacer)
+
+            # Whether a multi-type search matches events containing ANY of
+            # the checked bits (the historical/default behavior) or ALL of
+            # them — e.g. "Person Detect" AND "Vehicle Detect" only, not
+            # either alone. Purely a client-side combination of the same
+            # per-bit tests already used elsewhere; DSM has no concept of
+            # these decoded categories to filter on server-side.
+            self.event_types_mode_combo = Gtk.ComboBoxText()
+            self.event_types_mode_combo.append("or", "Any")
+            self.event_types_mode_combo.append("and", "All")
+            self.event_types_mode_combo.set_active_id(
+                "and" if selected_event_types_match_all else "or"
+            )
+            self.event_types_mode_combo.set_tooltip_text(
+                "Any: events matching at least one checked type.\n"
+                "All: events matching every checked type at once."
+            )
+            type_header.append(self.event_types_mode_combo)
+            type_outer.append(type_header)
+
             type_scroll = Gtk.ScrolledWindow()
             type_scroll.set_min_content_height(150)
             type_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -228,8 +266,8 @@ class AdvancedSearchDialog(Gtk.Window):
                 self.type_box.append(check)
 
             type_scroll.set_child(self.type_box)
-            type_frame.set_child(type_scroll)
-            filters_row.append(type_frame)
+            type_outer.append(type_scroll)
+            filters_row.append(type_outer)
 
         content.append(filters_row)
 
@@ -290,13 +328,24 @@ class AdvancedSearchDialog(Gtk.Window):
         active = btn.get_active()
         for check in self._event_type_checks.values():
             check.set_sensitive(not active)
+        if active:
+            # "All Event Types" leaves no specific selection for Any/All to
+            # combine — force it back to the harmless default and grey it
+            # out, same rule _update_all_event_types_state applies below 2
+            # selections. Without this it silently kept whatever value
+            # (and enabled state) was left over from an earlier selection.
+            self.event_types_mode_combo.set_active_id("or")
+            self.event_types_mode_combo.set_sensitive(False)
 
     def _on_event_type_toggled(self, btn: Gtk.CheckButton) -> None:
         self._update_all_event_types_state()
 
     def _update_all_event_types_state(self) -> None:
-        any_selected = any(c.get_active() for c in self._event_type_checks.values())
-        self.all_types_btn.set_active(not any_selected)
+        selected_count = sum(1 for c in self._event_type_checks.values() if c.get_active())
+        self.all_types_btn.set_active(selected_count == 0)
+        # Any/All is meaningless below 2 selections — grey it out rather
+        # than leave a control that does nothing.
+        self.event_types_mode_combo.set_sensitive(selected_count >= 2)
 
     def _apply_preset(self, preset: str) -> None:
         """Apply a named time preset using the shared preset_range helper."""
@@ -358,7 +407,7 @@ class AdvancedSearchDialog(Gtk.Window):
             cam_id for cam_id, check in self._camera_checks.items() if check.get_active()
         ] or None
 
-    def _get_selected_event_type_ids(self) -> list[int] | None:
+    def _get_selected_event_type_ids(self) -> list[str] | None:
         """Return selected event type IDs, or None if this dialog wasn't
         given an event_types list (Recordings/Snapshots) or "All Event
         Types" is selected."""
@@ -367,6 +416,13 @@ class AdvancedSearchDialog(Gtk.Window):
         return [
             type_code for type_code, check in self._event_type_checks.items() if check.get_active()
         ]
+
+    def _get_event_types_match_all(self) -> bool:
+        """True for "All" (AND), False for "Any" (OR, the default) — False
+        when this dialog wasn't given an event_types list."""
+        if not self._event_type_checks:
+            return False
+        return bool(self.event_types_mode_combo.get_active_id() == "and")
 
     def _on_day_selected(self, calendar: Gtk.Calendar) -> None:
         """Picking a day counts as setting the time range.
@@ -395,6 +451,7 @@ class AdvancedSearchDialog(Gtk.Window):
             self._get_from_time(),
             self._get_to_time(),
             self._get_selected_event_type_ids(),
+            self._get_event_types_match_all(),
         )
         self.close()
 
