@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 
@@ -76,3 +77,25 @@ def delete_credentials(profile_name: str) -> None:
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:username")
     with contextlib.suppress(keyring.errors.KeyringError):
         keyring.delete_password(SERVICE_NAME, f"{profile_name}:password")
+
+
+# The blocking versions above talk to the Secret Service over D-Bus. A
+# locked collection makes that call wait until the user answers the
+# unlock prompt, and no timeout is set anywhere in the stack, so calling
+# them from the GTK main thread freezes the whole UI for as long as the
+# prompt is up. These wrappers keep that off the main thread.
+
+
+async def get_credentials_async(profile_name: str) -> tuple[str, str] | None:
+    """get_credentials() run off the calling thread."""
+    return await asyncio.to_thread(get_credentials, profile_name)
+
+
+async def store_credentials_async(profile_name: str, username: str, password: str) -> bool:
+    """store_credentials() run off the calling thread."""
+    return await asyncio.to_thread(store_credentials, profile_name, username, password)
+
+
+async def delete_credentials_async(profile_name: str) -> None:
+    """delete_credentials() run off the calling thread."""
+    await asyncio.to_thread(delete_credentials, profile_name)

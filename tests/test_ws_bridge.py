@@ -258,6 +258,32 @@ class TestUptime:
         await bridge.stop()
 
 
+class TestAttemptScoring:
+    """A long attempt only counts as healthy if it actually delivered data."""
+
+    def test_connected_but_silent_never_resets_the_streak(self) -> None:
+        import time
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        # Longer than _FAST_FAILURE_THRESHOLD, which is what the idle
+        # timeout produces: without the data check this scored as healthy
+        # every pass and the bridge reconnected forever.
+        long_ago = time.monotonic() - (ws_bridge._FAST_FAILURE_THRESHOLD + 5.0)
+        outcomes = [bridge._note_attempt_outcome(True, long_ago) for _ in range(10)]
+        assert any(outcomes), "a connected-but-silent stream must eventually give up"
+        assert bridge._error
+
+    def test_a_long_attempt_that_delivered_data_stays_healthy(self) -> None:
+        import time
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        long_ago = time.monotonic() - (ws_bridge._FAST_FAILURE_THRESHOLD + 5.0)
+        for _ in range(10):
+            bridge._attempt_got_data = True
+            assert bridge._note_attempt_outcome(True, long_ago) is False
+        assert bridge._fast_failures == 0
+
+
 class _FakeFfmpegProc:
     """Stand-in for asyncio.subprocess.Process -- avoids spawning a real
     ffmpeg in these unit tests, which only care about the mux/fallback
@@ -404,6 +430,63 @@ class TestAudioMuxDecision:
         assert bridge.audio_active is False
         assert bridge._ffmpeg_proc is None
         await bridge.stop()
+
+
+def _input_sections(args: tuple[str, ...]) -> list[list[str]]:
+    """Split an ffmpeg argv into one option list per -i input. Everything
+    after the last -i is output options, so it forms no section."""
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for arg in args:
+        if arg == "-i":
+            sections.append(current)
+            current = []
+        else:
+            current.append(arg)
+    return sections
+
+
+async def _capture_spawn_args(monkeypatch: pytest.MonkeyPatch, audio_codec: str) -> tuple[str, ...]:
+    """Run _spawn_ffmpeg against a mocked exec and return the argv it built."""
+    captured: list[tuple[str, ...]] = []
+
+    async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+        captured.append(args)
+        return _FakeFfmpegProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+    bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+    await bridge._spawn_ffmpeg("H264", audio_codec, 11, 12, 13)
+    return captured[0]
+
+
+class TestFfmpegTimestampArgs:
+    """Raw Annex B NALs carry no timing, so ffmpeg stamps video from the
+    host clock. Audio has to come off that same clock: timestamps derived
+    from the byte count follow the camera's own sampling clock instead,
+    and since mpv paces playback off the audio track, any offset between
+    the two clocks (plus every dropped audio packet) becomes playback
+    permanently slower than arrival, with the backlog growing for as long
+    as the stream runs."""
+
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_both_inputs_are_stamped_from_the_host_clock(
+        self, monkeypatch: pytest.MonkeyPatch, audio_codec: str
+    ) -> None:
+        sections = _input_sections(await _capture_spawn_args(monkeypatch, audio_codec))
+        assert len(sections) == 2
+        for section in sections:
+            assert "-use_wallclock_as_timestamps" in section
+
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_audio_is_decoded_and_resampled(
+        self, monkeypatch: pytest.MonkeyPatch, audio_codec: str
+    ) -> None:
+        """The resampler absorbs the scheduling jitter that byte-count
+        timestamps used to hide, and it can only run on a decoded stream."""
+        args = await _capture_spawn_args(monkeypatch, audio_codec)
+        assert args[args.index("-c:a") + 1] == "pcm_s16le"
+        assert args[args.index("-af") + 1].startswith("aresample=async=")
 
 
 class TestPipeLifetime:

@@ -215,6 +215,7 @@ class WebSocketBridge:
         self._stopping = False
         self._connected_at: float | None = None
         self._fast_failures = 0
+        self._attempt_got_data = False
 
     @property
     def audio_active(self) -> bool:
@@ -230,12 +231,20 @@ class WebSocketBridge:
     def _note_attempt_outcome(self, connected: bool, attempt_start: float) -> bool:
         """Track consecutive failed-to-connect attempts; return True to give up.
 
-        A connection that stayed up a little while is a fresh, healthy
-        attempt — only a run of failures that never even establish a real
-        connection should give up, so a camera that is genuinely
+        A connection that stayed up a little while *and delivered data* is a
+        fresh, healthy attempt — only a run of failures that never establish
+        a working stream should give up, so a camera that is genuinely
         unreachable doesn't retry forever.
+
+        Uptime alone is not enough to call an attempt healthy: the idle
+        timeout is longer than the fast-failure threshold, so a socket the
+        NAS accepts but never feeds would score as healthy on every pass,
+        reset the streak forever, and leave start() waiting on a codec-info
+        frame that is never coming.
         """
-        attempt_uptime = time.monotonic() - attempt_start if connected else 0.0
+        attempt_uptime = (
+            time.monotonic() - attempt_start if connected and self._attempt_got_data else 0.0
+        )
         if attempt_uptime >= _FAST_FAILURE_THRESHOLD:
             self._fast_failures = 0
             return False
@@ -312,13 +321,25 @@ class WebSocketBridge:
         ffmpeg stops draining that input's pipe, and once the pipe's own
         OS buffer fills too, our write to it blocks forever.
 
-        -use_wallclock_as_timestamps is set for video always, and for
-        PCMU audio deliberately isn't: PCMU is a fixed-rate raw format
-        (8kHz mulaw), so ffmpeg derives smooth, sample-accurate
-        timestamps just by counting bytes, immune to our own
-        asyncio/thread-pool scheduling jitter. AAC arrives as discrete
-        compressed frames rather than a fixed-rate byte stream, so it
-        uses wallclock timestamps instead, same as video.
+        -use_wallclock_as_timestamps is set on both inputs, and has to
+        be. Raw Annex B NALs carry no timing, so the host clock is the
+        only timeline video can have; putting audio on that same clock
+        is what stops the two from diverging. Deriving audio timestamps
+        from the byte count instead (as this did for PCMU, whose 8kHz
+        mulaw is fixed-rate enough that ffmpeg can) paces audio off the
+        camera's sampling clock while video runs off ours, so any offset
+        between the two, plus every dropped audio packet, shifts the
+        audio timeline permanently earlier. mpv paces playback off the
+        audio track, so that shift is not a one-off skew: it is a
+        playback rate slower than the arrival rate, and the backlog
+        grows for as long as the stream runs.
+
+        aresample=async=1000 then covers what the byte count used to.
+        It resamples away the millisecond-scale jitter our own
+        asyncio/thread-pool scheduling leaves in the wallclock stamps,
+        and only falls back to inserting silence for a gap large enough
+        to be a genuine packet loss. Both codecs decode to PCM for it,
+        since a filter cannot run on a copied stream.
 
         The video -probesize is deliberately large (2MB, versus 16KB for
         audio): a single H.265 keyframe from an 8MP/4K-class camera can
@@ -357,10 +378,13 @@ class WebSocketBridge:
         """Build ffmpeg's argument list around the caller's pipe fds and
         start it. Kept apart from _start_muxed only so the fd cleanup there
         covers the pipes and the spawn under one except OSError."""
-        audio_args = ["-probesize", "16384", "-analyzeduration", "300000"]
-        if audio_codec in _AAC_AUDIO_CODECS:
-            audio_args += ["-use_wallclock_as_timestamps", "1"]
-        audio_args += [
+        audio_args = [
+            "-probesize",
+            "16384",
+            "-analyzeduration",
+            "300000",
+            "-use_wallclock_as_timestamps",
+            "1",
             "-thread_queue_size",
             "4096",
             *_FFMPEG_AUDIO_ARGS[audio_codec],
@@ -387,18 +411,22 @@ class WebSocketBridge:
             *audio_args,
             "-c:v",
             "copy",
+            # Decoding to PCM is what lets -af run at all, and it is
+            # required for AAC regardless: stream-copying it straight
+            # from ffmpeg's ADTS demuxer into Matroska fails outright
+            # however correct the ADTS headers are (confirmed live:
+            # "Error parsing AAC extradata, unable to determine
+            # samplerate" / "Could not write header" even with a
+            # verified-correct, consistent sample rate from the very
+            # first frame), because that demuxer does not populate the
+            # extradata Matroska's muxer needs for -c:a copy.
             "-c:a",
-            # AAC stream-copied straight from ffmpeg's ADTS demuxer into
-            # Matroska fails outright regardless of how correct the
-            # ADTS headers are (confirmed live: "Error parsing AAC
-            # extradata, unable to determine samplerate" / "Could not
-            # write header" even with a verified-correct, consistent
-            # sample rate from the very first frame) -- the ADTS
-            # demuxer apparently doesn't populate the extradata
-            # Matroska's muxer needs for -c:a copy. Decoding to raw PCM
-            # instead sidesteps the whole problem the same way PCMU's
-            # already-raw audio never has it.
-            "copy" if audio_codec not in _AAC_AUDIO_CODECS else "pcm_s16le",
+            "pcm_s16le",
+            # Keeps the audio timeline glued to the wallclock stamps
+            # without passing our scheduling jitter through as clicks.
+            # See _start_muxed for why both inputs are on one clock.
+            "-af",
+            "aresample=async=1000",
             "-f",
             "matroska",
             "-live",
@@ -427,7 +455,7 @@ class WebSocketBridge:
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
-        await asyncio.to_thread(os.write, self._audio_write_fd, payload)
+        await asyncio.to_thread(self._write_pipe, True, payload)
 
     async def _handle_aac_audio_frame(self, payload: bytes) -> None:
         """Write a real AAC frame to ffmpeg's audio input, after
@@ -441,7 +469,7 @@ class WebSocketBridge:
         """
         frame = strip_au_header(payload)
         header = adts_header(len(frame), self._aac_sample_rate)
-        await asyncio.to_thread(os.write, self._audio_write_fd, header + frame)
+        await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, payload: bytes) -> None:
         """Buffer a raw (still AU-header-prefixed) AAC frame while
@@ -471,9 +499,20 @@ class WebSocketBridge:
         one.
         """
         buf = bytearray()
-        for raw in self._aac_audio_buffer:
-            frame = strip_au_header(raw)
-            buf += adts_header(len(frame), self._aac_sample_rate) + frame
+        try:
+            for raw in self._aac_audio_buffer:
+                frame = strip_au_header(raw)
+                buf += adts_header(len(frame), self._aac_sample_rate) + frame
+        except ValueError:
+            # A frame too long for an ADTS header to describe means this
+            # camera is not using the framing we assume -- which is exactly
+            # what this check exists to catch, so treat it as "not ours"
+            # rather than letting it escape and kill the pump.
+            log.info(
+                "WebSocket bridge for %s: AAC frames are not in the expected framing",
+                self._label,
+            )
+            return False
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -529,7 +568,7 @@ class WebSocketBridge:
         self._audio_active = False
         self._ready_event.set()
         for nal in self._aac_video_buffer:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
         self._aac_video_buffer.clear()
         self._aac_audio_buffer.clear()
 
@@ -542,6 +581,11 @@ class WebSocketBridge:
         if self._aac_intervals:
             self._aac_sample_rate = nearest_sample_rate(median(self._aac_intervals))
         self._aac_detecting = False
+        # Detection is over either way. Left populated, these would make a
+        # reconnect that re-enters detection finish instantly off the
+        # previous session's measurements.
+        self._aac_intervals.clear()
+        self._last_audio_write_time = None
 
         if not await self._aac_frames_look_valid():
             await self._fall_back_to_video_only()
@@ -593,7 +637,7 @@ class WebSocketBridge:
         a degenerate rate to its estimation and can stall it entirely.
         """
         for nal in self._aac_video_buffer:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
             await asyncio.sleep(0.04)
         self._aac_video_buffer.clear()
 
@@ -614,7 +658,7 @@ class WebSocketBridge:
             if len(self._aac_video_buffer) >= _AAC_DETECTION_VIDEO_FRAME_CAP:
                 await self._finish_aac_detection()
         else:
-            await asyncio.to_thread(os.write, self._video_write_fd, nal)
+            await asyncio.to_thread(self._write_pipe, False, nal)
 
     async def _dispatch_audio_frame(self, payload: bytes) -> None:
         """Route a real audio payload to whichever handler matches the
@@ -642,6 +686,7 @@ class WebSocketBridge:
             except TimeoutError:
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
+            self._attempt_got_data = True
             if not isinstance(message, bytes) or len(message) < 4:
                 continue
             (hdr_len,) = struct.unpack(">I", message[:4])
@@ -727,6 +772,7 @@ class WebSocketBridge:
             while not self._stopping:
                 clean_close = False
                 connected = False
+                self._attempt_got_data = False
                 attempt_start = time.monotonic()
                 try:
                     log.debug("WebSocket connecting for %s: %s", self._label, self._ws_url)
@@ -803,6 +849,30 @@ class WebSocketBridge:
         if self._stopping:
             return ""
         return self._error or "stream ended"
+
+    def _write_pipe(self, audio: bool, data: bytes) -> None:
+        """Write to one of the pipes through a private copy of the fd.
+
+        Runs in a worker thread. The descriptor is read and duplicated
+        under the lock _close_write_fd() takes, so a teardown racing this
+        cannot close it between the read and the write(2) -- the next
+        bridge's os.pipe() gets the same numbers back, so a late write
+        would land in another camera's stream, or in whatever else
+        happened to claim the number.
+
+        A duplicate rather than holding the lock across the write: a write
+        to a pipe mpv has not drained blocks until it does, and
+        close_write_end() is called from the GTK main thread.
+        """
+        with self._fd_lock:
+            fd = self._audio_write_fd if audio else self._video_write_fd
+            if fd < 0:
+                return
+            dup = os.dup(fd)
+        try:
+            os.write(dup, data)
+        finally:
+            os.close(dup)
 
     def _close_write_fd(self) -> None:
         """Atomically close the write fd(s). Thread-safe, idempotent."""

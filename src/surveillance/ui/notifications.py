@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import gi
 
@@ -38,7 +38,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Alert
-from surveillance.services.event import list_alerts, mark_alerts_read
+from surveillance.services.event import count_unread_alerts, list_alerts, mark_alerts_read
 from surveillance.util.async_bridge import run_async
 
 if TYPE_CHECKING:
@@ -56,12 +56,21 @@ ALERT_TYPES = {
 }
 
 
+# The popover shows the newest alerts only; the button label and
+# _on_mark_all_read both depend on this being a bounded fetch.
+_ALERT_LIMIT = 20
+
+
 class NotificationPopover(Gtk.Popover):
     """Popover showing recent alerts/notifications."""
 
-    def __init__(self, app: SurveillanceApp) -> None:
+    def __init__(self, app: SurveillanceApp, headerbar: Any = None) -> None:
         super().__init__()
         self.app = app
+        # Kept so marking alerts read can push the new unread count
+        # straight to the badge instead of leaving it stale until the
+        # next alert poll comes round.
+        self._headerbar = headerbar
         self._alerts: list[Alert] = []
 
         self.set_size_request(350, 400)
@@ -80,7 +89,9 @@ class NotificationPopover(Gtk.Popover):
         title.set_xalign(0)
         header.append(title)
 
-        mark_all_btn = Gtk.Button(label="Mark all read")
+        # "these", not "all": refresh() only ever fetches the newest
+        # _ALERT_LIMIT alerts, and only those can be marked.
+        mark_all_btn = Gtk.Button(label="Mark these read")
         mark_all_btn.connect("clicked", self._on_mark_all_read)
         header.append(mark_all_btn)
 
@@ -109,7 +120,7 @@ class NotificationPopover(Gtk.Popover):
         if not self.app.api:
             return
         run_async(
-            list_alerts(self.app.api, limit=20),
+            list_alerts(self.app.api, limit=_ALERT_LIMIT),
             callback=self._on_alerts_loaded,
             error_callback=lambda e: log.error("Failed to load alerts: %s", e),
         )
@@ -177,6 +188,22 @@ class NotificationPopover(Gtk.Popover):
             return
         run_async(
             mark_alerts_read(self.app.api, unread_ids),
-            callback=lambda _: self.refresh(),
-            error_callback=lambda e: log.error("Mark all read failed: %s", e),
+            callback=lambda _: self._after_marked_read(),
+            error_callback=lambda e: log.error("Mark read failed: %s", e),
+        )
+
+    def _after_marked_read(self) -> None:
+        """Refresh the list and push the new unread count to the badge.
+
+        The badge is otherwise written only by the alert poll, so it kept
+        showing the old count for up to a poll interval after the user had
+        just cleared them.
+        """
+        self.refresh()
+        if self._headerbar is None or not self.app.api:
+            return
+        run_async(
+            count_unread_alerts(self.app.api),
+            callback=self._headerbar.set_notification_count,
+            error_callback=lambda e: log.error("Unread count refresh failed: %s", e),
         )

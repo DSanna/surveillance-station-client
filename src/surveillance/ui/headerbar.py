@@ -128,7 +128,7 @@ class AppHeaderBar(Gtk.HeaderBar):
 
         from surveillance.ui.notifications import NotificationPopover
 
-        self.notif_popover = NotificationPopover(self.app)
+        self.notif_popover = NotificationPopover(self.app, self)
         self.notif_btn.set_popover(self.notif_popover)
 
         # Badge overlay

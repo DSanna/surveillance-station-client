@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 
 PROTOCOL_LABELS: dict[str, str] = {
-    "auto": "Auto (best available)",
+    "auto": "Auto (WebSocket)",
     "websocket": "WebSocket",
     "mjpeg": "MJPEG",
     "rtsp_over_http": "RTSP over HTTP",
@@ -101,11 +101,11 @@ async def get_live_view_path(
     if protocol == "direct" and override_url:
         return override_url
 
-    if protocol == "websocket":
-        return _build_ws_live_url(api, camera_id)
-
-    # Auto: try websocket first, then API-based protocols
-    if protocol == "auto":
+    # "auto" is WebSocket: it is what DSM's own web client uses and the
+    # only transport that carries audio for the common camera. There is no
+    # fallback to the API-based protocols -- picking one of those is a
+    # per-camera override, made by right-clicking the camera in the sidebar.
+    if protocol in ("auto", "websocket"):
         return _build_ws_live_url(api, camera_id)
 
     data = await api.request(

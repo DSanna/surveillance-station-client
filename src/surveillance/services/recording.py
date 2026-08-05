@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
-import contextlib
 import json
 import logging
 import time
@@ -39,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from surveillance.api.models import Recording
+from surveillance.services.download import stream_to_file
 
 if TYPE_CHECKING:
     from surveillance.api.client import SurveillanceAPI
@@ -173,48 +173,6 @@ def get_stream_url(api: SurveillanceAPI, rec: Recording) -> str:
     )
 
 
-def _check_download_content(data: bytes, recording_id: int) -> None:
-    """Raise ValueError if *data* looks like an error response rather than a video file.
-
-    Synology DSM may return:
-    - An empty body when the session has expired and no redirect is possible.
-    - An HTML login page (text/html) when the reverse proxy redirects instead
-      of returning a JSON error.
-    - A JSON error body when the content-type header was missed by the client.
-    Any of these would silently produce a corrupt or empty file without this check.
-    """
-    if not data:
-        raise ValueError(
-            f"Recording {recording_id}: server returned an empty response. "
-            "The session may have expired — try logging out and back in."
-        )
-
-    # Detect HTML responses (login redirect, DSM error page).
-    stripped = data[:100].lstrip()
-    if stripped[:9].lower() == b"<!doctype" or stripped[:6].lower() == b"<html>":
-        raise ValueError(
-            f"Recording {recording_id}: server returned an HTML page instead of a video file. "
-            "This usually means the session expired or the request was rejected. "
-            "Log out and log back in, then try again."
-        )
-
-    # Detect a bare JSON error that slipped past the content-type check.
-    if stripped[:1] == b"{":
-        import json as _json  # noqa: PLC0415
-
-        try:
-            obj = _json.loads(data)
-        except Exception:
-            obj = None
-        if isinstance(obj, dict) and not obj.get("success", True):
-            code = obj.get("error", {}).get("code", 0)
-            msg = obj.get("error", {}).get("message", "")
-            raise ValueError(
-                f"Recording {recording_id}: API returned error code {code}"
-                + (f" — {msg}" if msg else "")
-            )
-
-
 async def download_recording(
     api: SurveillanceAPI,
     recording_id: int,
@@ -232,39 +190,23 @@ async def download_recording(
         OSError: File-system write failure (partial file is cleaned up).
     """
     log.debug("Downloading recording %d to %s", recording_id, output_path)
-    data = await api.download(
+    chunks = api.stream_download(
         api="SYNO.SurveillanceStation.Recording",
         method="Download",
         version=RECORDING_DOWNLOAD_VERSION,
         extra_params={"id": str(recording_id)},
     )
-
-    _check_download_content(data, recording_id)
-
-    # Off the loop thread: one event loop serves the whole app, so a
-    # multi-hundred-MB write here would stall every live stream and
-    # every poll until it finished.
-    await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
-    try:
-        await asyncio.to_thread(output_path.write_bytes, data)
-    except Exception:
-        # Remove any partial file so the user is not left with a 0-byte placeholder.
-        with contextlib.suppress(OSError):
-            output_path.unlink()
-        raise
-
-    log.info(
-        "Recording %d downloaded: %s (%d bytes)",
-        recording_id,
-        output_path,
-        len(data),
-    )
-    return output_path
+    return await stream_to_file(chunks, output_path, f"Recording {recording_id}")
 
 
 _recording_thumbnail_cache: collections.OrderedDict[int, bytes] = collections.OrderedDict()
 
 _MAX_THUMBNAIL_CACHE = 128
+
+# Bumped by clear_snapshot_cache(); a fetch that started before the bump
+# still returns its image to the row that asked, but does not put it in
+# the cache the next NAS will read.
+_cache_generation = 0
 
 
 def _cache_put(
@@ -277,7 +219,19 @@ def _cache_put(
 
 
 def clear_snapshot_cache() -> None:
-    """Clear the thumbnail cache."""
+    """Clear the thumbnail cache and disown fetches already in flight.
+
+    Called on disconnect from the GTK thread while up to _thumbnail
+    semaphore's worth of GetThumbnail requests are still running on the
+    asyncio thread, plus however many are queued behind it. Clearing
+    alone would let those finish and re-populate the cache with the old
+    NAS's entries, and the key is a bare recording id with no notion of
+    which server it came from, so logging into a second NAS could show
+    the first one's thumbnail for a colliding id.
+    """
+    global _cache_generation
+
+    _cache_generation += 1
     _recording_thumbnail_cache.clear()
 
 
@@ -291,6 +245,8 @@ async def fetch_recording_thumbnail(
     """
     if rec.id in _recording_thumbnail_cache:
         return _recording_thumbnail_cache[rec.id]
+
+    generation = _cache_generation
 
     async with _thumbnail_semaphore:
         if rec.id in _recording_thumbnail_cache:
@@ -325,12 +281,13 @@ async def fetch_recording_thumbnail(
                 if b64:
                     image_data = base64.b64decode(b64)
                     if image_data:
-                        _cache_put(
-                            _recording_thumbnail_cache,
-                            rec.id,
-                            image_data,
-                            _MAX_THUMBNAIL_CACHE,
-                        )
+                        if generation == _cache_generation:
+                            _cache_put(
+                                _recording_thumbnail_cache,
+                                rec.id,
+                                image_data,
+                                _MAX_THUMBNAIL_CACHE,
+                            )
                         return image_data
         except Exception as exc:
             log.debug(

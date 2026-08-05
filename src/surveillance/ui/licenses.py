@@ -275,7 +275,7 @@ class LicensesView(Gtk.Box):
             )
         else:
             run_async(
-                offline_deactivate(self.app.api, [lic.key]),
+                offline_deactivate(self.app.api, [lic.key], [lic.id]),
                 callback=_on_success,
                 error_callback=_on_error,
             )

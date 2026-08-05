@@ -117,7 +117,11 @@ class SurveillanceApp(Gtk.Application):
             from surveillance.ui.window import MainWindow
 
             self._window = MainWindow(application=self)
-        self._load_css()
+            # Once per process, alongside the window. A second launch of a
+            # single-instance app activates the running one again, and
+            # every call adds another provider to the display that nothing
+            # ever removes.
+            self._load_css()
         self.apply_theme(self.config.theme)
         self._window.present()
 

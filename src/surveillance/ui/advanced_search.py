@@ -81,7 +81,7 @@ class AdvancedSearchDialog(Gtk.Window):
         self._cameras = cameras
         self._camera_checks: dict[int, Gtk.CheckButton] = {}
         self._event_type_checks: dict[str, Gtk.CheckButton] = {}
-        self._time_preset_used = from_time is not None or to_time is not None
+        self._time_range_set = from_time is not None or to_time is not None
         self._on_search = on_search
         self._on_reset = on_reset
 
@@ -140,6 +140,7 @@ class AdvancedSearchDialog(Gtk.Window):
         from_box.append(from_label)
 
         self.from_date = Gtk.Calendar()
+        self.from_date.connect("day-selected", self._on_day_selected)
         from_box.append(self.from_date)
 
         self.from_time_entry = Gtk.Entry()
@@ -155,6 +156,7 @@ class AdvancedSearchDialog(Gtk.Window):
         to_box.append(to_label)
 
         self.to_date = Gtk.Calendar()
+        self.to_date.connect("day-selected", self._on_day_selected)
         to_box.append(self.to_date)
 
         self.to_time_entry = Gtk.Entry()
@@ -347,7 +349,7 @@ class AdvancedSearchDialog(Gtk.Window):
 
     def _apply_preset(self, preset: str) -> None:
         """Apply a named time preset using the shared preset_range helper."""
-        self._time_preset_used = True
+        self._time_range_set = True
         from_ts, to_ts = preset_range(preset)
         self._set_datetime(self.from_date, self.from_time_entry, datetime.fromtimestamp(from_ts))
         self._set_datetime(self.to_date, self.to_time_entry, datetime.fromtimestamp(to_ts))
@@ -365,7 +367,7 @@ class AdvancedSearchDialog(Gtk.Window):
         self._apply_preset(PRESET_LAST7D)
 
     def _on_preset_month(self, btn: Gtk.Button) -> None:
-        self._time_preset_used = True
+        self._time_range_set = True
         now = datetime.now()
         start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
         self._set_datetime(self.from_date, self.from_time_entry, start)
@@ -422,15 +424,24 @@ class AdvancedSearchDialog(Gtk.Window):
             return False
         return bool(self.event_types_mode_combo.get_active_id() == "and")
 
+    def _on_day_selected(self, calendar: Gtk.Calendar) -> None:
+        """Picking a day counts as setting the time range.
+
+        Otherwise the range only counted as set when a preset was used or a
+        time of day was typed, so a search where the user had only clicked
+        dates dropped both bounds and quietly searched everything.
+        """
+        self._time_range_set = True
+
     def _get_from_time(self) -> datetime | None:
         """Return the start of the time range, or None if not set."""
-        if not self.from_time_entry.get_text().strip() and not self._time_preset_used:
+        if not self.from_time_entry.get_text().strip() and not self._time_range_set:
             return None
         return self._get_datetime(self.from_date, self.from_time_entry, "00:00:00")
 
     def _get_to_time(self) -> datetime | None:
         """Return the end of the time range, or None if not set."""
-        if not self.to_time_entry.get_text().strip() and not self._time_preset_used:
+        if not self.to_time_entry.get_text().strip() and not self._time_range_set:
             return None
         return self._get_datetime(self.to_date, self.to_time_entry, "23:59:59")
 

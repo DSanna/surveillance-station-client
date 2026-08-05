@@ -16,7 +16,7 @@ jobs:
       issues: write
     steps:
       - name: Check for valid debug logs
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const body = context.payload.issue.body || '';
@@ -90,7 +90,7 @@ jobs:
       issues: write
     steps:
       - name: Check comment for debug logs
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             // Fetch all comments on the issue

@@ -173,6 +173,21 @@ class CameraSidebar(Gtk.Box):
             error_callback=lambda e: log.error("Failed to refresh cameras: %s", e),
         )
 
+    def clear(self) -> None:
+        """Drop the camera list on disconnect.
+
+        on_connected() builds the content pages before refresh() has
+        returned, and every page seeds its camera filter from this list, so
+        one left over from the previous NAS would seed them with cameras
+        that do not exist on the new one.
+        """
+        self.cameras = []
+        while True:
+            row = self.listbox.get_row_at_index(0)
+            if row is None:
+                break
+            self.listbox.remove(row)
+
     def _update_camera_list(self, cameras: list[Camera]) -> None:
         cameras = sorted(cameras, key=lambda c: (c.name.casefold(), c.id))
 

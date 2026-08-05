@@ -46,6 +46,7 @@ yet -- see ToDo.md item 14.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import ssl
 import time
@@ -62,6 +63,16 @@ log = logging.getLogger(__name__)
 SAMPLE_RATE = 8000  # G.711 standard rate
 CHUNK_SAMPLES = 640  # 80ms @ 8kHz -- confirmed real packet size
 CHUNK_SECONDS = CHUNK_SAMPLES / SAMPLE_RATE
+
+# A send that makes no progress for this long means the socket is wedged:
+# the NAS rebooted, the Wi-Fi dropped, or the TCP connection went half
+# open. ping_interval is off (see the connect call), so nothing else would
+# ever notice, and without a bound stop() cannot get the microphone back.
+SEND_TIMEOUT = 5.0
+
+# Live speech nobody can hear is not worth queueing. Capped at a couple of
+# seconds so a stalled uplink cannot grow the backlog without limit.
+MAX_QUEUED_CHUNKS = 25
 
 
 class PttOccupiedError(Exception):
@@ -127,10 +138,20 @@ class PttSession:
         serving every camera."""
         import sounddevice as sd  # noqa: PLC0415
 
+        def enqueue(data: bytes) -> None:
+            # Runs on the loop thread. Dropping the oldest chunk keeps the
+            # backlog bounded when the uplink stalls, and losing the oldest
+            # audio beats letting the queue grow for as long as the socket
+            # stays wedged.
+            if queue.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+            queue.put_nowait(data)
+
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             if status:
                 log.warning("PTT mic capture status: %s", status)
-            loop.call_soon_threadsafe(queue.put_nowait, bytes(indata))
+            loop.call_soon_threadsafe(enqueue, bytes(indata))
 
         self._stream = sd.RawInputStream(
             samplerate=SAMPLE_RATE,
@@ -142,7 +163,7 @@ class PttSession:
         self._stream.start()
 
     async def _start_capture(self) -> "asyncio.Queue[bytes]":
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_CHUNKS)
         await asyncio.to_thread(self._open_stream, queue, asyncio.get_running_loop())
         return queue
 
@@ -209,7 +230,16 @@ class PttSession:
                     except TimeoutError:
                         continue
                     ulaw = lin2ulaw(chunk)
-                    await ws.send(_double_bytes(ulaw))
+                    try:
+                        await asyncio.wait_for(ws.send(_double_bytes(ulaw)), timeout=SEND_TIMEOUT)
+                    except TimeoutError:
+                        # send() waits on the transport draining, which a
+                        # wedged socket never does. Without this the loop
+                        # never comes back around to the stop flag and the
+                        # finally below never closes the microphone.
+                        raise RuntimeError(
+                            f"push-to-talk upload stalled for {SEND_TIMEOUT:.0f}s"
+                        ) from None
                     sent += 1
                     # Pace against a monotonic target rather than accumulating
                     # asyncio.sleep(CHUNK_SECONDS) calls each loop, which

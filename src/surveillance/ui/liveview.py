@@ -356,6 +356,16 @@ class CameraSlot(Gtk.Box):
             self._ws_bridge = None
             bridge.close_write_end()
             run_async(bridge.stop())
+
+    def stop_ptt(self) -> None:
+        """End any push-to-talk session on this slot.
+
+        Deliberately separate from stop_stream(): push-to-talk is its own
+        audio-out channel to the camera, so a routine video restart (a
+        protocol change, a status flap, a new stream URL) must not cut a
+        conversation short. Only the paths where the slot itself stops
+        being used call this.
+        """
         if self._ptt_session is not None:
             self._ptt_session.stop()
             self._ptt_session = None
@@ -363,6 +373,7 @@ class CameraSlot(Gtk.Box):
 
     def clear(self) -> None:
         self.stop_stream()
+        self.stop_ptt()
         self.player.reset_zoom()
         self._toolbar.clear()
         self.camera = None
@@ -459,6 +470,7 @@ class LiveView(Gtk.Box):
                     slot.player.set_mute(True)
                     slot._update_mute_icon()
                     slot.stop_stream()
+                    slot.stop_ptt()
 
         self._active = new_active
 
@@ -762,15 +774,22 @@ class LiveView(Gtk.Box):
         slot._ptt_session = session
         run_async(
             session.run(self.app.api),
-            error_callback=lambda e, s=slot: self._on_ptt_ended(s, e),
+            error_callback=lambda e, s=slot, sess=session: self._on_ptt_ended(s, sess, e),
         )
 
-    def _on_ptt_ended(self, slot: CameraSlot, exc: BaseException) -> None:
+    def _on_ptt_ended(self, slot: CameraSlot, session: PttSession, exc: BaseException) -> None:
         """A push-to-talk session ended on its own (occupied camera, dropped
-        connection, ...) rather than the user tapping to stop — that path
-        is handled directly in _on_slot_mic_toggle() and never reaches here,
-        since PttSession.run() returns normally (no exception) once stop()
-        makes it fall out of its send loop."""
+        connection, ...) rather than the user tapping to stop.
+
+        stop() only sets an event the send loop polls, so a session still in
+        the handshake keeps running and can raise long after the user tapped
+        off: check_occupied() reports an occupied camera without rechecking
+        the flag, and connect() has its own timeout. By then the slot may
+        already own a newer session, so the failure has to be matched against
+        the session that produced it before anything is cleared.
+        """
+        if slot._ptt_session is not session:
+            return  # a newer session owns the mic now
         if isinstance(exc, PttOccupiedError):
             log.info("Push-to-talk: %s", exc)
         else:
@@ -877,9 +896,10 @@ class LiveView(Gtk.Box):
         """
         slot = self._slots[slot_idx]
         was_lost = slot._stream_lost
-        slot._stream_lost = False
         if camera.status != CameraStatus.ENABLED:
+            slot._stream_lost = False  # showing "offline", not a lost stream
             slot.stop_stream()
+            slot.stop_ptt()  # the camera is not reachable to talk to either
             slot.player.reset_zoom()  # the placeholder card is never zoomed
             slot.set_status("offline")
             slot.player.play(OFFLINE_PLACEHOLDER_URL)
@@ -916,9 +936,21 @@ class LiveView(Gtk.Box):
     def _on_stream_url(self, result: tuple[int, int, str]) -> None:
         slot_idx, cam_id, url = result
         slot = self._slots[slot_idx]
+        if self._streams_paused:
+            # The user left the Live View page while this URL was being
+            # fetched. A slot keeps its own visible flag when the page is
+            # unmapped, so that alone would not stop us starting a stream
+            # nobody is watching and pause_streams() has already been past.
+            # resume_streams() starts it again on return.
+            return
         if slot.get_visible() and slot.camera and slot.camera.id == cam_id:
             log.info("Starting stream in slot %d: %s", slot_idx, url)
             slot.stop_stream()
+            # Only now is a stream really starting. Holding the flag until
+            # here keeps the retry armed when the URL fetch itself fails,
+            # which is the likeliest outcome when the NAS being unreachable
+            # is what killed the stream in the first place.
+            slot._stream_lost = False
             if url.startswith(("ws://", "wss://")):
                 self._start_ws_bridge(slot, url)
             else:
@@ -937,6 +969,13 @@ class LiveView(Gtk.Box):
 
         def _on_ready(pipe_url: str) -> None:
             s = self._slots[slot_idx]
+            if s._ws_bridge is not bridge:
+                # The slot tore this bridge down (or replaced it) while
+                # start() was still resolving. Its read fd is closed by now
+                # and the next bridge's os.pipe() hands the same numbers
+                # back, so playing this pipe_url would point mpv at another
+                # camera's stream.
+                return
             if s.get_visible() and s.camera and s.camera.id == cam_id:
                 log.info(
                     "WebSocket bridge ready, playing pipe: %s (audio_active=%s)",
@@ -1113,6 +1152,7 @@ class LiveView(Gtk.Box):
             slot._update_mute_icon()
             if slot.camera:
                 slot.stop_stream()
+                slot.stop_ptt()
 
     def resume_streams(self) -> None:
         """Restart streams for all visible slots that have a camera assigned."""

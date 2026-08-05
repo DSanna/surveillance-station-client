@@ -181,6 +181,17 @@ class TimeLapseView(Gtk.Box):
             self.task_combo.set_active_id("all")
         self.task_combo.handler_unblock_by_func(self._on_filter_changed)
 
+        # The rebuild above runs with the handler blocked, so a selection
+        # that fell back to "All Tasks" because its task is gone would
+        # leave _task_id holding the dead id: every later query keeps
+        # filtering by a task the combo no longer offers and comes back
+        # empty, and picking "All Tasks" by hand emits nothing because it
+        # is already the active row.
+        if self.task_combo.get_active_id() == "all" and self._task_id != -1:
+            self._task_id = -1
+            self._offset = 0
+            self._load_recordings()
+
     def _on_filter_changed(self, combo: Gtk.ComboBoxText) -> None:
         active = combo.get_active_id()
         if active == "all":

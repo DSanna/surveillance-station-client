@@ -107,23 +107,28 @@ def run_async(
 
     future = asyncio.run_coroutine_threadsafe(coro, loop)
 
-    if callback or error_callback:
+    def _on_done(f: concurrent.futures.Future[T]) -> None:
+        # A cancelled future has no exception to ask for — .exception()
+        # re-raises CancelledError instead of returning it, and this
+        # runs on the loop thread where nothing would catch it.
+        if f.cancelled():
+            return
+        exc = f.exception()
+        if exc:
+            if error_callback:
+                GLib.idle_add(error_callback, exc)
+            else:
+                # Nothing else observes this future, and neither
+                # concurrent.futures nor asyncio warns about an exception
+                # no one retrieved, so without this the failure vanishes.
+                # exc_info gives the traceback: "%s" on an exception often
+                # renders as nothing useful at all.
+                log.error("Async task failed: %r", exc, exc_info=exc)
+        elif callback:
+            GLib.idle_add(callback, f.result())
 
-        def _on_done(f: concurrent.futures.Future[T]) -> None:
-            # A cancelled future has no exception to ask for — .exception()
-            # re-raises CancelledError instead of returning it, and this
-            # runs on the loop thread where nothing would catch it.
-            if f.cancelled():
-                return
-            exc = f.exception()
-            if exc:
-                if error_callback:
-                    GLib.idle_add(error_callback, exc)
-                else:
-                    log.error("Async task failed: %s", exc)
-            elif callback:
-                GLib.idle_add(callback, f.result())
-
-        future.add_done_callback(_on_done)
+    # Attached unconditionally: the callers that pass no callbacks at all
+    # are exactly the ones whose failures used to go unreported.
+    future.add_done_callback(_on_done)
 
     return future

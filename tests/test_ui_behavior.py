@@ -27,14 +27,32 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from surveillance.api.client import SurveillanceAPI
 from surveillance.config import AppConfig, ConnectionProfile
+
+
+def _stream_mock(data: bytes) -> MagicMock:
+    """Stand-in for SurveillanceAPI.stream_download.
+
+    It is an async generator function, not a coroutine, so AsyncMock is the
+    wrong shape: calling it must return something `async for` can iterate.
+    """
+
+    def _call(**kwargs: object) -> AsyncIterator[bytes]:
+        async def _gen() -> AsyncIterator[bytes]:
+            if data:
+                yield data
+
+        return _gen()
+
+    return MagicMock(side_effect=_call)
 
 
 @pytest.fixture
@@ -284,7 +302,7 @@ class TestRecordingDownloadParams:
         output = tmp_path / "rec.mp4"
         fake_bytes = b"fake-video-data"
 
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=fake_bytes) as mock:
+        with patch.object(api, "stream_download", _stream_mock(fake_bytes)) as mock:
             result = await download_recording(api, recording_id=42, output_path=output)
             params = mock.call_args[1]["extra_params"]
             assert params["id"] == "42"
@@ -297,7 +315,7 @@ class TestRecordingDownloadParams:
         output = tmp_path / "out.mp4"
         content = b"\x00\x01\x02\x03video"
 
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=content):
+        with patch.object(api, "stream_download", _stream_mock(content)):
             await download_recording(api, recording_id=1, output_path=output)
 
         assert output.exists()
@@ -309,7 +327,7 @@ class TestRecordingDownloadParams:
 
         output = tmp_path / "subdir" / "deeper" / "rec.mp4"
 
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=b"data"):
+        with patch.object(api, "stream_download", _stream_mock(b"data")):
             await download_recording(api, recording_id=7, output_path=output)
 
         assert output.exists()
@@ -322,7 +340,7 @@ class TestRecordingDownloadParams:
 
         output = tmp_path / "rec.mp4"
 
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=b"x") as mock:
+        with patch.object(api, "stream_download", _stream_mock(b"x")) as mock:
             await download_recording(api, recording_id=99, output_path=output)
             assert mock.call_args[1]["api"] == "SYNO.SurveillanceStation.Recording"
             assert mock.call_args[1]["method"] == "Download"
@@ -333,7 +351,7 @@ class TestRecordingDownloadParams:
 
         output = tmp_path / "video.mp4"
 
-        with patch.object(api, "download", new_callable=AsyncMock, return_value=b"bytes"):
+        with patch.object(api, "stream_download", _stream_mock(b"bytes")):
             result = await download_recording(api, recording_id=3, output_path=output)
 
         assert isinstance(result, Path)

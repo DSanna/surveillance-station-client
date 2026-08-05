@@ -378,6 +378,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_disconnected(self) -> None:
         """Clean up when disconnected (logout/quit)."""
         self.sidebar.stop_polling()
+        self.sidebar.clear()
         self._stop_polling()
         self.headerbar.set_connected(False)
 
