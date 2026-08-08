@@ -41,6 +41,7 @@ import contextlib
 import fcntl
 import logging
 import os
+import select
 import ssl
 import struct
 import subprocess
@@ -85,6 +86,13 @@ _IDLE_TIMEOUT = 10.0  # seconds
 # watches inbound recv() silence, this one paces outbound send() --
 # independent timers on opposite directions of the same socket.
 _KEEPALIVE_INTERVAL = 10.0  # seconds
+
+# How long a pipe write may block before treating the downstream reader
+# (ffmpeg, or mpv on the raw-video-only pipe) as stalled rather than
+# waiting on it forever. Generous: a healthy pipe write completes
+# immediately, so this only ever matters when something downstream has
+# genuinely stopped draining.
+_WRITE_TIMEOUT = 5.0  # seconds
 
 # Safety cap on how long AAC sample-rate detection buffers video before
 # giving up on getting 5 real audio intervals and starting anyway with
@@ -150,6 +158,12 @@ class _StreamStalled(Exception):
     so _pump can keep the stall reason without mistaking a failed handshake
     for a stall.
     """
+
+
+class _PipeWriteStalled(Exception):
+    """Raised when a pipe write can't complete because the downstream
+    reader (ffmpeg, or mpv on the raw-video-only pipe) has stopped
+    draining it."""
 
 
 def _ws_connect(url: str, **kwargs: Any) -> Any:
@@ -831,6 +845,7 @@ class WebSocketBridge:
             while not self._stopping:
                 clean_close = False
                 connected = False
+                give_up_now = False
                 self._attempt_got_data = False
                 attempt_start = time.monotonic()
                 try:
@@ -850,6 +865,17 @@ class WebSocketBridge:
                         self._connected_at = time.monotonic()
                         delay = 0.0
                         await self._read_messages_with_keepalive(ws)
+                except _PipeWriteStalled as exc:
+                    # Unlike a WS-level drop, reconnecting on the same pipe
+                    # can't help here -- the downstream reader (ffmpeg, or
+                    # mpv on the raw-video pipe) is what's stuck, not the
+                    # socket. Give up on this bridge immediately so the
+                    # caller tears down and rebuilds the whole pipeline
+                    # (fresh ffmpeg, fresh pipes, fresh mpv play()) instead
+                    # of endlessly refeeding a pipe that will only stall
+                    # again.
+                    self._error = str(exc)
+                    give_up_now = True
                 except ConnectionClosedOK:
                     # Server closed cleanly (e.g. code 1005 "no status received").
                     clean_close = True
@@ -861,7 +887,7 @@ class WebSocketBridge:
                 if self._stopping:
                     break
 
-                if self._note_attempt_outcome(connected, attempt_start):
+                if give_up_now or self._note_attempt_outcome(connected, attempt_start):
                     break
 
                 # Reconnect on the SAME pipe(s) rather than closing them,
@@ -917,6 +943,13 @@ class WebSocketBridge:
         A duplicate rather than holding the lock across the write: a write
         to a pipe mpv has not drained blocks until it does, and
         close_write_end() is called from the GTK main thread.
+
+        Non-blocking with its own timeout (_WRITE_TIMEOUT) rather than a
+        plain blocking os.write(): a pipe whose reader has stopped
+        draining it (ffmpeg or mpv wedged downstream) would otherwise
+        block here forever, with no way back to ws.recv() and so no way
+        to ever raise, reconnect, or hand off to the stream-lost recovery
+        path that's built for exactly this.
         """
         with self._fd_lock:
             fd = self._audio_write_fd if audio else self._video_write_fd
@@ -924,7 +957,22 @@ class WebSocketBridge:
                 return
             dup = os.dup(fd)
         try:
-            os.write(dup, data)
+            os.set_blocking(dup, False)
+            view = memoryview(data)
+            deadline = time.monotonic() + _WRITE_TIMEOUT
+            while view:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _PipeWriteStalled(
+                        f"pipe write stalled for {_WRITE_TIMEOUT:.0f}s "
+                        "-- downstream reader stopped draining"
+                    )
+                select.select([], [dup], [], remaining)
+                try:
+                    n = os.write(dup, view)
+                except BlockingIOError:
+                    continue
+                view = view[n:]
         finally:
             os.close(dup)
 
