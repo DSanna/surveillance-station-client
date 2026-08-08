@@ -600,8 +600,7 @@ class WebSocketBridge:
         header_len = detect_au_header_len(self._aac_audio_buffer)
         if header_len is None:
             log.info(
-                "WebSocket bridge for %s: AAC frames are not in a recognized "
-                "AU-header framing",
+                "WebSocket bridge for %s: AAC frames are not in a recognized AU-header framing",
                 self._label,
             )
             await self._fall_back_to_video_only()

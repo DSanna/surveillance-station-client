@@ -129,8 +129,7 @@ def detect_au_header_len(frames: Sequence[bytes]) -> int | None:
         return None
     for length in range(_AU_HEADER_MIN_LEN, _AU_HEADER_MAX_LEN + 1):
         if all(
-            len(frame) > length and (frame[length] >> 5) != _AAC_ELEMENT_ID_END
-            for frame in frames
+            len(frame) > length and (frame[length] >> 5) != _AAC_ELEMENT_ID_END for frame in frames
         ):
             return length
     return None
