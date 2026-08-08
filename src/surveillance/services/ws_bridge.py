@@ -58,12 +58,9 @@ from surveillance.services.aac import (
 
 log = logging.getLogger(__name__)
 
-# Internal reconnect policy for the routine ~15-25s session drops the NAS's
-# WebSocket streaming backend does by design (confirmed against a real NAS
-# and against DSM's own web client, which reconnects the same way). A
-# connection that stays up at least this long counts as healthy, resetting
-# the failure streak — only a run of failures that never reach a real
-# connection at all triggers giving up.
+# A connection counts as healthy once it has stayed up this long and
+# delivered data, resetting the failure streak. Only a run of failures
+# that never reach a working connection at all triggers giving up.
 _FAST_FAILURE_THRESHOLD = 3.0  # seconds
 _MAX_CONSECUTIVE_FAST_FAILURES = 5
 _MAX_RECONNECT_DELAY = 2.0  # seconds
@@ -78,6 +75,16 @@ _MAX_RECONNECT_DELAY = 2.0  # seconds
 # recv(), not a protocol ping, so it doesn't reintroduce the premature-
 # disconnect problem.
 _IDLE_TIMEOUT = 10.0  # seconds
+
+# ss_webstream_task drops a connection after roughly nine missed
+# intervals of client silence, even while it keeps sending video --
+# a client-to-server message resets that timer, so one gets sent on
+# this cadence for as long as the connection lives.
+#
+# Equal to _IDLE_TIMEOUT above by coincidence, not design: that one
+# watches inbound recv() silence, this one paces outbound send() --
+# independent timers on opposite directions of the same socket.
+_KEEPALIVE_INTERVAL = 10.0  # seconds
 
 # Safety cap on how long AAC sample-rate detection buffers video before
 # giving up on getting 5 real audio intervals and starting anyway with
@@ -738,6 +745,33 @@ class WebSocketBridge:
             elif media_type == "2" and (self._audio_active or self._aac_detecting):
                 await self._dispatch_audio_frame(payload)
 
+    async def _send_keepalive_loop(self, ws: Any) -> None:
+        """Send a keepalive every _KEEPALIVE_INTERVAL for as long as the
+        connection lives."""
+        while True:
+            await asyncio.sleep(_KEEPALIVE_INTERVAL)
+            await ws.send("keepAlive")
+
+    async def _read_messages_with_keepalive(self, ws: Any) -> None:
+        """Run the read loop and the keepalive loop concurrently;
+        whichever raises first ends the connection, and the other is
+        cancelled and reaped so a cancellation here can't leak either
+        task."""
+        read_task = asyncio.create_task(self._read_messages(ws))
+        keepalive_task = asyncio.create_task(self._send_keepalive_loop(ws))
+        tasks = {read_task, keepalive_task}
+        try:
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            for t in tasks:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+        for t in done:
+            t.result()
+
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:
             log.debug(
@@ -775,12 +809,11 @@ class WebSocketBridge:
         """Connect to the WebSocket and write video (+ audio) frames to
         the pipe(s).
 
-        Reconnects internally on the same pipe(s) whenever the NAS drops
-        the session (its normal behavior, every ~15-25s) instead of
-        closing them — see the comment at the reconnect site for why.
-        Only exits (letting the pipe close and `wait_closed()` return a
-        reason) on a deliberate stop or after repeated attempts that
-        never establish a real connection at all.
+        Reconnects internally on the same pipe(s) whenever the session
+        drops instead of closing them — see the comment at the reconnect
+        site for why. Only exits (letting the pipe close and
+        `wait_closed()` return a reason) on a deliberate stop or after
+        repeated attempts that never establish a real connection at all.
         """
         ssl_ctx: ssl.SSLContext | bool | None = None
         if self._ws_url.startswith("wss://"):
@@ -816,10 +849,9 @@ class WebSocketBridge:
                         connected = True
                         self._connected_at = time.monotonic()
                         delay = 0.0
-                        await self._read_messages(ws)
+                        await self._read_messages_with_keepalive(ws)
                 except ConnectionClosedOK:
-                    # Server closed cleanly (the common case, e.g. code 1005
-                    # "no status received") — the NAS's routine rotation.
+                    # Server closed cleanly (e.g. code 1005 "no status received").
                     clean_close = True
                 except _StreamStalled:
                     pass  # self._error already holds the stall reason
@@ -833,19 +865,15 @@ class WebSocketBridge:
                     break
 
                 # Reconnect on the SAME pipe(s) rather than closing them,
-                # whether the session ended cleanly or with an error: the
-                # NAS drops this WebSocket session routinely, every
-                # ~15-25s, as normal behavior (confirmed against a real
-                # NAS — not a rare failure). Closing the write end here
-                # would deliver a real EOF to mpv, which — with
-                # keep_open=yes on a raw fd:// stream — never resumes
-                # decoding again even after a fresh play() call on a new
-                # pipe (confirmed via a standalone repro). Keeping the
-                # pipe(s) open and just resuming writes after a short
-                # reconnect makes this look like an ordinary buffering
-                # stall to mpv instead of a terminal end-of-file, so it
-                # recovers on its own with no player/render-context
-                # teardown needed at all.
+                # whether the session ended cleanly or with an error.
+                # Closing the write end here would deliver a real EOF to
+                # mpv, which — with keep_open=yes on a raw fd:// stream —
+                # never resumes decoding again even after a fresh play()
+                # call on a new pipe. Keeping the pipe(s) open and just
+                # resuming writes after a short reconnect makes this
+                # look like an ordinary buffering stall to mpv instead
+                # of a terminal end-of-file, so it recovers on its own
+                # with no player/render-context teardown needed at all.
                 self._log_reconnect(clean_close)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY) if delay else 0.25
                 await asyncio.sleep(delay)
