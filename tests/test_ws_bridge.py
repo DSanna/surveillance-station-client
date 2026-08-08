@@ -313,10 +313,18 @@ class _FakeValidationProc:
 
 
 def _aac_audio_frame(payload_len: int = 50) -> bytes:
-    """A mediaType=2 frame with a 2-byte AU-header prefix (real content
+    """A mediaType=2 frame with a 3-byte AU-header prefix (real content
     doesn't matter for these tests -- they only exercise the mux/
     fallback decision, not real AAC decoding)."""
-    return _frame(b"mediaType=2", b"\x00\x00" + b"\xaa" * payload_len)
+    return _frame(b"mediaType=2", b"\x00\x00\x00" + b"\xaa" * payload_len)
+
+
+def _undetectable_au_header_frame(payload_len: int = 50) -> bytes:
+    """A mediaType=2 frame where every byte reads as AAC's "immediate
+    end, zero elements" marker -- no AU-header length in
+    detect_au_header_len's search range can ever pass, mirroring a
+    camera using an entirely different framing scheme."""
+    return _frame(b"mediaType=2", b"\xe0" * payload_len)
 
 
 def _video_frame() -> bytes:
@@ -429,6 +437,33 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is False
         assert bridge._ffmpeg_proc is None
+        await bridge.stop()
+
+    async def test_falls_back_to_video_only_when_au_header_length_is_undetectable(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """detect_au_header_len failing outright must short-circuit
+        straight to the video-only fallback, without ever spawning
+        ffmpeg's throwaway validation subprocess -- there's no AU-header
+        length left to build a transform from."""
+        subprocess_calls = 0
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal subprocess_calls
+            subprocess_calls += 1
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_undetectable_au_header_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        assert subprocess_calls == 0
         await bridge.stop()
 
 
