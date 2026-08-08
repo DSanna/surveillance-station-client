@@ -61,6 +61,30 @@ recovers on its own after a couple of minutes, right-click it in the
 sidebar and try switching protocol (e.g. RTSP instead of WebSocket, or
 vice versa) as a workaround.
 
+## A G711/PCMU/mulaw-audio camera repeatedly stalls or loses its WebSocket stream
+
+If a camera using PCMU/mulaw audio (common on many Hikvision/Reolink models)
+keeps hitting "(stream lost)"/"(attempting reconnect)" on WebSocket Live
+View, this could be an ffmpeg regression. On ffmpeg 7.0 and higher
+(all versions released at least until 2026-08-08), muxing live piped
+H.264/HEVC video with PCMU audio under `-use_wallclock_as_timestamps` can
+stall or fully deadlock ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected.
+Filed upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
+
+The app detects the stall and retries automatically, but on an affected
+ffmpeg build the retry hits the same underlying issue and stalls again
+right away — so this can show up as a fast, repeating reconnect loop
+rather than a one-off recovery. Workarounds:
+
+- Point the app at a known-good ffmpeg build: put an ffmpeg 6.1.1 binary in
+  its own directory and launch with `PATH=/path/to/ffmpeg-6.1.1:$PATH
+  surveillance`. This only affects this app's process, not the rest of the
+  system.
+- Switch that camera to RTSP instead of WebSocket (right-click it in the
+  sidebar). RTSP streams go straight to mpv and never go through this
+  app's ffmpeg muxing path, so the bug doesn't apply. Turning the camera's
+  audio off works too.
+
 ## Recording playback never starts
 
 The player dialog opens, the video area stays black, and after seven seconds
