@@ -242,7 +242,7 @@ class CameraSidebar(Gtk.Box):
         # Status indicator
         status_icon = Gtk.Image()
         if cam.status == CameraStatus.ENABLED:
-            status_icon.set_from_icon_name("emblem-ok-symbolic")
+            status_icon.set_from_icon_name("object-select-symbolic")
             status_icon.add_css_class("camera-status-online")
         elif cam.status == CameraStatus.DISCONNECTED:
             status_icon.set_from_icon_name("network-offline-symbolic")
