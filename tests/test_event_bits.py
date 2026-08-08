@@ -30,13 +30,17 @@ tests exercise."""
 
 from __future__ import annotations
 
+import pytest
+
 from surveillance.services.event_bits import (
+    BitVariant,
     build_filter_options,
     decode_flag,
     event_matches_key,
     event_matches_keys,
     filter_key,
     format_filter_label,
+    load_bit_table,
     normalize_brand,
 )
 
@@ -52,6 +56,23 @@ class TestNormalizeBrand:
         assert normalize_brand("D-Link") == "*"
         assert normalize_brand("Vivotek") == "*"
         assert normalize_brand("") == "*"
+
+    def test_brand_added_only_in_json_decodes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # EVENT_BITMASK.md's Contributing section promises that editing
+        # event_bits.json is sufficient to add a brand, with no code
+        # change. Pin that: a brand existing only in the table must
+        # decode, not fall back to an unrecognized-vendor Unknown.
+        table = dict(load_bit_table())
+        table["25"] = (
+            *table.get("25", ()),
+            BitVariant(brands=("dahua",), label="Human Detection", confirmed=True, notes=""),
+        )
+        monkeypatch.setattr("surveillance.services.event_bits.load_bit_table", lambda: table)
+        assert normalize_brand("Dahua") == "dahua"
+        decoded = decode_flag(1 | (1 << 25), 0, "Dahua")
+        assert [d.label for d in decoded] == ["Human Detection"]
+        assert decoded[0].key == "25:dahua"
+        assert decoded[0].confirmed is True
 
 
 class TestDecodeFlag:
@@ -259,6 +280,7 @@ class TestBuildFilterOptions:
         assert labels["28:reolink"] == "28 - Unknown (Reolink)"
 
         assert event_matches_key(1 << 28, 0, "*", "28")
+        assert event_matches_key(1 << 28, 0, "reolink", "28:reolink")
         assert not event_matches_key(1 << 28, 0, "reolink", "28")
 
     def test_unmapped_bit_gets_one_option_per_unrecognized_vendor(self) -> None:
@@ -285,4 +307,3 @@ class TestBuildFilterOptions:
         occurrences = [(513, 0, "Vivotek"), (513, 0, "hikvision")]
         options = build_filter_options(occurrences)
         assert [key for key, _label, _notes in options] == ["09"]
-        assert event_matches_key(1 << 28, 0, "reolink", "28:reolink")

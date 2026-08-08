@@ -58,8 +58,6 @@ _MODIFIER_BITS = {0, 1}
 _MAX_BIT = 31
 _UNSIGNED_MASK = 0xFFFFFFFF
 
-_KNOWN_BRANDS = {"hikvision", "reolink"}
-
 # The reserved RLE field is only ever a single 0/1 flag so far (see
 # EVENT_BITMASK.md's Object Removal Detection / Temperature Measurement
 # discussion) — modeled as a pseudo-bit with bit=None and this JSON key.
@@ -108,15 +106,28 @@ def load_bit_table() -> dict[str, tuple[BitVariant, ...]]:
     return table
 
 
+def _table_brands() -> set[str]:
+    """Brand keys the bit table maps, derived from the loaded table so a
+    JSON-only brand addition decodes without any code change (the promise
+    EVENT_BITMASK.md's Contributing section makes)."""
+    return {
+        brand
+        for variants in load_bit_table().values()
+        for variant in variants
+        for brand in variant.brands
+        if brand != "*"
+    }
+
+
 def normalize_brand(vendor: str) -> str:
     """Map a camera's raw DSM `vendor` string to a bit-table brand key.
 
-    Falls back to "*" (universal-only decoding) for anything not in
-    _KNOWN_BRANDS — untested/unrecognized vendors only ever get the
+    Falls back to "*" (universal-only decoding) for any brand the bit
+    table doesn't map: untested/unrecognized vendors only ever get the
     shared, brand-independent bits.
     """
     candidate = vendor.strip().lower()
-    return candidate if candidate in _KNOWN_BRANDS else "*"
+    return candidate if candidate in _table_brands() else "*"
 
 
 def _lookup_variant(bit_key: str, brand: str) -> BitVariant | None:

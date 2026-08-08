@@ -859,24 +859,31 @@ class SnapshotViewerDialog(Gtk.Window):
     def _on_image_loaded(self, data: bytes) -> None:
         if not data:
             return
+        # mpv plays from a path, not a byte buffer: write to a temp
+        # file rather than teaching MpvGLArea a separate in-memory
+        # source path for this one caller. Cleaned up in _on_close.
+        tmp_path: Path | None = None
         try:
-            # mpv plays from a path, not a byte buffer — write to a temp
-            # file rather than teaching MpvGLArea a separate in-memory
-            # source path for this one caller. Cleaned up in _on_close.
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-                f.write(data)
                 tmp_path = Path(f.name)
-            if self._closed:
-                # Viewer closed while the download was still in flight —
-                # _on_close already ran and found _tmp_path still None, so
-                # nothing else will ever clean this file up.
+                f.write(data)
+        except OSError as exc:
+            # A failed write (disk full) still created the file; nothing
+            # else knows about it, so remove it here.
+            if tmp_path is not None:
                 with contextlib.suppress(OSError):
                     tmp_path.unlink()
-                return
-            self._tmp_path = tmp_path
-            self.player.play(str(self._tmp_path))
-        except Exception as exc:
-            log.warning("Failed to load snapshot image: %s", exc)
+            log.warning("Failed to write snapshot image: %s", exc)
+            return
+        if self._closed:
+            # Viewer closed while the download was still in flight:
+            # _on_close already ran and found _tmp_path still None, so
+            # nothing else will ever clean this file up.
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+            return
+        self._tmp_path = tmp_path
+        self.player.play(str(self._tmp_path))
 
     def _on_close(self, window: Gtk.Window) -> bool:
         self._closed = True
