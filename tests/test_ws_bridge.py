@@ -303,6 +303,26 @@ class TestUptime:
         await bridge.stop()
 
 
+class TestWriteStall:
+    async def test_stalled_pipe_write_gives_up_instead_of_reconnecting(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A downstream reader that stops draining the pipe must make the
+        bridge give up outright, not endlessly reconnect the WebSocket and
+        refeed data into the same stuck pipe."""
+        monkeypatch.setattr(ws_bridge, "_WRITE_TIMEOUT", 0.05)
+        # Bigger than the pipe's default kernel buffer (64KiB) and nothing
+        # ever reads the other end in this test, so the write actually
+        # blocks instead of completing immediately.
+        big_frame = _frame(b"mediaType=1", b"\xaa" * (200 * 1024))
+        connect(_FakeWS([_codec_frame(), big_frame], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        reason = await bridge.wait_closed()
+        assert "stalled" in reason
+        await bridge.stop()
+
+
 class TestAttemptScoring:
     """A long attempt only counts as healthy if it actually delivered data."""
 
