@@ -85,12 +85,16 @@ class _FakeWS:
     def __init__(self, messages: list[bytes], hang: bool = False) -> None:
         self._messages = list(messages)
         self._hang = hang
+        self.sent: list[Any] = []
 
     async def __aenter__(self) -> _FakeWS:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
+
+    async def send(self, message: Any) -> None:
+        self.sent.append(message)
 
     async def recv(self) -> bytes:
         if self._messages:
@@ -234,6 +238,47 @@ class TestWaitClosed:
         await bridge.start()
         bridge.close_write_end()
         assert await bridge.wait_closed() == ""
+        await bridge.stop()
+
+
+class TestKeepalive:
+    async def test_sends_keepalive_on_the_configured_cadence(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bridge must send a keepalive on _KEEPALIVE_INTERVAL to
+        keep the connection from being dropped for client silence."""
+        monkeypatch.setattr(ws_bridge, "_KEEPALIVE_INTERVAL", 0.05)
+        ws = _FakeWS([_codec_frame()], hang=True)
+        connect(ws)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(0.23)
+        await bridge.stop()
+        assert ws.sent.count("keepAlive") >= 3
+
+    async def test_keepalive_failure_triggers_a_reconnect(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed keepalive send must surface as a normal
+        drop/reconnect rather than silently killing the pump task, even
+        though the read side has no way to notice on its own."""
+        monkeypatch.setattr(ws_bridge, "_KEEPALIVE_INTERVAL", 0.05)
+
+        class _DeadSendWS(_FakeWS):
+            async def send(self, message: Any) -> None:
+                raise ConnectionResetError("connection reset")
+
+        connect(
+            [
+                _DeadSendWS([_codec_frame()], hang=True),
+                _FakeWS([], hang=True),
+            ]
+        )
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(0.3)
+        assert bridge._pump_task is not None
+        assert not bridge._pump_task.done()
         await bridge.stop()
 
 
