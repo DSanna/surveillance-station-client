@@ -975,20 +975,26 @@ class WebSocketBridge:
             dup = os.dup(fd)
         try:
             view = memoryview(data)
+            poller = select.poll()
+            poller.register(dup, select.POLLOUT)
             deadline = time.monotonic() + _WRITE_TIMEOUT
             while view:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _PipeWriteStalled(
-                        f"pipe write stalled for {_WRITE_TIMEOUT:.0f}s "
-                        "-- downstream reader stopped draining"
+                        f"pipe write stalled for {_WRITE_TIMEOUT:.0f}s, "
+                        "downstream reader stopped draining"
                     )
-                select.select([], [dup], [], remaining)
+                poller.poll(remaining * 1000)
                 try:
                     n = os.write(dup, view)
                 except BlockingIOError:
                     continue
                 view = view[n:]
+                # Any progress means the reader is alive: the deadline is
+                # for a stall, not a budget for how long a big frame may
+                # take to hand over.
+                deadline = time.monotonic() + _WRITE_TIMEOUT
         finally:
             os.close(dup)
 
