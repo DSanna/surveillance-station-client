@@ -408,15 +408,27 @@ class TestAttemptScoring:
 class _FakeFfmpegProc:
     """Stand-in for asyncio.subprocess.Process -- avoids spawning a real
     ffmpeg in these unit tests, which only care about the mux/fallback
-    decision in _setup_pipes, not ffmpeg's actual behavior."""
+    decision in _setup_pipes, not ffmpeg's actual behavior.
 
-    returncode: int | None = 0
+    returncode is None because a spawned ffmpeg is still running: the
+    bridge reads it to tell a live muxer from one that rejected its
+    arguments and exited. wait() still returns at once, so a teardown
+    doesn't have to sit out the drain timeout."""
+
+    returncode: int | None = None
 
     async def wait(self) -> int:
         return 0
 
     def terminate(self) -> None:
         pass
+
+
+class _DeadFfmpegProc(_FakeFfmpegProc):
+    """An ffmpeg that started and exited immediately, the way one does
+    when it doesn't understand the arguments it was given."""
+
+    returncode: int | None = 1
 
 
 class _FakeValidationProc:
@@ -514,6 +526,28 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
+        await bridge.stop()
+
+    async def test_ffmpeg_that_exits_at_once_falls_back_to_video_only(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An ffmpeg that starts and immediately quits, the way one that
+        rejects its arguments does, must drop the camera to video-only.
+
+        The spawn itself succeeds, so nothing raises: without the check
+        the bridge would report muxed audio and hand mpv a pipe fed by a
+        process that is already gone.
+        """
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+            return _DeadFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._read_fd >= 0, "the raw-video pipe must still be there to play"
         await bridge.stop()
 
     async def test_mux_active_for_valid_aac(

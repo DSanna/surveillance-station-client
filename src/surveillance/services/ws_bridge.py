@@ -94,6 +94,11 @@ _KEEPALIVE_INTERVAL = 10.0  # seconds
 # genuinely stopped draining.
 _WRITE_TIMEOUT = 5.0  # seconds
 
+# How long to let ffmpeg live before believing it started. An ffmpeg that
+# doesn't like its arguments prints its complaint and exits in tens of
+# milliseconds, so this only has to outlast that, not cover a slow start.
+_FFMPEG_START_GRACE = 0.2  # seconds
+
 # Safety cap on how long AAC sample-rate detection buffers video before
 # giving up on getting 5 real audio intervals and starting anyway with
 # whatever's been measured so far (or the default guess, if audio never
@@ -397,11 +402,24 @@ class WebSocketBridge:
             _set_write_end_nonblocking(video_w)
             _set_write_end_nonblocking(audio_w)
             await self._spawn_ffmpeg(video_codec, audio_codec, video_r, audio_r, out_w)
+            # An ffmpeg that starts but rejects these arguments (a build
+            # too old, or one the user pointed us at) exits straight away,
+            # and nothing downstream would ever notice: mpv reads ffmpeg's
+            # output pipe, so the slot would sit on a frozen frame while
+            # our writes land in a pipe with no reader. Catching it here
+            # turns it into the same OSError the spawn itself raises, so
+            # the camera drops to video-only like any other unusable
+            # ffmpeg. A slow start is not mistaken for a failed one: only
+            # a process that has already exited counts.
+            await asyncio.sleep(_FFMPEG_START_GRACE)
+            if self._ffmpeg_proc is not None and self._ffmpeg_proc.returncode is not None:
+                raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
         except OSError:
-            # Either a pipe or the spawn itself failed. Whichever fds exist
-            # have no subprocess to inherit them now, and this runs again on
-            # every reconnect attempt until the bridge gives up, so leaking
-            # them here would compound quickly.
+            # Either a pipe, the spawn itself, or ffmpeg's own startup
+            # failed. Whichever fds exist have no subprocess to inherit
+            # them now, and this runs again on every reconnect attempt
+            # until the bridge gives up, so leaking them here would
+            # compound quickly.
             for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
                 if fd >= 0:
                     with contextlib.suppress(OSError):
