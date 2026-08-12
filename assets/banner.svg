@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="Surveillance Station Client — native GTK4 desktop client for Synology Surveillance Station on Linux and BSD">
+  <defs>
+    <pattern id="scan" width="4" height="5" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="4" height="1" fill="#ffffff" opacity="0.03"></rect>
+    </pattern>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.72">
+      <stop offset="0.3" stop-color="#0b0d0e" stop-opacity="0"></stop>
+      <stop offset="1" stop-color="#0b0d0e" stop-opacity="1"></stop>
+    </radialGradient>
+    <filter id="glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="3.2"></feGaussianBlur>
+    </filter>
+    
+  </defs>
+
+  <rect width="1280" height="400" fill="#0f1113"></rect>
+  <rect width="1280" height="400" fill="url(#scan)"></rect>
+  <rect width="1280" height="400" fill="url(#vig)"></rect>
+  <rect x="0.5" y="0.5" width="1279" height="399" fill="none" stroke="#1d2225"></rect>
+
+  <text font-family="IBM Plex Mono, DejaVu Sans Mono, Menlo, Consolas, monospace" x="32" y="37" font-size="12" letter-spacing="1.9" fill="#767d78">LINUX · BSD · GTK4</text>
+  <circle cx="1211" cy="33" r="4.5" fill="#f2593f" opacity="0.55" filter="url(#glow)"></circle>
+  <circle cx="1211" cy="33" r="3.5" fill="#f2593f"></circle>
+  <text font-family="IBM Plex Mono, DejaVu Sans Mono, Menlo, Consolas, monospace" x="1248" y="37" font-size="12" letter-spacing="1.9" text-anchor="end" fill="#f2593f">REC</text>
+
+  <text font-family="IBM Plex Sans, DejaVu Sans, Helvetica Neue, Helvetica, Arial, sans-serif" x="640" y="186" font-size="70" font-weight="600" letter-spacing="-2" text-anchor="middle" fill="#f4f6f4">Surveillance Station Client</text>
+  <text font-family="IBM Plex Sans, DejaVu Sans, Helvetica Neue, Helvetica, Arial, sans-serif" x="640" y="238" font-size="21" text-anchor="middle" fill="#adb4af">Connect straight to your NAS for live feeds, playback, PTZ and alerts</text>
+  <text font-family="IBM Plex Sans, DejaVu Sans, Helvetica Neue, Helvetica, Arial, sans-serif" x="640" y="268" font-size="21" text-anchor="middle" fill="#adb4af">— from a native desktop app.</text>
+
+  <g font-family="IBM Plex Mono, DejaVu Sans Mono, Menlo, Consolas, monospace" font-size="12.5" letter-spacing="0.7" fill="#a7aea9" text-anchor="middle">
+    <rect x="366.5" y="340.5" width="90" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="411" y="359">Live view</text>
+    <rect x="469.5" y="340.5" width="98" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="518" y="359">Recordings</text>
+    <rect x="580.5" y="340.5" width="46" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="603" y="359">PTZ</text>
+    <rect x="639.5" y="340.5" width="90" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="684" y="359">Snapshots</text>
+    <rect x="742.5" y="340.5" width="68" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="776" y="359">Events</text>
+    <rect x="823.5" y="340.5" width="90" height="29" fill="none" stroke="#262d31"></rect>
+    <text x="868" y="359">Home mode</text>
+  </g>
+</svg>

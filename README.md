@@ -1,7 +1,5 @@
-<h1 align="center">Surveillance Station Client</h1>
-
 <p align="center">
-  <strong>Native GTK4 desktop client for Synology Surveillance Station</strong>
+  <img src="assets/banner.svg" alt="Surveillance Station Client &mdash; native GTK4 desktop client for Synology Surveillance Station on Linux and BSD" width="100%">
 </p>
 
 <p align="center">
