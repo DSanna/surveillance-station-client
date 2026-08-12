@@ -247,12 +247,16 @@ BUNDLEDIR="${APPDIR}/usr/lib/Surveillance"
 
 export LD_LIBRARY_PATH="${BUNDLEDIR}:${LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-# Bundled ffmpeg binary (see BINARIES above) -- put it first on PATH so the
-# subprocess lookup in ws_bridge.py finds it even on a system with no ffmpeg
-# installed at all. PyInstaller 6 puts collected binaries in _internal/ and
-# leaves only the launcher at the top, so both go on PATH: _internal is where
-# it actually lands today, the parent covers the pre-6 layout.
-export PATH="${BUNDLEDIR}/_internal:${BUNDLEDIR}:${PATH}"
+# Bundled ffmpeg binary (see BINARIES above) -- appended, not prepended, so
+# the subprocess lookup in ws_bridge.py finds it on a system with no ffmpeg
+# installed at all while still letting the user pick a different one the
+# ordinary way (PATH=/path/to/ffmpeg:$PATH). Prepending made the bundled
+# copy win over anything the user asked for, which left the workaround for
+# the upstream PCMU muxing bug (see TROUBLESHOOTING.md) with no effect here.
+# PyInstaller 6 puts collected binaries in _internal/ and leaves only the
+# launcher at the top, so both go on PATH: _internal is where it actually
+# lands today, the parent covers the pre-6 layout.
+export PATH="${PATH}:${BUNDLEDIR}/_internal:${BUNDLEDIR}"
 
 exec "${BUNDLEDIR}/Surveillance" "$@"
 EOF
