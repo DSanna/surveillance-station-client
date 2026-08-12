@@ -431,6 +431,20 @@ class _DeadFfmpegProc(_FakeFfmpegProc):
     returncode: int | None = 1
 
 
+class _ExitingFfmpegProc(_FakeFfmpegProc):
+    """An ffmpeg that starts fine and dies later, the way a crash or an
+    OOM kill mid-session looks."""
+
+    def __init__(self, after: float = 0.05) -> None:
+        self.returncode: int | None = None
+        self._after = after
+
+    async def wait(self) -> int:
+        await asyncio.sleep(self._after)
+        self.returncode = 9
+        return 9
+
+
 class _FakeValidationProc:
     """Stand-in for the throwaway ffmpeg process _aac_frames_look_valid
     spawns to sanity-check the AU-header/ADTS transform."""
@@ -548,6 +562,30 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is False
         assert bridge._read_fd >= 0, "the raw-video pipe must still be there to play"
+        await bridge.stop()
+
+    async def test_ffmpeg_dying_mid_session_ends_the_bridge_with_a_reason(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A muxer that dies after the stream is running must end the
+        bridge, and say why.
+
+        mpv plays ffmpeg's output, so nothing else can recover the
+        session. Left alone, the pump answers the resulting EPIPE by
+        reconnecting onto the same dead pipes until its failure streak
+        runs out, reporting a broken pipe rather than a dead muxer.
+        """
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+            return _ExitingFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True, "it must get as far as a running muxer"
+        reason = await bridge.wait_closed()
+        assert "ffmpeg" in reason, f"the reason must name the muxer, got {reason!r}"
         await bridge.stop()
 
     async def test_mux_active_for_valid_aac(

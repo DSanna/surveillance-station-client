@@ -234,6 +234,7 @@ class WebSocketBridge:
         self._video_write_fd: int = -1
         self._audio_write_fd: int = -1
         self._ffmpeg_proc: asyncio.subprocess.Process | None = None
+        self._ffmpeg_watch: asyncio.Task[None] | None = None
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
@@ -504,6 +505,28 @@ class WebSocketBridge:
         await asyncio.sleep(_FFMPEG_START_GRACE)
         if self._ffmpeg_proc.returncode is not None:
             raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
+        self._ffmpeg_watch = asyncio.create_task(self._watch_ffmpeg(self._ffmpeg_proc))
+
+    async def _watch_ffmpeg(self, proc: asyncio.subprocess.Process) -> None:
+        """End the bridge if ffmpeg exits while the session is running.
+
+        mpv plays ffmpeg's output, so a muxer that dies leaves the slot on
+        its last frame, and nothing else reports it usefully. The next
+        pipe write does fail with EPIPE, but the pump answers that by
+        reconnecting onto the same dead pipes until the failure streak
+        runs out, and a camera between frames may not write for a while.
+        Ending the bridge with a real reason hands the slot to the
+        caller's stream-lost path, which rebuilds the whole pipeline:
+        fresh ffmpeg, fresh pipes, fresh play(). Nothing else can recover
+        a session whose muxer is gone.
+        """
+        returncode = await proc.wait()
+        if self._stopping or self._ffmpeg_proc is not proc:
+            return  # our own teardown asked for this
+        self._error = f"ffmpeg exited with code {returncode}"
+        log.warning("WebSocket bridge for %s: %s", self._label, self._error)
+        if self._pump_task is not None:
+            self._pump_task.cancel()
 
     async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
         """Handle a close notice or codec-info frame (anything that isn't
@@ -1061,6 +1084,10 @@ class WebSocketBridge:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._pump_task
             self._pump_task = None
+
+        if self._ffmpeg_watch is not None:
+            self._ffmpeg_watch.cancel()
+            self._ffmpeg_watch = None
 
         if self._ffmpeg_proc is not None:
             proc = self._ffmpeg_proc
