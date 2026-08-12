@@ -290,6 +290,10 @@ class MpvGLArea(Gtk.GLArea):
             self._mpv["cache"] = "no"
             self._mpv["demuxer-max-bytes"] = "512KiB"
             self._mpv["demuxer-readahead-secs"] = 0
+            # Inert while the cache is off (mpv only raises the readahead
+            # to cache-secs when the cache is on), but written anyway so
+            # every profile states the same set of options.
+            self._mpv["cache-secs"] = 0
             self._mpv["demuxer-lavf-analyzeduration"] = 0
             self._mpv["demuxer-lavf-probesize"] = 32
             self._mpv["correct-pts"] = False
@@ -302,6 +306,12 @@ class MpvGLArea(Gtk.GLArea):
             self._mpv["cache"] = "auto"
             self._mpv["demuxer-max-bytes"] = "150MiB"
             self._mpv["demuxer-readahead-secs"] = 1
+            # mpv's own default. With the cache on, mpv reads ahead by
+            # whichever of this and demuxer-readahead-secs is larger, so
+            # leaving it at the muxed profile's 2 would quietly cap an
+            # RTSP stream's buffer at two seconds instead of letting
+            # demuxer-max-bytes above govern it.
+            self._mpv["cache-secs"] = 1000 * 60 * 60
             self._mpv["demuxer-lavf-analyzeduration"] = 0
             self._mpv["demuxer-lavf-probesize"] = 5000000
             self._mpv["correct-pts"] = True
