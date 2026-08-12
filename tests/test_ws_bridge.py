@@ -41,6 +41,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
+import time
 import types
 from typing import Any
 from unittest.mock import patch
@@ -86,6 +88,7 @@ class _FakeWS:
         self._messages = list(messages)
         self._hang = hang
         self.sent: list[Any] = []
+        self.closed = False
 
     async def __aenter__(self) -> _FakeWS:
         return self
@@ -96,13 +99,22 @@ class _FakeWS:
     async def send(self, message: Any) -> None:
         self.sent.append(message)
 
+    async def close(self) -> None:
+        """Like the real connection: once closed, a pending or subsequent
+        recv() raises instead of waiting for data that will never come."""
+        self.closed = True
+
     async def recv(self) -> bytes:
-        if self._messages:
-            return self._messages.pop(0)
-        if self._hang:
-            await asyncio.sleep(3600)
         from websockets.exceptions import ConnectionClosedOK
 
+        if self.closed:
+            raise ConnectionClosedOK(None, None)
+        if self._messages:
+            return self._messages.pop(0)
+        while self._hang:
+            await asyncio.sleep(0.01)
+            if self.closed:
+                raise ConnectionClosedOK(None, None)
         raise ConnectionClosedOK(None, None)
 
 
@@ -280,6 +292,50 @@ class TestKeepalive:
         assert bridge._pump_task is not None
         assert not bridge._pump_task.done()
         await bridge.stop()
+
+    async def test_keepalive_failure_never_abandons_an_in_flight_write(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed keepalive must close the connection and let the read
+        loop unwind between writes, never cancel it mid-write.
+
+        Cancelling an asyncio.to_thread does not stop the worker thread,
+        so an abandoned write would carry on into the same pipe the
+        reconnected session is already writing to, interleaving two
+        frames into one stream. Only one write may ever be in flight.
+        """
+        monkeypatch.setattr(ws_bridge, "_KEEPALIVE_INTERVAL", 0.05)
+        lock = threading.Lock()
+        live = peak = writes = 0
+
+        def _slow_write(self: Any, audio: bool, data: bytes) -> None:
+            nonlocal live, peak, writes
+            with lock:
+                live += 1
+                writes += 1
+                peak = max(peak, live)
+            time.sleep(0.4)
+            with lock:
+                live -= 1
+
+        monkeypatch.setattr(WebSocketBridge, "_write_pipe", _slow_write)
+
+        class _DeadSendWS(_FakeWS):
+            async def send(self, message: Any) -> None:
+                raise ConnectionResetError("connection reset")
+
+        def _session(cls: type[_FakeWS]) -> _FakeWS:
+            return cls([_codec_frame(), _video_frame()], hang=True)
+
+        connect([_session(_DeadSendWS), _session(_FakeWS)])
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        await asyncio.sleep(1.4)
+        await bridge.stop()
+        # The second write proves the reconnect really happened, so peak
+        # is not 1 merely because nothing followed the abandoned write.
+        assert writes >= 2
+        assert peak == 1
 
 
 class TestUptime:

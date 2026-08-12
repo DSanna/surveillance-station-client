@@ -776,30 +776,39 @@ class WebSocketBridge:
 
     async def _send_keepalive_loop(self, ws: Any) -> None:
         """Send a keepalive every _KEEPALIVE_INTERVAL for as long as the
-        connection lives."""
-        while True:
-            await asyncio.sleep(_KEEPALIVE_INTERVAL)
-            await ws.send("keepAlive")
+        connection lives.
+
+        A send that fails means the connection is already gone. Close it
+        and let the read loop find out on its own, rather than cancelling
+        that loop: a cancellation lands wherever the loop happens to be,
+        and most of the time that is inside an asyncio.to_thread pipe
+        write, which cancelling does not stop. The worker thread would
+        carry on writing into a pipe the next connection is about to
+        reuse, interleaving two frames into one stream. Closing makes
+        recv() raise instead, so the loop unwinds between writes.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_KEEPALIVE_INTERVAL)
+                await ws.send("keepAlive")
+        except Exception:
+            with contextlib.suppress(Exception):
+                await ws.close()
 
     async def _read_messages_with_keepalive(self, ws: Any) -> None:
-        """Run the read loop and the keepalive loop concurrently;
-        whichever raises first ends the connection, and the other is
-        cancelled and reaped so a cancellation here can't leak either
-        task."""
-        read_task = asyncio.create_task(self._read_messages(ws))
+        """Read messages with a keepalive running alongside, so the NAS
+        doesn't drop the session for client silence.
+
+        The read loop stays inline and owns the connection. The keepalive
+        never touches it, so the only cancellation that can reach a pipe
+        write is stop()'s, after which nothing reconnects."""
         keepalive_task = asyncio.create_task(self._send_keepalive_loop(ws))
-        tasks = {read_task, keepalive_task}
         try:
-            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            await self._read_messages(ws)
         finally:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            for t in tasks:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await t
-        for t in done:
-            t.result()
+            keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await keepalive_task
 
     def _log_reconnect(self, clean_close: bool) -> None:
         if clean_close:
