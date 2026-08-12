@@ -34,13 +34,23 @@ from surveillance.ui.mpv_widget import MpvGLArea
 
 
 class _Recorder:
-    """Stands in for the mpv handle, recording every option written."""
+    """Stands in for the mpv handle, recording every option written.
+
+    Both ways of writing one: python-mpv accepts item and attribute
+    assignment alike, so recording only the first would let an option
+    added the other way slip past the checks below unnoticed.
+    """
+
+    options: dict[str, Any]
 
     def __init__(self) -> None:
-        self.options: dict[str, Any] = {}
+        object.__setattr__(self, "options", {})
 
     def __setitem__(self, name: str, value: Any) -> None:
         self.options[name] = value
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self.options[name.replace("_", "-")] = value
 
 
 def _applied(*, low_latency: bool, muxed_audio: bool) -> dict[str, Any]:

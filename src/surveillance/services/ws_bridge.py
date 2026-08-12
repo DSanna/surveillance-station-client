@@ -402,18 +402,6 @@ class WebSocketBridge:
             _set_write_end_nonblocking(video_w)
             _set_write_end_nonblocking(audio_w)
             await self._spawn_ffmpeg(video_codec, audio_codec, video_r, audio_r, out_w)
-            # An ffmpeg that starts but rejects these arguments (a build
-            # too old, or one the user pointed us at) exits straight away,
-            # and nothing downstream would ever notice: mpv reads ffmpeg's
-            # output pipe, so the slot would sit on a frozen frame while
-            # our writes land in a pipe with no reader. Catching it here
-            # turns it into the same OSError the spawn itself raises, so
-            # the camera drops to video-only like any other unusable
-            # ffmpeg. A slow start is not mistaken for a failed one: only
-            # a process that has already exited counts.
-            await asyncio.sleep(_FFMPEG_START_GRACE)
-            if self._ffmpeg_proc is not None and self._ffmpeg_proc.returncode is not None:
-                raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
         except OSError:
             # Either a pipe, the spawn itself, or ffmpeg's own startup
             # failed. Whichever fds exist have no subprocess to inherit
@@ -436,9 +424,10 @@ class WebSocketBridge:
     async def _spawn_ffmpeg(
         self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
     ) -> None:
-        """Build ffmpeg's argument list around the caller's pipe fds and
-        start it. Kept apart from _start_muxed only so the fd cleanup there
-        covers the pipes and the spawn under one except OSError."""
+        """Build ffmpeg's argument list around the caller's pipe fds,
+        start it, and confirm it is still running. Kept apart from
+        _start_muxed only so the fd cleanup there covers the pipes and the
+        spawn under one except OSError."""
         audio_args = [
             "-probesize",
             "16384",
@@ -503,6 +492,18 @@ class WebSocketBridge:
             stderr=subprocess.DEVNULL,
             pass_fds=[video_r, audio_r],
         )
+        # An ffmpeg that starts but rejects these arguments (a build too
+        # old, or one the user pointed us at) exits straight away, and
+        # nothing downstream would ever notice: mpv reads ffmpeg's output
+        # pipe, so the slot would sit on a frozen frame while our writes
+        # land in a pipe with no reader. Report it as the OSError the
+        # spawn itself would have raised, so the camera drops to
+        # video-only like it does for any other unusable ffmpeg. A slow
+        # start is not mistaken for a failed one: only a process that has
+        # already exited counts.
+        await asyncio.sleep(_FFMPEG_START_GRACE)
+        if self._ffmpeg_proc.returncode is not None:
+            raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
 
     async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
         """Handle a close notice or codec-info frame (anything that isn't
