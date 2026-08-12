@@ -81,8 +81,8 @@ rather than a one-off recovery. Workarounds:
   surveillance`. This only affects this app's process, not the rest of the
   system. It works the same way on the AppImage, whose bundled ffmpeg is a
   fallback for systems that have none rather than an override (AppImages
-  before 0.7.2 put the bundled copy first on PATH, so this has no effect on
-  those).
+  0.4.0 through 0.7.1 put the bundled copy first on PATH, so this has no
+  effect on those; earlier ones bundled no ffmpeg at all).
 - Switch that camera to RTSP instead of WebSocket (right-click it in the
   sidebar). RTSP streams go straight to mpv and never go through this
   app's ffmpeg muxing path, so the bug doesn't apply. Turning the camera's
