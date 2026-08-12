@@ -150,6 +150,18 @@ def _grow_pipe_buffer(fd: int) -> None:
         fcntl.fcntl(fd, _F_SETPIPE_SZ, _PIPE_CAPACITY)
 
 
+def _set_write_end_nonblocking(fd: int) -> None:
+    """Make an end this process writes to non-blocking, once.
+
+    _write_pipe needs O_NONBLOCK to time a wedged reader out instead of
+    parking a worker thread on it forever. Setting it there, on the dup,
+    would reach this descriptor anyway: status flags live on the open
+    file description, which a dup shares. Only our own write ends are
+    touched; the ends ffmpeg and mpv read stay as they were.
+    """
+    os.set_blocking(fd, False)
+
+
 class _StreamStalled(Exception):
     """Raised when a connected stream stops delivering data (idle timeout).
 
@@ -330,6 +342,7 @@ class WebSocketBridge:
                 muxable = False
         if not muxable:
             self._read_fd, self._video_write_fd = os.pipe()
+            _set_write_end_nonblocking(self._video_write_fd)
             self._audio_active = False
         log.debug(
             "WebSocket bridge pipe for %s: fd://%d (audio_active=%s)",
@@ -381,6 +394,8 @@ class WebSocketBridge:
             out_r, out_w = os.pipe()
             for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
                 _grow_pipe_buffer(fd)
+            _set_write_end_nonblocking(video_w)
+            _set_write_end_nonblocking(audio_w)
             await self._spawn_ffmpeg(video_codec, audio_codec, video_r, audio_r, out_w)
         except OSError:
             # Either a pipe or the spawn itself failed. Whichever fds exist
@@ -596,6 +611,7 @@ class WebSocketBridge:
         self._read_fd, self._video_write_fd = os.pipe()
         _grow_pipe_buffer(self._read_fd)
         _grow_pipe_buffer(self._video_write_fd)
+        _set_write_end_nonblocking(self._video_write_fd)
         self._audio_active = False
         self._ready_event.set()
         for nal in self._aac_video_buffer:
@@ -937,7 +953,9 @@ class WebSocketBridge:
         cannot close it between the read and the write(2) -- the next
         bridge's os.pipe() gets the same numbers back, so a late write
         would land in another camera's stream, or in whatever else
-        happened to claim the number.
+        happened to claim the number. Only the number is private: the dup
+        shares the original's file status flags, which is why O_NONBLOCK
+        is set once at pipe creation rather than here.
 
         A duplicate rather than holding the lock across the write: a write
         to a pipe mpv has not drained blocks until it does, and
@@ -956,7 +974,6 @@ class WebSocketBridge:
                 return
             dup = os.dup(fd)
         try:
-            os.set_blocking(dup, False)
             view = memoryview(data)
             deadline = time.monotonic() + _WRITE_TIMEOUT
             while view:
