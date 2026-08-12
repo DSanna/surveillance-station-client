@@ -122,16 +122,17 @@ def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
     not the test itself, so a wrong prefix length is still possible in
     principle and _aac_frames_look_valid stays the only real check.
 
-    Returns None if no candidate holds across every frame, e.g. a
-    camera using an entirely different framing scheme, so callers can
-    fall back accordingly instead of guessing.
+    Frames too short to carry any candidate are dropped rather than
+    allowed to veto one: a runt payload says nothing about the framing,
+    and letting it rule every length out would cost the camera its
+    audio for the whole session. Returns None if nothing usable is left
+    or no candidate holds, so callers can fall back instead of guessing.
     """
-    if not frames:
+    usable = [frame for frame in frames if len(frame) > _PREFIX_MAX_LEN]
+    if not usable:
         return None
     for length in range(_PREFIX_MIN_LEN, _PREFIX_MAX_LEN + 1):
-        if all(
-            len(frame) > length and (frame[length] >> 5) != _AAC_ELEMENT_ID_END for frame in frames
-        ):
+        if all((frame[length] >> 5) != _AAC_ELEMENT_ID_END for frame in usable):
             return length
     return None
 

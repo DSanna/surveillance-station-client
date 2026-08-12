@@ -148,6 +148,14 @@ class TestDetectFramePrefixLen:
         frames.append(_prefixed_frame(prefix_bad, _element(_CPE)))
         assert detect_frame_prefix_len(frames) == 3
 
+    def test_a_runt_frame_does_not_veto_every_candidate(self) -> None:
+        # A payload too short to carry any candidate says nothing about the
+        # framing, so it must be ignored rather than cost the camera its
+        # audio for the whole session.
+        frames = [_prefixed_frame(bytes([0x34, 0x1F]), _element(_CPE)) for _ in range(6)]
+        frames.append(b"\x00")
+        assert detect_frame_prefix_len(frames) == 2
+
     def test_returns_none_for_unrecognized_framing(self) -> None:
         # Every candidate in range hits END somewhere, so no length works,
         # matching the real "second camera model" case in the docstring.
