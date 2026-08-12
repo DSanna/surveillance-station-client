@@ -173,10 +173,10 @@ class TestWaitClosed:
 
     async def test_gives_up_after_repeated_clean_closes(self, connect: Any) -> None:
         """A single clean close (e.g. code 1005) is absorbed and reconnected
-        internally — that's the NAS's normal ~15-25s session rotation, not a
-        failure. But a run of closes that never last long enough to look
-        like a real connection must still eventually surface, rather than
-        retrying forever in a tight loop."""
+        internally, since the keepalive makes one rare enough to be a network
+        hiccup rather than a failure. But a run of closes that never last long
+        enough to look like a real connection must still eventually surface,
+        rather than retrying forever in a tight loop."""
         connect(_FakeWS([_codec_frame(), _frame(b"mediaType=1", b"frame")]))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()  # codec info arrives on the very first connect
