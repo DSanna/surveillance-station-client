@@ -23,35 +23,40 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""AAC (MPEG4-GENERIC over RTP, RFC 3640 "AAC-hbr" mode) helpers for
-WebSocket audio muxing (see ws_bridge.py).
+"""AAC helpers for WebSocket audio muxing (see ws_bridge.py).
 
-DSM delivers each AAC access unit prefixed with an RFC 3640 AU-header
-rather than a self-contained ADTS frame. ffmpeg can't read the bare
-AU-header framing directly, so each frame needs that header stripped
-and a synthesized ADTS header prepended instead, which ffmpeg's plain
-"aac" demuxer auto-detects via the ADTS sync word.
+DSM delivers each AAC frame behind a short prefix rather than as a
+self-contained ADTS frame. ffmpeg's plain "aac" demuxer needs ADTS
+framing, so each frame has that prefix stripped and a synthesized ADTS
+header prepended, which the demuxer then finds via the sync word.
 
-The AU-header's length isn't a fixed protocol constant -- RFC 3640
-negotiates it per stream (sizeLength/indexLength/etc.), so different
-camera models can legitimately use different lengths ("2 bytes", 13-bit
-size + 3-bit index, is the widely-documented "AAC-hbr" default, but not
-the only one seen in practice). Hardcoding a single length risks
-silently breaking whichever cameras don't use it, so the length is
-detected per camera instead (see detect_au_header_len) from a handful
-of real frames buffered during startup.
+The prefix is the tail of an ADTS header, not the RFC 3640 AU-header
+this code first assumed. For the one camera whose frames were captured
+(3 bytes), adts_header() below reproduces all three exactly: they are
+aac_frame_length's low 11 bits, adts_buffer_fullness 0x7FF, and one
+raw_data_block per frame. Read as an RFC 3640 AU-header the same bytes
+give an AU size of ~1600 for a ~420-byte frame and an AU index of 7
+where the RFC requires 0, so that reading is excluded. Where the
+leading ADTS bytes go is not established. Most likely the frame header
+DSM sends covers them, the way it covers the 4-byte Annex B start code
+for video (see _read_messages in ws_bridge.py). Confirming that needs
+one full payload rather than the 12-byte prefixes captured so far:
+((p[0] << 3) | (p[1] >> 5)) == len(p) + 4 holds if it does, and would
+replace the measurement below with plain arithmetic.
 
-That detection can't rely on ffmpeg reporting a decode error: its
-decoder silently recovers from a wrong AU-header length via an
-internal retry, discarding that packet's own timestamp in the process
-without ever surfacing an error -- so ``_aac_frames_look_valid`` (in
-ws_bridge.py, which only checks that ffmpeg doesn't error) can't catch
-a wrong length on its own.
+Until then the prefix length is measured per camera (see
+detect_frame_prefix_len) from frames buffered during startup, since
+nothing DSM sends states it. That measurement cannot lean on ffmpeg
+reporting a decode error: leaving one prefix byte unstripped makes its
+decoder recover through an internal retry that drops the packet's own
+timestamp without surfacing anything, which is what let WebSocket
+reconnect gaps pass unnoticed until audio and video had drifted apart.
+_aac_frames_look_valid in ws_bridge.py only checks that ffmpeg stays
+quiet, so it cannot catch that by itself.
 
-A second camera model tested alongside this one reported the same
-adoCodec but used different framing entirely -- no length in
-detect_au_header_len's search range decoded cleanly for it, so audio
-for a camera like that still falls back to video-only.
+A second camera model reported the same adoCodec but used different
+framing entirely, so audio for a camera like that falls back to
+video-only.
 """
 
 from __future__ import annotations
@@ -59,10 +64,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 # DSM doesn't expose the negotiated sample rate directly (adoExtra's
-# encoding isn't known), but AAC-hbr's "constantDuration" default means
-# every frame carries a fixed 1024 samples -- so timing alone, measured
-# from real frame arrivals, is enough to determine the rate live,
-# without a per-camera-model lookup table.
+# encoding isn't known), but every AAC-LC frame carries a fixed 1024
+# samples, so timing alone, measured from real frame arrivals, is enough
+# to determine the rate live, without a per-camera-model lookup table.
 _SAMPLES_PER_FRAME = 1024
 _STANDARD_SAMPLE_RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 
@@ -86,19 +90,18 @@ _ADTS_FREQ_INDEX = {
 }
 
 
-def strip_au_header(frame: bytes, header_len: int) -> bytes:
-    """Remove the leading RFC 3640 AU-header, leaving the raw AAC frame."""
-    return frame[header_len:]
+def strip_frame_prefix(frame: bytes, prefix_len: int) -> bytes:
+    """Remove DSM's leading prefix, leaving the raw AAC frame."""
+    return frame[prefix_len:]
 
 
-# RFC 3640 AAC-hbr's documented default (13-bit size + 3-bit index) is the
-# shortest AU-header actually seen in practice -- shorter candidates would
-# only ever be tested against real payload bytes, not header bytes, which
-# defeats the point (see detect_au_header_len). The upper bound is a
-# generous ceiling, matching the range already ruled out for the second,
-# unsupported camera model mentioned in the module docstring.
-_AU_HEADER_MIN_LEN = 2
-_AU_HEADER_MAX_LEN = 8
+# 2 is the shortest prefix seen in practice and 3 is the only other one,
+# so the search starts at 2; a shorter candidate would be tested against
+# real AAC payload bytes rather than prefix bytes, which proves nothing.
+# The ceiling is arbitrary but generous, and matches the range already
+# ruled out for the second camera model in the module docstring.
+_PREFIX_MIN_LEN = 2
+_PREFIX_MAX_LEN = 8
 
 # AAC's raw_data_block starts with a 3-bit id_syn_ele naming the first
 # syntax element; 0b111 is ID_END, meaning "no elements follow". A real,
@@ -106,20 +109,18 @@ _AU_HEADER_MAX_LEN = 8
 _AAC_ELEMENT_ID_END = 0b111
 
 
-def detect_au_header_len(frames: Sequence[bytes]) -> int | None:
-    """Determine how many leading bytes of RFC 3640 AU-header framing to
-    strip, from a handful of real (still AU-header-prefixed) frames.
+def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
+    """Work out how many leading bytes DSM puts in front of the raw AAC
+    frame, from a handful of real (still prefixed) frames.
 
-    Tries each candidate length in ascending order and returns the first
-    (shortest) one whose first post-strip byte never reads as AAC's
-    "immediate end, zero elements" marker across every sample frame --
-    a real frame's raw_data_block can never legitimately start with
-    that, so any candidate that does is provably wrong. Preferring the
-    shortest passing candidate matters: a too-long strip reads into real
-    (effectively random) payload bytes, which will eventually also
-    produce that same marker by chance given enough frames, just less
-    reliably than a header byte that hasn't even reached real content
-    yet.
+    This eliminates rather than confirms. A candidate whose first
+    post-strip byte reads as AAC's "immediate end, zero elements"
+    marker on any sample frame is provably wrong, since a real
+    raw_data_block cannot start with it; every other candidate is
+    merely not disproved, and the shortest survivor wins. That
+    preference is what makes the answer right on the captured camera,
+    not the test itself, so a wrong prefix length is still possible in
+    principle and _aac_frames_look_valid stays the only real check.
 
     Returns None if no candidate holds across every frame, e.g. a
     camera using an entirely different framing scheme, so callers can
@@ -127,7 +128,7 @@ def detect_au_header_len(frames: Sequence[bytes]) -> int | None:
     """
     if not frames:
         return None
-    for length in range(_AU_HEADER_MIN_LEN, _AU_HEADER_MAX_LEN + 1):
+    for length in range(_PREFIX_MIN_LEN, _PREFIX_MAX_LEN + 1):
         if all(
             len(frame) > length and (frame[length] >> 5) != _AAC_ELEMENT_ID_END for frame in frames
         ):
@@ -137,7 +138,7 @@ def detect_au_header_len(frames: Sequence[bytes]) -> int | None:
 
 def nearest_sample_rate(interval_seconds: float) -> int:
     """Snap a measured inter-frame interval to the nearest standard AAC
-    sample rate, assuming the standard 1024-sample AAC-hbr frame size."""
+    sample rate, assuming AAC-LC's fixed 1024 samples per frame."""
     if interval_seconds <= 0:
         return 16000
     measured = _SAMPLES_PER_FRAME / interval_seconds

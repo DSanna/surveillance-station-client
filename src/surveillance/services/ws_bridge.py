@@ -28,7 +28,7 @@
 Video is always piped through. Audio (mediaType=2 frames, dropped
 entirely until now) is muxed in via an ffmpeg subprocess when DSM reports
 a codec we know how to handle (currently PCMU/G.711 mu-law, and AAC via
-the common "AAC-hbr" RTP framing -- see aac.py) -- mpv's fd:// pipe then
+a short DSM-specific prefix, see aac.py) -- mpv's fd:// pipe then
 reads ffmpeg's own Matroska output instead of the raw Annex B video
 stream directly. A camera whose audio is neither (or has none at all)
 falls back to the original raw-video-only passthrough, unchanged.
@@ -52,9 +52,9 @@ from typing import Any
 
 from surveillance.services.aac import (
     adts_header,
-    detect_au_header_len,
+    detect_frame_prefix_len,
     nearest_sample_rate,
-    strip_au_header,
+    strip_frame_prefix,
 )
 
 log = logging.getLogger(__name__)
@@ -121,10 +121,9 @@ _FFMPEG_AUDIO_ARGS = {
     "PCMU": ["-f", "mulaw", "-ar", "8000", "-ac", "1"],
     "MPEG4-GENERIC": ["-f", "aac"],
 }
-# Audio codecs that need per-frame transformation (DSM's RFC 3640
-# AU-header stripped, a synthesized ADTS header prepended) rather than
-# PCMU's raw passthrough. Confirmed against one real camera's "AAC-hbr"
-# framing (the common default for IP camera RTP audio) -- a second
+# Audio codecs that need per-frame transformation (DSM's leading
+# prefix stripped, a synthesized ADTS header prepended) rather than
+# PCMU's raw passthrough. Confirmed against one real camera; a second
 # camera model reporting the same adoCodec used different framing
 # entirely, so this is known to not cover every AAC camera yet.
 _AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
@@ -230,9 +229,9 @@ class WebSocketBridge:
         # (see _aac_detecting) until real inter-frame timing reveals the
         # rate, and only then does ffmpeg start.
         self._aac_sample_rate = 16000
-        # RFC 3640 AAC-hbr default; overwritten by detect_au_header_len()
-        # in _finish_aac_detection before any real frame is ever stripped.
-        self._au_header_len = 2
+        # Overwritten by detect_frame_prefix_len() in _finish_aac_detection
+        # before any real frame is ever stripped.
+        self._frame_prefix_len = 2
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
         self._pending_video_codec: str = ""
@@ -488,20 +487,20 @@ class WebSocketBridge:
 
     async def _handle_aac_audio_frame(self, payload: bytes) -> None:
         """Write a real AAC frame to ffmpeg's audio input, after
-        stripping DSM's RFC 3640 AU-header and prepending a synthesized
+        stripping DSM's leading prefix and prepending a synthesized
         ADTS header (see aac.py) — ffmpeg's plain "aac" demuxer needs
-        ADTS framing, not the bare AU-header-prefixed frames DSM sends.
+        ADTS framing, not the prefixed frames DSM sends.
 
-        The sample rate and AU-header length are already known by the
+        The sample rate and prefix length are already known by the
         time this ever runs (detection happens before ffmpeg starts at
         all — see _accumulate_aac_detection_frame).
         """
-        frame = strip_au_header(payload, self._au_header_len)
+        frame = strip_frame_prefix(payload, self._frame_prefix_len)
         header = adts_header(len(frame), self._aac_sample_rate)
         await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, payload: bytes) -> None:
-        """Buffer a raw (still AU-header-prefixed) AAC frame while
+        """Buffer a raw (still prefixed) AAC frame while
         determining the camera's real sample rate from real inter-frame
         timing — called instead of _handle_aac_audio_frame until the
         rate locks in and ffmpeg actually starts (see _setup_pipes)."""
@@ -516,12 +515,14 @@ class WebSocketBridge:
             await self._finish_aac_detection()
 
     async def _aac_frames_look_valid(self) -> bool:
-        """Quick sanity check: does our AU-header-strip + ADTS-header
+        """Quick sanity check: does our prefix-strip + ADTS-header
         transform actually produce decodable AAC for this camera?
 
-        detect_au_header_len (see _finish_aac_detection) already rules
-        out a wrong AU-header length; this is the secondary check for
-        cameras using different framing entirely -- feeding ffmpeg the
+        detect_frame_prefix_len (see _finish_aac_detection) has already
+        eliminated the prefix lengths that are provably wrong, but it
+        cannot confirm the one it returns, so this stays the only real
+        check. It also covers cameras using different framing
+        entirely: feeding ffmpeg the
         wrongly-transformed result doesn't just produce bad audio, it
         stalls the whole muxed pipeline outright. This catches that with
         a throwaway decode attempt before ever committing to a real
@@ -531,7 +532,7 @@ class WebSocketBridge:
         buf = bytearray()
         try:
             for raw in self._aac_audio_buffer:
-                frame = strip_au_header(raw, self._au_header_len)
+                frame = strip_frame_prefix(raw, self._frame_prefix_len)
                 buf += adts_header(len(frame), self._aac_sample_rate) + frame
         except ValueError:
             # A frame too long for an ADTS header to describe means this
@@ -588,8 +589,8 @@ class WebSocketBridge:
         yield points in the flush loop below) before that can happen.
         """
         log.warning(
-            "WebSocket bridge for %s: this camera's AAC framing doesn't match the "
-            "AU-header transform this app knows — falling back to video-only audio",
+            "WebSocket bridge for %s: this camera's AAC audio can't be decoded through "
+            "this path — falling back to video-only audio",
             self._label,
         )
         self._read_fd, self._video_write_fd = os.pipe()
@@ -604,7 +605,7 @@ class WebSocketBridge:
 
     async def _finish_aac_detection(self) -> None:
         """Lock in the detected (or, failing that, default) AAC sample
-        rate and AU-header length, verify the resulting AU-header-strip
+        rate and frame prefix length, verify the resulting prefix-strip
         + ADTS-header transform actually produces valid AAC for this
         camera, then either start the muxed ffmpeg pipeline or fall back
         to video-only — flushing everything buffered during detection
@@ -618,31 +619,29 @@ class WebSocketBridge:
         self._aac_intervals.clear()
         self._last_audio_write_time = None
 
-        header_len = detect_au_header_len(self._aac_audio_buffer)
-        if header_len is None:
+        prefix_len = detect_frame_prefix_len(self._aac_audio_buffer)
+        if prefix_len is None:
             log.info(
-                "WebSocket bridge for %s: AAC frames are not in a recognized AU-header framing",
+                "WebSocket bridge for %s: %s",
                 self._label,
+                "AAC frames are not in a recognized framing"
+                if self._aac_audio_buffer
+                else "no AAC audio arrived during detection",
             )
             await self._fall_back_to_video_only()
             return
-        if header_len != self._au_header_len:
-            log.debug(
-                "WebSocket bridge for %s: detected a %d-byte AU-header (default is 2)",
-                self._label,
-                header_len,
-            )
-        self._au_header_len = header_len
+        self._frame_prefix_len = prefix_len
 
         if not await self._aac_frames_look_valid():
             await self._fall_back_to_video_only()
             return
 
         log.debug(
-            "WebSocket bridge for %s: AAC sample rate %dHz, starting muxed pipeline "
-            "(%d buffered video, %d buffered audio frames)",
+            "WebSocket bridge for %s: AAC sample rate %dHz, %d-byte frame prefix, "
+            "starting muxed pipeline (%d buffered video, %d buffered audio frames)",
             self._label,
             self._aac_sample_rate,
+            self._frame_prefix_len,
             len(self._aac_video_buffer),
             len(self._aac_audio_buffer),
         )
