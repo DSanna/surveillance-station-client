@@ -36,27 +36,28 @@ this code first assumed. For the one camera whose frames were captured
 aac_frame_length's low 11 bits, adts_buffer_fullness 0x7FF, and one
 raw_data_block per frame. Read as an RFC 3640 AU-header the same bytes
 give an AU size of ~1600 for a ~420-byte frame and an AU index of 7
-where the RFC requires 0, so that reading is excluded. Where the
-leading ADTS bytes go is not established. Most likely the frame header
-DSM sends covers them, the way it covers the 4-byte Annex B start code
-for video (see _read_messages in ws_bridge.py). Confirming that needs
-one full payload rather than the 12-byte prefixes captured so far:
-((p[0] << 3) | (p[1] >> 5)) == len(p) + 4 holds if it does, and would
-replace the measurement below with plain arithmetic.
+where the RFC requires 0, so that reading is excluded. Confirmed live:
+((p[0] << 3) | (p[1] >> 5)) == len(p) + 4 holds on every captured
+payload from that camera.
 
-Until then the prefix length is measured per camera (see
-detect_frame_prefix_len) from frames buffered during startup, since
-nothing DSM sends states it. That measurement cannot lean on ffmpeg
-reporting a decode error: leaving one prefix byte unstripped makes its
-decoder recover through an internal retry that drops the packet's own
-timestamp without surfacing anything, which is what let WebSocket
-reconnect gaps pass unnoticed until audio and video had drifted apart.
-_aac_frames_look_valid in ws_bridge.py only checks that ffmpeg stays
-quiet, so it cannot catch that by itself.
+The prefix length is measured per camera (see detect_frame_prefix_len)
+from frames buffered during startup, since nothing DSM sends states it.
+That measurement cannot lean on ffmpeg reporting a decode error:
+leaving one prefix byte unstripped makes its decoder recover through an
+internal retry that drops the packet's own timestamp without surfacing
+anything, which is what let WebSocket reconnect gaps pass unnoticed
+until audio and video had drifted apart. _aac_frames_look_valid in
+ws_bridge.py only checks that ffmpeg stays quiet, so it cannot catch
+that by itself.
 
-A second camera model reported the same adoCodec but used different
-framing entirely, so audio for a camera like that falls back to
-video-only.
+A second camera model (confirmed: Reolink RLC-823A) reported the same
+adoCodec but the payload never carries the whole frame at all -- the
+leading bytes go in the WS message's own header instead, the same
+trick already used for video's Annex B start code (see _read_messages
+in ws_bridge.py). detect_frame_prefix_len still returns None for a
+camera like that, since it only ever sees the payload; ws_bridge.py's
+_reconstruct_aac_frame is what falls back to reading those bytes from
+the header when this module's payload-only model doesn't validate.
 """
 
 from __future__ import annotations
