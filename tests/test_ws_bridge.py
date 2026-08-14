@@ -609,6 +609,38 @@ class TestAudioMuxDecision:
         assert bridge._frame_prefix_len == 3
         await bridge.stop()
 
+    async def test_mux_active_when_the_frame_is_split_across_the_header(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirmed live against a Reolink RLC-823A: the payload alone
+        never validates under any prefix length (see
+        _undetectable_prefix_frame), because the payload is missing its
+        own leading bytes -- those are the last 4 bytes of the WS
+        message's own header instead (see _reconstruct_aac_frame). Once
+        the payload-only model is ruled out, the bridge must reconstruct
+        frames from the header tail and mux with that instead of giving
+        up."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(stderr=b"")  # transform "decodes" cleanly
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [
+            _frame(b"mediaType=2&stamp=" + bytes([1, 2, 3, i]), b"\xe0" * 50) for i in range(6)
+        ]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._ffmpeg_proc is not None
+        assert bridge._aac_use_header_prepend is True
+        await bridge.stop()
+
     async def test_falls_back_to_video_only_when_aac_validation_fails(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -638,16 +670,18 @@ class TestAudioMuxDecision:
     async def test_falls_back_to_video_only_when_the_prefix_is_undetectable(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """detect_frame_prefix_len failing outright must short-circuit
-        straight to the video-only fallback, without ever spawning
-        ffmpeg's throwaway validation subprocess -- there's no AU-header
-        length left to build a transform from."""
+        """detect_frame_prefix_len failing outright must still try the
+        header-prepend reconstruction (see _reconstruct_aac_frame) before
+        giving up -- some cameras split the frame across the WS message
+        itself, so an undetectable payload-only prefix doesn't yet mean
+        there's no way to recover the frame. Only once that also fails
+        to validate does the bridge fall back to video-only."""
         subprocess_calls = 0
 
         async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
             nonlocal subprocess_calls
             subprocess_calls += 1
-            return _FakeFfmpegProc()
+            return _FakeValidationProc(stderr=b"[aac] Reserved bit set.\n")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
         frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
@@ -659,7 +693,7 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is False
         assert bridge._ffmpeg_proc is None
-        assert subprocess_calls == 0
+        assert subprocess_calls == 1
         await bridge.stop()
 
 
