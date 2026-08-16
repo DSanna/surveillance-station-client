@@ -372,6 +372,7 @@ surveillance-station-client/
 │   │   ├── ptz.py                      PTZ commands
 │   │   ├── ptt.py                      push-to-talk session (AudioOut WebSocket)
 │   │   ├── g711.py                     G.711 mu-law encoder
+│   │   ├── aac.py                      AAC frame recovery + ADTS headers
 │   │   ├── snapshot.py                 snapshot management
 │   │   ├── event.py                    events + alerts
 │   │   ├── event_bits.py               event_map bitmask decoder (see EVENT_BITMASK.md)
