@@ -582,11 +582,15 @@ class WebSocketBridge:
         await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, header_tail: bytes, payload: bytes) -> None:
-        """Buffer a raw (still prefixed) AAC frame, and the header tail
-        it arrived with, while determining the camera's real sample
-        rate from real inter-frame timing — called instead of
-        _handle_aac_audio_frame until the rate locks in and ffmpeg
-        actually starts (see _setup_pipes)."""
+        """Buffer one audio payload and the header tail it arrived with,
+        while determining the camera's real sample rate from real
+        inter-frame timing. Called instead of _handle_aac_audio_frame
+        until the rate locks in and ffmpeg actually starts (see
+        _setup_pipes).
+
+        Which of the two framings the payload is in is not decided until
+        _finish_aac_detection, so both halves are kept exactly as they
+        arrived (see _reconstruct_aac_frame)."""
         now = time.monotonic()
         if self._last_audio_write_time is not None:
             interval = now - self._last_audio_write_time
@@ -722,12 +726,13 @@ class WebSocketBridge:
             valid = False
             if prefix_len is not None:
                 self._frame_prefix_len = prefix_len
-                self._aac_use_header_prepend = False
                 valid = await self._aac_frames_look_valid()
             if not valid:
-                # The payload-only prefix model didn't hold for this camera
-                # -- try reconstructing frames from the header instead (see
-                # _reconstruct_aac_frame) before giving up on it.
+                # The payload-only prefix model didn't hold for this camera,
+                # so try reconstructing frames from the header instead (see
+                # _reconstruct_aac_frame) before giving up on it. This runs
+                # once per bridge, so the flag is still off from __init__ and
+                # the attempt above really was the payload-only one.
                 self._aac_use_header_prepend = True
                 valid = await self._aac_frames_look_valid()
         except ValueError:
