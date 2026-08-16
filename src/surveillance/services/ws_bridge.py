@@ -100,12 +100,21 @@ _WRITE_TIMEOUT = 5.0  # seconds
 # milliseconds, so this only has to outlast that, not cover a slow start.
 _FFMPEG_START_GRACE = 0.2  # seconds
 
-# Safety cap on how long AAC sample-rate detection buffers video before
-# giving up on getting 5 real audio intervals and starting anyway with
-# whatever's been measured so far (or the default guess, if audio never
-# arrived at all) -- so a camera that claims AAC but doesn't actually
-# deliver a steady audio stream can't block start()/mpv forever.
+# Cap on how much video AAC sample-rate detection buffers before giving
+# up on collecting _AAC_DETECTION_INTERVALS real audio intervals and
+# starting anyway with whatever has been measured so far (or the default
+# guess, if audio never arrived at all), so a camera that claims AAC but
+# doesn't actually deliver a steady audio stream still starts.
 _AAC_DETECTION_VIDEO_FRAME_CAP = 60
+
+# The cap above only bounds detection while video keeps arriving. A
+# camera sending video slowly, or holding the connection open with
+# nothing but control frames, fills neither counter, and start() has no
+# timeout of its own, so the slot would wait on it for as long as the
+# connection stays up. Wall-clock ends detection in that case. Well past
+# what a healthy camera needs: 11 intervals take about 1.4s even at the
+# lowest AAC rate, and 60 video frames about 2.4s at 25fps.
+_AAC_DETECTION_TIMEOUT = 10.0  # seconds
 
 # Inter-frame intervals to collect before locking the AAC sample rate.
 # Odd, because the rate comes from their median: these are wall-clock
@@ -262,6 +271,9 @@ class WebSocketBridge:
         self._aac_channels = 2
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
+        # Only meaningful while _aac_detecting; _setup_pipes sets it when
+        # it arms detection.
+        self._aac_detection_deadline = 0.0
         self._pending_video_codec: str = ""
         self._aac_video_buffer: list[bytes] = []
         self._aac_audio_buffer: list[tuple[bytes, bytes]] = []
@@ -332,12 +344,15 @@ class WebSocketBridge:
         anywhere yet, until real frame timing reveals the sample rate
         (see _accumulate_aac_detection_frame) — ffmpeg only starts once
         that's known, so `start()` (and mpv) stay blocked a little
-        longer for these cameras specifically.
+        longer for these cameras specifically. Bounded three ways:
+        enough intervals, _AAC_DETECTION_VIDEO_FRAME_CAP, or
+        _AAC_DETECTION_TIMEOUT.
         """
         self._audio_codec = audio_codec
         if video_codec in _FFMPEG_VIDEO_FORMAT and audio_codec in _AAC_AUDIO_CODECS:
             self._pending_video_codec = video_codec
             self._aac_detecting = True
+            self._aac_detection_deadline = time.monotonic() + _AAC_DETECTION_TIMEOUT
             log.debug(
                 "WebSocket bridge for %s: detecting AAC sample rate before muxing", self._label
             )
@@ -696,6 +711,22 @@ class WebSocketBridge:
         self._aac_video_buffer.clear()
         self._aac_audio_buffer.clear()
 
+    def _aac_detection_expired(self) -> bool:
+        """Is AAC detection running, and out of time (see
+        _AAC_DETECTION_TIMEOUT)?"""
+        return self._aac_detecting and time.monotonic() >= self._aac_detection_deadline
+
+    async def _expire_aac_detection(self) -> None:
+        """End detection on its deadline rather than on either counter,
+        starting with whatever arrived (see _finish_aac_detection)."""
+        log.info(
+            "WebSocket bridge for %s: AAC detection did not complete in %.0fs, "
+            "starting with what arrived",
+            self._label,
+            _AAC_DETECTION_TIMEOUT,
+        )
+        await self._finish_aac_detection()
+
     async def _finish_aac_detection(self) -> None:
         """Lock in the detected (or, failing that, default) AAC sample
         rate, work out how to reconstruct a real frame from what DSM
@@ -713,9 +744,10 @@ class WebSocketBridge:
         self._last_audio_write_time = None
 
         if not self._aac_audio_buffer:
-            # Detection also ends on the video-frame cap, so it can finish
-            # having seen no audio at all. There is nothing to work out
-            # from an empty buffer, and nothing to hand ffmpeg either.
+            # Detection also ends on the video-frame cap and on its own
+            # deadline, so it can finish having seen no audio at all.
+            # There is nothing to work out from an empty buffer, and
+            # nothing to hand ffmpeg either.
             log.info("WebSocket bridge for %s: no AAC audio arrived during detection", self._label)
             await self._fall_back_to_video_only()
             return
@@ -849,14 +881,36 @@ class WebSocketBridge:
         the connection raises — except a stall (no message at all for
         _IDLE_TIMEOUT) also raises, with self._error left set to a
         distinctly greppable reason first.
+
+        Also where AAC detection's wall-clock deadline is checked (see
+        _AAC_DETECTION_TIMEOUT). Any message will do: the point is to
+        bound detection whenever the connection is alive at all, not only
+        when media happens to be flowing. Doing it here rather than from
+        a timer task also keeps every _finish_aac_detection call on the
+        pump task, so nothing arrives mid-decision.
         """
         while True:
+            timeout = _IDLE_TIMEOUT
+            if self._aac_detecting:
+                # Waiting the full idle timeout on a camera whose detection
+                # deadline lands sooner would let the stall fire first, and
+                # a stall only reconnects: detection would start over, and
+                # over, with start() still waiting on it.
+                timeout = min(timeout, max(0.0, self._aac_detection_deadline - time.monotonic()))
             try:
-                message = await asyncio.wait_for(ws.recv(), timeout=_IDLE_TIMEOUT)
+                message = await asyncio.wait_for(ws.recv(), timeout=timeout)
             except TimeoutError:
+                if self._aac_detection_expired():
+                    # Nothing is arriving and detection is out of time.
+                    # Finishing beats treating it as a stall: the slot gets
+                    # video rather than another reconnect it can't use.
+                    await self._expire_aac_detection()
+                    continue
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None
             self._attempt_got_data = True
+            if self._aac_detection_expired():
+                await self._expire_aac_detection()
             if not isinstance(message, bytes) or len(message) < 4:
                 continue
             (hdr_len,) = struct.unpack(">I", message[:4])

@@ -805,6 +805,43 @@ class TestAudioMuxDecision:
         assert subprocess_calls == 0
         await bridge.stop()
 
+    async def test_detection_ends_on_its_deadline_when_nothing_arrives(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither detection counter is guaranteed to fill. A camera that
+        announces AAC and then goes quiet moves neither, and the idle
+        timeout is no help: a stall only reconnects, so detection would
+        start over and start() would wait on it for good."""
+        monkeypatch.setattr(ws_bridge, "_AAC_DETECTION_TIMEOUT", 0.2)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await asyncio.wait_for(bridge.start(), timeout=5.0)
+        assert bridge.audio_active is False
+        assert bridge._aac_detecting is False
+        # Ended as a deadline, not as a stall: a stall would have recorded
+        # its reason and dropped the connection instead.
+        assert bridge._error == ""
+        await bridge.stop()
+
+    async def test_detection_ends_on_its_deadline_while_frames_keep_arriving(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Traffic alone doesn't move either counter: control frames keep
+        the connection from ever looking stalled while leaving the video
+        buffer and the interval count exactly where they were."""
+        monkeypatch.setattr(ws_bridge, "_AAC_DETECTION_TIMEOUT", 0.0)
+        codec_info = _frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")
+        connect(_FakeWS([codec_info] * 4, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await asyncio.wait_for(bridge.start(), timeout=5.0)
+        assert bridge.audio_active is False
+        assert bridge._aac_detecting is False
+        assert bridge._error == ""
+        await bridge.stop()
+
     async def test_gives_up_at_once_on_frames_too_long_for_an_adts_header(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
