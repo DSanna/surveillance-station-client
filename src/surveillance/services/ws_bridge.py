@@ -613,22 +613,15 @@ class WebSocketBridge:
         a throwaway decode attempt before ever committing to a real
         session, so an unsupported camera falls back to video-only
         instead of a broken one.
+
+        Raises ValueError if the reconstruction produces something too
+        long to be one frame, which is its own kind of "not ours" -- see
+        _finish_aac_detection, which decides what to do about it.
         """
         buf = bytearray()
-        try:
-            for header_tail, raw in self._aac_audio_buffer:
-                frame = self._reconstruct_aac_frame(header_tail, raw)
-                buf += adts_header(frame, self._aac_sample_rate) + frame
-        except ValueError:
-            # A frame too long for an ADTS header to describe means this
-            # camera is not using the framing we assume -- which is exactly
-            # what this check exists to catch, so treat it as "not ours"
-            # rather than letting it escape and kill the pump.
-            log.info(
-                "WebSocket bridge for %s: AAC frames are not in the expected framing",
-                self._label,
-            )
-            return False
+        for header_tail, raw in self._aac_audio_buffer:
+            frame = self._reconstruct_aac_frame(header_tail, raw)
+            buf += adts_header(frame, self._aac_sample_rate) + frame
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -707,28 +700,37 @@ class WebSocketBridge:
 
         payloads = [payload for _header_tail, payload in self._aac_audio_buffer]
         prefix_len = detect_frame_prefix_len(payloads)
-        if prefix_len is not None:
-            self._frame_prefix_len = prefix_len
-            self._aac_use_header_prepend = False
-            if await self._aac_frames_look_valid():
-                await self._start_aac_pipeline()
-                return
+        try:
+            valid = False
+            if prefix_len is not None:
+                self._frame_prefix_len = prefix_len
+                self._aac_use_header_prepend = False
+                valid = await self._aac_frames_look_valid()
+            if not valid:
+                # The payload-only prefix model didn't hold for this camera
+                # -- try reconstructing frames from the header instead (see
+                # _reconstruct_aac_frame) before giving up on it.
+                self._aac_use_header_prepend = True
+                valid = await self._aac_frames_look_valid()
+        except ValueError:
+            # A frame too long for an ADTS header to describe is not one
+            # frame, so this camera is using neither framing. Retrying is
+            # pointless rather than merely unlikely: header-prepend makes
+            # the frame strictly longer than the payload-only strip does,
+            # so it can only overflow the same way.
+            valid = False
+            reason = "AAC frames are longer than an ADTS header can describe"
+        else:
+            reason = (
+                "AAC frames are not in a recognized framing"
+                if self._aac_audio_buffer
+                else "no AAC audio arrived during detection"
+            )
 
-        # The payload-only prefix model didn't hold for this camera --
-        # try reconstructing frames from the header instead (see
-        # _reconstruct_aac_frame) before giving up on it.
-        self._aac_use_header_prepend = True
-        if await self._aac_frames_look_valid():
+        if valid:
             await self._start_aac_pipeline()
             return
-
-        log.info(
-            "WebSocket bridge for %s: %s",
-            self._label,
-            "AAC frames are not in a recognized framing"
-            if self._aac_audio_buffer
-            else "no AAC audio arrived during detection",
-        )
+        log.info("WebSocket bridge for %s: %s", self._label, reason)
         await self._fall_back_to_video_only()
 
     async def _start_aac_pipeline(self) -> None:

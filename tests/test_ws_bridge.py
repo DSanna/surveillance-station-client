@@ -696,6 +696,45 @@ class TestAudioMuxDecision:
         assert subprocess_calls == 1
         await bridge.stop()
 
+    async def test_gives_up_at_once_on_frames_too_long_for_an_adts_header(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A payload no ADTS header can describe is not one frame, so this
+        camera uses neither framing: video-only, and ffmpeg never spawns
+        because the transform fails before there's anything to validate.
+
+        Header-prepend produces a strictly longer frame than the
+        payload-only strip does, so it can only overflow the same way --
+        the transform must be attempted once, not once per framing mode."""
+        subprocess_calls = 0
+        transform_attempts = 0
+        real_adts_header = ws_bridge.adts_header
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal subprocess_calls
+            subprocess_calls += 1
+            return _FakeValidationProc(stderr=b"")
+
+        def _counting_adts_header(frame: bytes, sample_rate: int) -> bytes:
+            nonlocal transform_attempts
+            transform_attempts += 1
+            return real_adts_header(frame, sample_rate)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        monkeypatch.setattr(ws_bridge, "adts_header", _counting_adts_header)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame(payload_len=8200) for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        assert subprocess_calls == 0
+        assert transform_attempts == 1
+        await bridge.stop()
+
 
 def _input_sections(args: tuple[str, ...]) -> list[list[str]]:
     """Split an ffmpeg argv into one option list per -i input. Everything
