@@ -698,6 +698,14 @@ class WebSocketBridge:
         self._aac_intervals.clear()
         self._last_audio_write_time = None
 
+        if not self._aac_audio_buffer:
+            # Detection also ends on the video-frame cap, so it can finish
+            # having seen no audio at all. There is nothing to work out
+            # from an empty buffer, and nothing to hand ffmpeg either.
+            log.info("WebSocket bridge for %s: no AAC audio arrived during detection", self._label)
+            await self._fall_back_to_video_only()
+            return
+
         payloads = [payload for _header_tail, payload in self._aac_audio_buffer]
         prefix_len = detect_frame_prefix_len(payloads)
         try:
@@ -721,11 +729,7 @@ class WebSocketBridge:
             valid = False
             reason = "AAC frames are longer than an ADTS header can describe"
         else:
-            reason = (
-                "AAC frames are not in a recognized framing"
-                if self._aac_audio_buffer
-                else "no AAC audio arrived during detection"
-            )
+            reason = "AAC frames are not in a recognized framing"
 
         if valid:
             await self._start_aac_pipeline()

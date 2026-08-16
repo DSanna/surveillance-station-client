@@ -696,6 +696,32 @@ class TestAudioMuxDecision:
         assert subprocess_calls == 1
         await bridge.stop()
 
+    async def test_falls_back_to_video_only_when_no_aac_audio_ever_arrives(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Detection also ends on the video-frame cap, so a camera that
+        announces AAC and then sends none finishes with an empty buffer.
+        There is nothing to validate, so ffmpeg must not be spawned to
+        look at it."""
+        subprocess_calls = 0
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal subprocess_calls
+            subprocess_calls += 1
+            return _FakeValidationProc(stderr=b"")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        assert subprocess_calls == 0
+        await bridge.stop()
+
     async def test_gives_up_at_once_on_frames_too_long_for_an_adts_header(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
