@@ -47,28 +47,56 @@ def _parse_adts(header: bytes) -> tuple[int, int, int]:
     return freq_idx, channels, frame_len
 
 
+def _element(id_syn_ele: int) -> int:
+    """A byte whose top 3 bits are the given AAC id_syn_ele value."""
+    return (id_syn_ele & 0x7) << 5
+
+
+_SCE = 0  # single_channel_element, what a real mono frame starts with
+_CPE = 1  # channel_pair_element, what a real stereo frame starts with
+_END = 0b111  # id_syn_ele meaning "no elements follow"
+
+
+def _raw_block(length: int, id_syn_ele: int = _CPE) -> bytes:
+    """A raw_data_block of *length* bytes announcing the given first
+    syntax element. The rest is arbitrary -- nothing here decodes it."""
+    return bytes([_element(id_syn_ele)]) + b"\xaa" * (length - 1)
+
+
 class TestAdtsHeader:
     def test_round_trips_rate_and_length(self) -> None:
         freq_table = {8000: 11, 16000: 8, 44100: 4, 48000: 3}
         for rate, expected_idx in freq_table.items():
-            header = adts_header(413, sample_rate=rate)
+            header = adts_header(_raw_block(413), sample_rate=rate)
             freq_idx, ch, frame_len = _parse_adts(header)
             assert freq_idx == expected_idx
             assert ch == 2
             assert frame_len == 413 + 7
 
     def test_sync_word_and_length(self) -> None:
-        header = adts_header(100, sample_rate=8000)
+        header = adts_header(_raw_block(100), sample_rate=8000)
         assert len(header) == 7
         assert header[0] == 0xFF
         assert (header[1] & 0xF0) == 0xF0
 
+    def test_channel_count_comes_from_the_frame(self) -> None:
+        """A mono frame announces an SCE as its first syntax element. Left
+        at a hardcoded 2 the frame still decodes silently, with the right
+        channel filled from whatever the decoder had lying around."""
+        assert _parse_adts(adts_header(_raw_block(413, _SCE), sample_rate=16000))[1] == 1
+        assert _parse_adts(adts_header(_raw_block(413, _CPE), sample_rate=8000))[1] == 2
+
+    def test_a_frame_too_short_to_read_stays_stereo(self) -> None:
+        """Nothing to read the element off, so keep the old assumption
+        rather than raising into the pump over a runt frame."""
+        assert _parse_adts(adts_header(b"", sample_rate=8000))[1] == 2
+
     def test_rejects_a_frame_longer_than_the_length_field(self) -> None:
         """13 bits, header included. Past that the excess is dropped and the
         header describes a much shorter frame, which no reader can recover."""
-        assert _parse_adts(adts_header(8184, sample_rate=16000))[2] == 8191
+        assert _parse_adts(adts_header(_raw_block(8184), sample_rate=16000))[2] == 8191
         with pytest.raises(ValueError, match="exceeds what an ADTS header"):
-            adts_header(8185, sample_rate=16000)
+            adts_header(_raw_block(8185), sample_rate=16000)
 
 
 class TestNearestSampleRate:
@@ -93,15 +121,6 @@ class TestStripFramePrefix:
         frame = b"\x00\x01\x02\x03\x04"
         assert strip_frame_prefix(frame, 3) == b"\x03\x04"
         assert strip_frame_prefix(frame, 2) == b"\x02\x03\x04"
-
-
-def _element(id_syn_ele: int) -> int:
-    """A byte whose top 3 bits are the given AAC id_syn_ele value."""
-    return (id_syn_ele & 0x7) << 5
-
-
-_CPE = 1  # channel_pair_element, what a real stereo frame starts with
-_END = 0b111  # id_syn_ele meaning "no elements follow"
 
 
 def _prefixed_frame(prefix: bytes, payload_first_byte: int) -> bytes:

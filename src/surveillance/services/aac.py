@@ -105,9 +105,11 @@ _PREFIX_MIN_LEN = 2
 _PREFIX_MAX_LEN = 8
 
 # AAC's raw_data_block starts with a 3-bit id_syn_ele naming the first
-# syntax element; 0b111 is ID_END, meaning "no elements follow". A real,
-# non-empty frame can never legitimately start with that.
+# syntax element. 0b111 is ID_END, meaning "no elements follow" -- a real,
+# non-empty frame can never legitimately start with that. 0b000 is SCE, a
+# single_channel_element, which means the frame carries one channel.
 _AAC_ELEMENT_ID_END = 0b111
+_AAC_ELEMENT_SCE = 0b000
 
 
 def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
@@ -147,10 +149,17 @@ def nearest_sample_rate(interval_seconds: float) -> int:
     return min(_STANDARD_SAMPLE_RATES, key=lambda r: abs(r - measured))
 
 
-def adts_header(payload_length: int, sample_rate: int) -> bytes:
-    """Build a 7-byte ADTS header (no CRC, AAC-LC, stereo) for an AAC frame
-    of *payload_length* bytes -- lets ffmpeg's plain "aac" demuxer read an
-    otherwise-bare AAC stream via ADTS sync-word auto-detection.
+def adts_header(frame: bytes, sample_rate: int) -> bytes:
+    """Build a 7-byte ADTS header (no CRC, AAC-LC) for *frame* -- lets
+    ffmpeg's plain "aac" demuxer read an otherwise-bare AAC stream via
+    ADTS sync-word auto-detection.
+
+    The channel count is read off the frame rather than assumed, the way
+    Synology's own decoder resolves it (NativeAACDecoder.getChannelCount
+    in the DS cam APK): a raw_data_block whose first syntax element is an
+    SCE carries a single channel. Getting this wrong is not loud --
+    ffmpeg decodes a mono frame labelled stereo without one complaint and
+    leaves whatever was in the buffer in the right channel.
 
     Raises ValueError past what the header can describe. A 1024-sample
     AAC-LC frame never comes anywhere near that, so this catches a caller
@@ -160,11 +169,11 @@ def adts_header(payload_length: int, sample_rate: int) -> bytes:
     """
     freq_idx = _ADTS_FREQ_INDEX[sample_rate]
     profile_id = 1  # AAC-LC (object type 2) -> ADTS profile field = object_type - 1
-    channels = 2
-    frame_len = payload_length + 7
+    channels = 1 if frame and (frame[0] >> 5) == _AAC_ELEMENT_SCE else 2
+    frame_len = len(frame) + 7
     if frame_len > _ADTS_MAX_FRAME_LEN:
         raise ValueError(
-            f"AAC frame of {payload_length} bytes exceeds what an ADTS header can describe"
+            f"AAC frame of {len(frame)} bytes exceeds what an ADTS header can describe"
         )
     h = bytearray(7)
     h[0] = 0xFF

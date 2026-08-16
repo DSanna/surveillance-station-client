@@ -578,7 +578,7 @@ class WebSocketBridge:
         — see _accumulate_aac_detection_frame).
         """
         frame = self._reconstruct_aac_frame(header_tail, payload)
-        header = adts_header(len(frame), self._aac_sample_rate)
+        header = adts_header(frame, self._aac_sample_rate)
         await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, header_tail: bytes, payload: bytes) -> None:
@@ -618,7 +618,7 @@ class WebSocketBridge:
         try:
             for header_tail, raw in self._aac_audio_buffer:
                 frame = self._reconstruct_aac_frame(header_tail, raw)
-                buf += adts_header(len(frame), self._aac_sample_rate) + frame
+                buf += adts_header(frame, self._aac_sample_rate) + frame
         except ValueError:
             # A frame too long for an ADTS header to describe means this
             # camera is not using the framing we assume -- which is exactly
