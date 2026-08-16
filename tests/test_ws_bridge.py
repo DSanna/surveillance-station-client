@@ -492,10 +492,16 @@ async def _spawn_fake_mux_holder(**kwargs: Any) -> Any:
     once _start_muxed closes its own copies, so every write after that
     fails with EPIPE. A real, trivial process that inherits the same
     fds and sleeps keeps them open without needing anything
-    ffmpeg-specific."""
+    ffmpeg-specific.
+
+    The sleep has to outlast every wait a test does on work that happens
+    after the spawn, or the holder dies first, _monitor_ffmpeg cancels
+    the pump and the wait can never be satisfied. It is deliberately far
+    longer than _wait_until's deadline rather than equal to it; nothing
+    waits for it to finish, since stop() terminates it."""
     return await _REAL_SUBPROCESS_EXEC(
         "sleep",
-        "5",
+        "30",
         pass_fds=kwargs.get("pass_fds", []),
         stdout=kwargs.get("stdout"),
         stdin=kwargs.get("stdin"),
