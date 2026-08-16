@@ -628,14 +628,17 @@ class TestAudioMuxDecision:
     async def test_mux_active_when_the_frame_is_split_across_the_header(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Confirmed live against a Reolink RLC-823A: the payload alone
-        never validates under any prefix length (see
-        _undetectable_prefix_frame), because the payload is missing its
-        own leading bytes -- those are the last 4 bytes of the WS
-        message's own header instead (see _reconstruct_aac_frame). Once
-        the payload-only model is ruled out, the bridge must reconstruct
-        frames from the header tail and mux with that instead of giving
-        up.
+        """A camera whose payload doesn't validate under any prefix
+        length (see _undetectable_prefix_frame), because the payload is
+        missing its own leading bytes -- those are the last 4 bytes of
+        the WS message's own header instead (see _reconstruct_aac_frame).
+        Once the payload-only model is ruled out, the bridge must
+        reconstruct frames from the header tail and mux with that instead
+        of giving up.
+
+        This is the artificial door into that fallback, not the one a
+        real camera comes through -- see
+        test_header_prepend_is_reached_when_a_detected_prefix_does_not_decode.
 
         The header here starts with "medi" and ends in the four bytes the
         frame is missing, so the bytes that reach the pipe also pin which

@@ -27,11 +27,11 @@
 
 Video is always piped through. Audio (mediaType=2 frames, dropped
 entirely until now) is muxed in via an ffmpeg subprocess when DSM reports
-a codec we know how to handle (currently PCMU/G.711 mu-law, and AAC via
-a short DSM-specific prefix, see aac.py) -- mpv's fd:// pipe then
-reads ffmpeg's own Matroska output instead of the raw Annex B video
-stream directly. A camera whose audio is neither (or has none at all)
-falls back to the original raw-video-only passthrough, unchanged.
+a codec we know how to handle (currently PCMU/G.711 mu-law, and AAC once
+the frame is recovered from what DSM sent, see aac.py) -- mpv's fd://
+pipe then reads ffmpeg's own Matroska output instead of the raw Annex B
+video stream directly. A camera whose audio is neither (or has none at
+all) falls back to the original raw-video-only passthrough, unchanged.
 """
 
 from __future__ import annotations
@@ -126,11 +126,10 @@ _FFMPEG_AUDIO_ARGS = {
     "PCMU": ["-f", "mulaw", "-ar", "8000", "-ac", "1"],
     "MPEG4-GENERIC": ["-f", "aac"],
 }
-# Audio codecs that need per-frame transformation (DSM's leading
-# prefix stripped, a synthesized ADTS header prepended) rather than
-# PCMU's raw passthrough. Confirmed against one real camera; a second
-# camera model reporting the same adoCodec used different framing
-# entirely, so this is known to not cover every AAC camera yet.
+# Audio codecs that need per-frame transformation (the raw frame
+# recovered from what DSM sent, a synthesized ADTS header prepended)
+# rather than PCMU's raw passthrough. Two camera models are known, and
+# they do not send the frame the same way -- see _reconstruct_aac_frame.
 _AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
 
 # AAC detection can buffer up to _AAC_DETECTION_VIDEO_FRAME_CAP frames
@@ -250,13 +249,11 @@ class WebSocketBridge:
         # Overwritten by detect_frame_prefix_len() in _finish_aac_detection
         # before any real frame is ever stripped.
         self._frame_prefix_len = 2
-        # Some cameras (confirmed: Reolink RLC-823A) don't put the whole
-        # frame, prefixed, in the payload -- the payload is missing its
-        # own leading bytes, and those are what DSM's per-message header
-        # ends in instead, the same trick already used for video's Annex
-        # B start code (see _read_messages). _finish_aac_detection flips
-        # this once the payload-only prefix model fails to validate for
-        # this camera -- see _reconstruct_aac_frame.
+        # Some cameras don't put the whole frame, prefixed, in the payload
+        # -- the payload is missing its own leading bytes, and those are
+        # what DSM's per-message header ends in instead (see aac.py).
+        # _finish_aac_detection flips this once the payload-only prefix
+        # model fails to validate -- see _reconstruct_aac_frame.
         self._aac_use_header_prepend = False
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
@@ -553,15 +550,13 @@ class WebSocketBridge:
     def _reconstruct_aac_frame(self, header_tail: bytes, payload: bytes) -> bytes:
         """Recover one raw AAC frame from what DSM actually sent for it.
 
-        Most cameras put the whole frame, prefixed, in the payload --
+        Some cameras put the whole frame, prefixed, in the payload --
         strip_frame_prefix (see aac.py) handles that. At least one model
-        (confirmed: Reolink RLC-823A) instead splits the frame across
-        the WS message itself: the payload is missing its own leading
-        bytes, and those are exactly what the per-message header ends
-        in -- the same trick already used for video's Annex B start
-        code (see _read_messages). _finish_aac_detection decides which
-        of the two actually decodes for this camera and sets
-        _aac_use_header_prepend accordingly.
+        instead splits the frame across the WS message itself: the
+        payload is missing its own leading bytes, and those are exactly
+        what the per-message header ends in. _finish_aac_detection
+        decides which of the two actually decodes for this camera and
+        sets _aac_use_header_prepend accordingly.
         """
         if self._aac_use_header_prepend:
             return header_tail + payload
@@ -859,15 +854,16 @@ class WebSocketBridge:
 
             media_type = fields.get("mediaType")
             if media_type == "1":
-                # The Synology header embeds the Annex B start code
-                # (00 00 00 01) as its last 4 bytes — prepend it so
-                # mpv/ffmpeg can detect NAL boundaries.
+                # The payload arrives without the Annex B start code, so
+                # prepend it and mpv/ffmpeg can find NAL boundaries. Where
+                # DSM leaves it has never been checked here; the constant
+                # is what the black screen needed.
                 await self._handle_video_frame(b"\x00\x00\x00\x01" + payload)
             elif media_type == "2" and (self._audio_active or self._aac_detecting):
-                # The last 4 bytes of the header can also carry the tail
-                # end of an AAC frame that didn't fit in the payload --
-                # see _reconstruct_aac_frame. Harmless to pass along for
-                # PCMU too, since that path just ignores it.
+                # For some cameras the header ends in the leading bytes
+                # the AAC payload is missing -- see _reconstruct_aac_frame.
+                # Harmless to pass along for PCMU too, since that path
+                # just ignores it.
                 await self._dispatch_audio_frame(header[-4:], payload)
 
     async def _send_keepalive_loop(self, ws: Any) -> None:

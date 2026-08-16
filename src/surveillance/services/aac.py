@@ -25,39 +25,46 @@
 
 """AAC helpers for WebSocket audio muxing (see ws_bridge.py).
 
-DSM delivers each AAC frame behind a short prefix rather than as a
-self-contained ADTS frame. ffmpeg's plain "aac" demuxer needs ADTS
-framing, so each frame has that prefix stripped and a synthesized ADTS
-header prepended, which the demuxer then finds via the sync word.
+DSM never sends a self-contained ADTS frame, which is what ffmpeg's
+plain "aac" demuxer needs. The bridge recovers the raw frame and
+prepends a synthesized ADTS header the demuxer can find via the sync
+word. What has to be recovered is not the same for every camera -- see
+_reconstruct_aac_frame in ws_bridge.py for the two shapes seen so far.
 
-The prefix is the tail of an ADTS header, not the RFC 3640 AU-header
-this code first assumed. For the one camera whose frames were captured
-(3 bytes), adts_header() below reproduces all three exactly: they are
-aac_frame_length's low 11 bits, adts_buffer_fullness 0x7FF, and one
-raw_data_block per frame. Read as an RFC 3640 AU-header the same bytes
-give an AU size of ~1600 for a ~420-byte frame and an AU index of 7
-where the RFC requires 0, so that reading is excluded. Confirmed live:
-((p[0] << 3) | (p[1] >> 5)) == len(p) + 4 holds on every captured
-payload from that camera.
+On the camera whose frames were captured, the payload arrives behind a
+short prefix, and that prefix is the tail of an ADTS header rather than
+the RFC 3640 AU-header this code first assumed. adts_header() below
+reproduces all three of its bytes exactly: they are aac_frame_length's
+low 11 bits, adts_buffer_fullness 0x7FF, and one raw_data_block per
+frame. Read as an RFC 3640 AU-header the same bytes give an AU size of
+~1600 for a ~420-byte frame and an AU index of 7 where the RFC requires
+0, so that reading is excluded.
 
-The prefix length is measured per camera (see detect_frame_prefix_len)
-from frames buffered during startup, since nothing DSM sends states it.
-That measurement cannot lean on ffmpeg reporting a decode error:
-leaving one prefix byte unstripped makes its decoder recover through an
-internal retry that drops the packet's own timestamp without surfacing
-anything, which is what let WebSocket reconnect gaps pass unnoticed
-until audio and video had drifted apart. _aac_frames_look_valid in
-ws_bridge.py only checks that ffmpeg stays quiet, so it cannot catch
-that by itself.
+Four bytes are therefore missing from the front of each payload, and
+PR #17 reports ((p[0] << 3) | (p[1] >> 5)) == len(p) + 4 holding on
+every frame of that camera. That is the reading above restated -- the
+length field counts the ADTS header in -- so it confirms four bytes are
+gone without saying where they went, and the captures in test_aac.py
+are 12-byte prefixes, so nothing in the tree can evaluate it anyway.
 
-A second camera model (confirmed: Reolink RLC-823A) reported the same
-adoCodec but the payload never carries the whole frame at all -- the
-leading bytes go in the WS message's own header instead, the same
-trick already used for video's Annex B start code (see _read_messages
-in ws_bridge.py). detect_frame_prefix_len still returns None for a
-camera like that, since it only ever sees the payload; ws_bridge.py's
-_reconstruct_aac_frame is what falls back to reading those bytes from
-the header when this module's payload-only model doesn't validate.
+The prefix length is therefore still measured per camera (see
+detect_frame_prefix_len) from frames buffered during startup rather
+than computed from the payload. That measurement cannot lean on ffmpeg
+reporting a decode error: leaving one prefix byte unstripped makes its
+decoder recover through an internal retry that drops the packet's own
+timestamp without surfacing anything, which is what let WebSocket
+reconnect gaps pass unnoticed until audio and video had drifted apart.
+_aac_frames_look_valid in ws_bridge.py only checks that ffmpeg stays
+quiet, so it cannot catch that by itself.
+
+A second camera model (reported in PR #17 as a Reolink RLC-823A) sends
+the same adoCodec with no payload prefix at all: the payload is missing
+the frame's own leading bytes, and the WS message's header ends in
+exactly those. detect_frame_prefix_len does not report that -- it only
+eliminates, so it hands back whichever length happens to survive -- so
+it is the ffmpeg check that rules the payload-only model out, and
+ws_bridge.py's _reconstruct_aac_frame then rebuilds the frame from the
+header instead.
 """
 
 from __future__ import annotations
