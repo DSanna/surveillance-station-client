@@ -470,12 +470,15 @@ def _aac_audio_frame(payload_len: int = 50) -> bytes:
     return _frame(b"mediaType=2", b"\x00\x00\xe0" + b"\xaa" * payload_len)
 
 
-def _undetectable_prefix_frame(payload_len: int = 50) -> bytes:
+def _undetectable_prefix_frame(payload_len: int = 50, header_suffix: bytes = b"") -> bytes:
     """A mediaType=2 frame where every byte reads as AAC's "immediate
     end, zero elements" marker, so no prefix length in
     detect_frame_prefix_len's search range can ever pass, mirroring a
-    camera using an entirely different framing scheme."""
-    return _frame(b"mediaType=2", b"\xe0" * payload_len)
+    camera using an entirely different framing scheme.
+
+    *header_suffix* extends the header past the fields the bridge parses,
+    for tests that care which end of it the frame's own bytes come from."""
+    return _frame(b"mediaType=2" + header_suffix, b"\xe0" * payload_len)
 
 
 def _video_frame() -> bytes:
@@ -619,6 +622,7 @@ class TestAudioMuxDecision:
         assert bridge.audio_active is True
         assert bridge._ffmpeg_proc is not None
         assert bridge._frame_prefix_len == 3
+        assert bridge._aac_use_header_prepend is False
         await bridge.stop()
 
     async def test_mux_active_when_the_frame_is_split_across_the_header(
@@ -653,7 +657,8 @@ class TestAudioMuxDecision:
         monkeypatch.setattr(WebSocketBridge, "_write_pipe", _recording_write_pipe)
         frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
         frames += [
-            _frame(b"mediaType=2&stamp=" + bytes([1, 2, 3, i]), b"\xe0" * 50) for i in range(6)
+            _undetectable_prefix_frame(header_suffix=b"&stamp=" + bytes([1, 2, 3, i]))
+            for i in range(6)
         ]
         frames += _AAC_DETECTION_PADDING
         connect(_FakeWS(frames, hang=True))
@@ -670,6 +675,41 @@ class TestAudioMuxDecision:
         await _wait_until(lambda: len(audio_writes) >= 6)
         first_frame = b"\x01\x02\x03\x00" + b"\xe0" * 50
         assert audio_writes[0] == adts_header(first_frame, bridge._aac_sample_rate) + first_frame
+        await bridge.stop()
+
+    async def test_header_prepend_is_reached_when_a_detected_prefix_does_not_decode(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The route a real header-split camera takes. Its payloads look
+        perfectly ordinary to detect_frame_prefix_len -- the scan only
+        eliminates, so it hands back a length that happens to survive
+        rather than nothing at all. What rules the payload-only model out
+        is ffmpeg refusing the result, and only then is the header tail
+        tried. Both attempts have to happen, in that order."""
+        validations = 0
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            nonlocal validations
+            if "null" in args:
+                validations += 1
+                # Payload-only decodes to nonsense for this camera; the
+                # reconstruction from the header tail decodes cleanly.
+                stderr = b"" if validations > 1 else b"[aac] Reserved bit set.\n"
+                return _FakeValidationProc(stderr=stderr)
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._ffmpeg_proc is not None
+        assert bridge._aac_use_header_prepend is True
+        assert validations == 2
         await bridge.stop()
 
     async def test_falls_back_to_video_only_when_aac_validation_fails(
