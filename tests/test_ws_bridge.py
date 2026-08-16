@@ -677,7 +677,10 @@ class TestAudioMuxDecision:
         # _start_aac_pipeline), so wait for the drain rather than racing it.
         await _wait_until(lambda: len(audio_writes) >= 6)
         first_frame = b"\x01\x02\x03\x00" + b"\xe0" * 50
-        assert audio_writes[0] == adts_header(first_frame, bridge._aac_sample_rate) + first_frame
+        # 0x01's top 3 bits are an SCE, so the settled layout is mono.
+        assert bridge._aac_channels == 1
+        expected = adts_header(len(first_frame), bridge._aac_sample_rate, 1)
+        assert audio_writes[0] == expected + first_frame
         await bridge.stop()
 
     async def test_header_prepend_is_reached_when_a_detected_prefix_does_not_decode(
@@ -815,10 +818,10 @@ class TestAudioMuxDecision:
             subprocess_calls += 1
             return _FakeValidationProc(stderr=b"")
 
-        def _counting_adts_header(frame: bytes, sample_rate: int) -> bytes:
+        def _counting_adts_header(payload_length: int, sample_rate: int, channels: int) -> bytes:
             nonlocal transform_attempts
             transform_attempts += 1
-            return real_adts_header(frame, sample_rate)
+            return real_adts_header(payload_length, sample_rate, channels)
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
         monkeypatch.setattr(ws_bridge, "adts_header", _counting_adts_header)
@@ -866,7 +869,26 @@ class TestAacFrameReconstruction:
         await bridge._handle_aac_audio_frame(b"\x01\x2e\x35\xa8", b"\xaa" * 20)
 
         frame = b"\x01\x2e\x35\xa8" + b"\xaa" * 20
-        assert written == [adts_header(frame, 16000) + frame]
+        # Nothing settled a layout here, so the untouched stereo default.
+        assert written == [adts_header(len(frame), 16000, 2) + frame]
+
+    async def test_the_settled_channel_count_applies_to_every_frame(self) -> None:
+        """Read the layout off each frame instead and a stream that opens
+        with a fill element -- as everything libavcodec writes does --
+        announces a channel_configuration that changes mid-stream, which
+        no valid ADTS stream does."""
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        bridge._aac_sample_rate = 16000
+        bridge._frame_prefix_len = 0
+        bridge._aac_channels = 1
+        written: list[bytes] = []
+        bridge._write_pipe = lambda audio, data: written.append(data)  # type: ignore[method-assign]
+
+        await bridge._handle_aac_audio_frame(b"", b"\xc0" + b"\xaa" * 20)  # FIL first
+        await bridge._handle_aac_audio_frame(b"", b"\x00" + b"\xaa" * 20)  # SCE first
+
+        layouts = {((w[2] & 0x1) << 2) | ((w[3] >> 6) & 0x3) for w in written}
+        assert layouts == {1}
 
 
 def _input_sections(args: tuple[str, ...]) -> list[list[str]]:

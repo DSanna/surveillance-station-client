@@ -31,6 +31,7 @@ import pytest
 
 from surveillance.services.aac import (
     adts_header,
+    detect_channel_count,
     detect_frame_prefix_len,
     nearest_sample_rate,
     strip_frame_prefix,
@@ -54,6 +55,7 @@ def _element(id_syn_ele: int) -> int:
 
 _SCE = 0  # single_channel_element, what a real mono frame starts with
 _CPE = 1  # channel_pair_element, what a real stereo frame starts with
+_FIL = 6  # fill_element, padding that says nothing about the layout
 _END = 0b111  # id_syn_ele meaning "no elements follow"
 
 
@@ -67,36 +69,51 @@ class TestAdtsHeader:
     def test_round_trips_rate_and_length(self) -> None:
         freq_table = {8000: 11, 16000: 8, 44100: 4, 48000: 3}
         for rate, expected_idx in freq_table.items():
-            header = adts_header(_raw_block(413), sample_rate=rate)
+            header = adts_header(413, sample_rate=rate, channels=2)
             freq_idx, ch, frame_len = _parse_adts(header)
             assert freq_idx == expected_idx
             assert ch == 2
             assert frame_len == 413 + 7
 
     def test_sync_word_and_length(self) -> None:
-        header = adts_header(_raw_block(100), sample_rate=8000)
+        header = adts_header(100, sample_rate=8000, channels=2)
         assert len(header) == 7
         assert header[0] == 0xFF
         assert (header[1] & 0xF0) == 0xF0
 
-    def test_channel_count_comes_from_the_frame(self) -> None:
-        """A mono frame announces an SCE as its first syntax element. Left
-        at a hardcoded 2 the frame still decodes silently, with the right
-        channel filled from whatever the decoder had lying around."""
-        assert _parse_adts(adts_header(_raw_block(413, _SCE), sample_rate=16000))[1] == 1
-        assert _parse_adts(adts_header(_raw_block(413, _CPE), sample_rate=8000))[1] == 2
-
-    def test_a_frame_too_short_to_read_stays_stereo(self) -> None:
-        """Nothing to read the element off, so keep the old assumption
-        rather than raising into the pump over a runt frame."""
-        assert _parse_adts(adts_header(b"", sample_rate=8000))[1] == 2
+    def test_writes_the_channel_count_it_is_given(self) -> None:
+        """Getting this wrong is silent: ffmpeg decodes a mono frame
+        labelled stereo without one complaint and fills the right channel
+        from whatever the decoder had lying around."""
+        assert _parse_adts(adts_header(413, sample_rate=16000, channels=1))[1] == 1
+        assert _parse_adts(adts_header(413, sample_rate=8000, channels=2))[1] == 2
 
     def test_rejects_a_frame_longer_than_the_length_field(self) -> None:
         """13 bits, header included. Past that the excess is dropped and the
         header describes a much shorter frame, which no reader can recover."""
-        assert _parse_adts(adts_header(_raw_block(8184), sample_rate=16000))[2] == 8191
+        assert _parse_adts(adts_header(8184, sample_rate=16000, channels=2))[2] == 8191
         with pytest.raises(ValueError, match="exceeds what an ADTS header"):
-            adts_header(_raw_block(8185), sample_rate=16000)
+            adts_header(8185, sample_rate=16000, channels=2)
+
+
+class TestDetectChannelCount:
+    def test_reads_the_layout_off_the_first_element(self) -> None:
+        assert detect_channel_count([_raw_block(413, _SCE)]) == 1
+        assert detect_channel_count([_raw_block(413, _CPE)]) == 2
+
+    def test_skips_frames_that_name_no_layout(self) -> None:
+        """libavcodec opens the first frame of every stream it writes with
+        a fill element. Deciding per frame labels that one frame stereo,
+        and since demuxers take the layout from the first frame, a whole
+        mono stream ends up stereo on the strength of it."""
+        frames = [_raw_block(20, _FIL), _raw_block(413, _SCE), _raw_block(413, _SCE)]
+        assert detect_channel_count(frames) == 1
+
+    def test_falls_back_to_stereo_when_no_frame_names_one(self) -> None:
+        """Nothing to read a layout off, so keep the assumption every
+        camera ran on before rather than inventing a different one."""
+        assert detect_channel_count([b"", _raw_block(20, _FIL)]) == 2
+        assert detect_channel_count([]) == 2
 
 
 class TestNearestSampleRate:

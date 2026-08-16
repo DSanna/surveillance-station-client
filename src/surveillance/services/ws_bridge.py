@@ -52,6 +52,7 @@ from typing import Any
 
 from surveillance.services.aac import (
     adts_header,
+    detect_channel_count,
     detect_frame_prefix_len,
     nearest_sample_rate,
     strip_frame_prefix,
@@ -255,6 +256,10 @@ class WebSocketBridge:
         # _finish_aac_detection flips this once the payload-only prefix
         # model fails to validate -- see _reconstruct_aac_frame.
         self._aac_use_header_prepend = False
+        # Settled once from real frames by _aac_frames_look_valid, since
+        # only a reconstructed frame says what the layout is. Stereo until
+        # then, which is what every camera got before.
+        self._aac_channels = 2
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
         self._pending_video_codec: str = ""
@@ -568,12 +573,12 @@ class WebSocketBridge:
         prepending a synthesized ADTS header (see aac.py) — ffmpeg's
         plain "aac" demuxer needs ADTS framing, not what DSM sends.
 
-        The sample rate and framing mode are already known by the time
-        this ever runs (detection happens before ffmpeg starts at all
-        — see _accumulate_aac_detection_frame).
+        The sample rate, framing mode and channel count are already
+        known by the time this ever runs (detection happens before
+        ffmpeg starts at all — see _accumulate_aac_detection_frame).
         """
         frame = self._reconstruct_aac_frame(header_tail, payload)
-        header = adts_header(frame, self._aac_sample_rate)
+        header = adts_header(len(frame), self._aac_sample_rate, self._aac_channels)
         await asyncio.to_thread(self._write_pipe, True, header + frame)
 
     async def _accumulate_aac_detection_frame(self, header_tail: bytes, payload: bytes) -> None:
@@ -609,14 +614,24 @@ class WebSocketBridge:
         session, so an unsupported camera falls back to video-only
         instead of a broken one.
 
+        Settles _aac_channels on the way through, since the channel
+        count can only be read off a reconstructed frame and this is
+        where the frames get reconstructed. That also means the stream
+        being validated is exactly the one the session will go on to
+        send, rather than one labelling being checked and another sent.
+
         Raises ValueError if the reconstruction produces something too
         long to be one frame, which is its own kind of "not ours" -- see
         _finish_aac_detection, which decides what to do about it.
         """
+        frames = [
+            self._reconstruct_aac_frame(header_tail, raw)
+            for header_tail, raw in self._aac_audio_buffer
+        ]
+        self._aac_channels = detect_channel_count(frames)
         buf = bytearray()
-        for header_tail, raw in self._aac_audio_buffer:
-            frame = self._reconstruct_aac_frame(header_tail, raw)
-            buf += adts_header(frame, self._aac_sample_rate) + frame
+        for frame in frames:
+            buf += adts_header(len(frame), self._aac_sample_rate, self._aac_channels) + frame
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -737,10 +752,11 @@ class WebSocketBridge:
         _finish_aac_detection just validated, or fall back to
         video-only if ffmpeg itself won't run."""
         log.debug(
-            "WebSocket bridge for %s: AAC sample rate %dHz, %s, "
+            "WebSocket bridge for %s: AAC sample rate %dHz, %d channel(s), %s, "
             "starting muxed pipeline (%d buffered video, %d buffered audio frames)",
             self._label,
             self._aac_sample_rate,
+            self._aac_channels,
             "header-embedded prefix"
             if self._aac_use_header_prepend
             else f"{self._frame_prefix_len}-byte frame prefix",

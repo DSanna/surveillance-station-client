@@ -113,10 +113,14 @@ _PREFIX_MAX_LEN = 8
 
 # AAC's raw_data_block starts with a 3-bit id_syn_ele naming the first
 # syntax element. 0b111 is ID_END, meaning "no elements follow" -- a real,
-# non-empty frame can never legitimately start with that. 0b000 is SCE, a
-# single_channel_element, which means the frame carries one channel.
+# non-empty frame can never legitimately start with that.
 _AAC_ELEMENT_ID_END = 0b111
-_AAC_ELEMENT_SCE = 0b000
+
+# The two elements that name a channel layout: 0b000 is a
+# single_channel_element, carrying one channel, and 0b001 a
+# channel_pair_element, carrying two. Every other element (FIL padding,
+# DSE data, ...) says nothing about the layout.
+_AAC_ELEMENT_CHANNELS = {0b000: 1, 0b001: 2}
 
 
 def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
@@ -147,6 +151,31 @@ def detect_frame_prefix_len(frames: Sequence[bytes]) -> int | None:
     return None
 
 
+def detect_channel_count(frames: Sequence[bytes]) -> int:
+    """Work out how many channels the camera's AAC carries, from a
+    handful of already-reconstructed frames.
+
+    Reading it off each frame separately does not work: an encoder is
+    free to open a frame with an element that names no layout at all,
+    and libavcodec emits a FIL first on the first frame of every stream
+    it writes. Labelling that one frame differently from the rest gives
+    a channel_configuration that changes mid-stream, which no valid
+    ADTS stream has, and demuxers take the layout from the first frame
+    anyway -- so the whole stream would end up labelled by the one frame
+    that says the least. Settling it once, from the first frame that
+    does name a layout, avoids both.
+
+    Falls back to stereo when no frame names one, which is what this
+    code assumed unconditionally before.
+    """
+    for frame in frames:
+        if frame:
+            channels = _AAC_ELEMENT_CHANNELS.get(frame[0] >> 5)
+            if channels is not None:
+                return channels
+    return 2
+
+
 def nearest_sample_rate(interval_seconds: float) -> int:
     """Snap a measured inter-frame interval to the nearest standard AAC
     sample rate, assuming AAC-LC's fixed 1024 samples per frame."""
@@ -156,15 +185,14 @@ def nearest_sample_rate(interval_seconds: float) -> int:
     return min(_STANDARD_SAMPLE_RATES, key=lambda r: abs(r - measured))
 
 
-def adts_header(frame: bytes, sample_rate: int) -> bytes:
-    """Build a 7-byte ADTS header (no CRC, AAC-LC) for *frame* -- lets
-    ffmpeg's plain "aac" demuxer read an otherwise-bare AAC stream via
-    ADTS sync-word auto-detection.
+def adts_header(payload_length: int, sample_rate: int, channels: int) -> bytes:
+    """Build a 7-byte ADTS header (no CRC, AAC-LC) for an AAC frame of
+    *payload_length* bytes -- lets ffmpeg's plain "aac" demuxer read an
+    otherwise-bare AAC stream via ADTS sync-word auto-detection.
 
-    The channel count is read off the frame rather than assumed, the way
-    Synology's own decoder resolves it (NativeAACDecoder.getChannelCount
-    in the DS cam APK): a raw_data_block whose first syntax element is an
-    SCE carries a single channel. Getting this wrong is not loud --
+    *channels* comes from detect_channel_count rather than being assumed,
+    the way Synology's own decoder resolves it (NativeAACDecoder.
+    getChannelCount in the DS cam APK). Getting it wrong is not loud --
     ffmpeg decodes a mono frame labelled stereo without one complaint and
     leaves whatever was in the buffer in the right channel.
 
@@ -176,11 +204,10 @@ def adts_header(frame: bytes, sample_rate: int) -> bytes:
     """
     freq_idx = _ADTS_FREQ_INDEX[sample_rate]
     profile_id = 1  # AAC-LC (object type 2) -> ADTS profile field = object_type - 1
-    channels = 1 if frame and (frame[0] >> 5) == _AAC_ELEMENT_SCE else 2
-    frame_len = len(frame) + 7
+    frame_len = payload_length + 7
     if frame_len > _ADTS_MAX_FRAME_LEN:
         raise ValueError(
-            f"AAC frame of {len(frame)} bytes exceeds what an ADTS header can describe"
+            f"AAC frame of {payload_length} bytes exceeds what an ADTS header can describe"
         )
     h = bytearray(7)
     h[0] = 0xFF
