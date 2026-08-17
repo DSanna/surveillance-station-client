@@ -452,6 +452,10 @@ class TestAudioGapWatchdog:
 
         assert bridge._audio_write_fd == -1, "the audio write end should be closed"
         assert bridge._video_write_fd == video_w, "the video pipe must be left alone"
+        # Non-blocking, so a regression that swaps the descriptor to -1
+        # without closing it fails here instead of hanging the suite on a
+        # pipe whose write end is still open.
+        os.set_blocking(audio_r, False)
         assert os.read(audio_r, 1) == b"", "ffmpeg should see EOF on the audio input"
         for fd in (audio_r, video_r, video_w):
             os.close(fd)
@@ -467,10 +471,12 @@ class TestAudioGapWatchdog:
         bridge._last_audio_at = time.monotonic()
 
         watch = asyncio.create_task(bridge._watch_audio_gap())
-        # Keep it fed the way a healthy camera does, well inside the gap.
+        # Both clocks: with only audio fed, the video term alone would
+        # hold the watchdog off and the test would pass without ever
+        # exercising the audio one.
         for _ in range(20):
             await asyncio.sleep(0.02)
-            bridge._last_audio_at = time.monotonic()
+            bridge._last_audio_at = bridge._last_video_at = time.monotonic()
 
         assert not watch.done(), "a camera still sending audio must keep it"
         assert bridge._audio_write_fd == audio_w
@@ -506,9 +512,20 @@ class TestAudioGapWatchdog:
         assert os.read(audio_r, 1) == b""
         os.close(audio_r)
 
-    async def test_a_reconnect_gives_the_new_session_time_to_send_audio(
-        self, connect: Any
-    ) -> None:
+    async def test_the_muxer_starts_the_gap_watchdog(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def _fake_exec(*args: Any, **kwargs: Any) -> Any:
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge._start_muxed("H264", "PCMU")
+
+        assert bridge._audio_gap_watch is not None, "nothing would watch for the wedge"
+        assert not bridge._audio_gap_watch.done()
+        await bridge.stop()
+        assert bridge._audio_gap_watch is None, "stop() must not leave the task running"
+
+    async def test_a_reconnect_gives_the_new_session_time_to_send_audio(self, connect: Any) -> None:
         # Nothing else resets the stamp per session, so after an outage
         # longer than the gap timeout the first video frame back would
         # make the reconnect itself look like a camera gone quiet.
