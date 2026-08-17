@@ -3,6 +3,10 @@
 Common problems when running the Surveillance Station client and what to do
 about them.
 
+Log excerpts below are quoted without the timestamp every line starts with,
+and wrapped to fit. See "Collecting debug logs" at the end for how to capture
+one.
+
 ## HTTP 502 in the WebSocket live view
 
 ```
@@ -54,27 +58,51 @@ falls back to the same "Camera offline" placeholder rather than a frozen
 frame. "(attempting reconnect)" means it's currently retrying the real
 stream after such a failure.
 
-This also recovers automatically, no action needed &mdash; RTSP retries on
-every camera-status poll while the camera is still reported enabled;
-WebSocket retries on the next status change. If a specific camera never
+This also recovers automatically, no action needed &mdash; both transports
+retry on every camera-status poll while the camera is still reported
+enabled, so the wait between one attempt and the next is
+`poll_interval_cameras` (30s by default). If a specific camera never
 recovers on its own after a couple of minutes, right-click it in the
 sidebar and try switching protocol (e.g. RTSP instead of WebSocket, or
 vice versa) as a workaround.
 
-## A G711/PCMU/mulaw-audio camera repeatedly stalls or loses its WebSocket stream
+## A camera with audio repeatedly stalls or loses its WebSocket stream
 
-If a camera using PCMU/mulaw audio (common on many Hikvision/Reolink models)
-keeps hitting "(stream lost)"/"(attempting reconnect)" on WebSocket Live
-View, this could be an ffmpeg regression. On ffmpeg 7.0 and higher
-(all versions released at least until 2026-08-08), muxing live piped
-H.264/HEVC video with PCMU audio under `-use_wallclock_as_timestamps` can
-stall or fully deadlock ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected.
-Filed upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
+The symptom in the log is a slot giving up with a stalled pipe write:
 
-The app detects the stall and retries automatically, but on an affected
-ffmpeg build the retry hits the same underlying issue and stalls again
-right away — so this can show up as a fast, repeating reconnect loop
-rather than a one-off recovery. Workarounds:
+```
+ERROR surveillance.ui.liveview: Stream for entree gave up (video pipe
+  write stalled for 5s with 61440 of 65536 bytes left, downstream reader
+  stopped draining)
+```
+
+Only WebSocket cameras whose audio this client muxes are affected, which
+means any camera DSM reports as PCMU or AAC. It was first reported with
+PCMU on Hikvision and Reolink models, but the muxing arguments do not
+distinguish the two codecs: both are decoded to PCM under
+`-use_wallclock_as_timestamps` and reach the muxer the same way. Whether
+AAC fails identically has not been shown, only that nothing in the
+construct treats it differently.
+
+Two causes are known, and the log line above cannot tell them apart:
+
+- **The camera's audio stops while its video keeps going.** Measured on
+  ffmpeg 7.1.5: a live mux whose audio input goes quiet stops draining
+  its video input within about a second and never resumes, while the same
+  mux with audio flowing throughout keeps up indefinitely. Whether older
+  ffmpeg behaves the same way has not been tested. A camera with silence
+  suppression, an intermittent microphone, or audio the NAS stops
+  forwarding will do this repeatedly.
+- **An ffmpeg regression.** On ffmpeg 7.0 and higher (all versions
+  released at least until 2026-08-08), muxing live piped H.264/HEVC video
+  with PCMU audio under `-use_wallclock_as_timestamps` can stall or fully
+  deadlock ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected. Filed
+  upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
+
+The app detects the stall and retries, but the retry rebuilds the same
+pipeline and meets the same cause, so this shows up as a slot that
+recovers and gives up again once per camera poll (30s by default) rather
+than a one-off recovery. Workarounds:
 
 - Point the app at a known-good ffmpeg build: put an ffmpeg 6.1.1 binary in
   its own directory and launch with `PATH=/path/to/ffmpeg-6.1.1:$PATH
@@ -85,8 +113,10 @@ rather than a one-off recovery. Workarounds:
   effect on those; earlier ones bundled no ffmpeg at all).
 - Switch that camera to RTSP instead of WebSocket (right-click it in the
   sidebar). RTSP streams go straight to mpv and never go through this
-  app's ffmpeg muxing path, so the bug doesn't apply. Turning the camera's
-  audio off works too.
+  app's ffmpeg muxing path, so neither cause applies. Turning the
+  camera's audio off in Surveillance Station works too, and is the one
+  workaround that also covers a camera whose audio simply stops: with no
+  audio codec to mux, the stream is piped straight to mpv.
 
 ## Recording playback never starts
 
@@ -150,7 +180,12 @@ surveillance --debug 2>&1 | tee ~/surveillance-debug.log
 
 Useful log namespaces:
 
-- `surveillance.services.ws_bridge` - WebSocket bridge errors (classified)
+- `surveillance.services.ws_bridge` - WebSocket bridge errors (classified),
+  which audio framing a camera was given and why it lost its audio if it did
 - `surveillance.services.recording` - recording download issues
-- `surveillance.ui.mpv_widget` - mpv option / render errors
+- `surveillance.ui.mpv_widget` - mpv option / render errors, and mpv's own
+  messages, which it reports only through this logger
 - `surveillance.ui.player` - playback start failures
+
+A debug run also lets the muxing ffmpeg write its complaints straight to
+stderr, unprefixed by any of the namespaces above.

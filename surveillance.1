@@ -133,6 +133,9 @@ the release tag whose update notice has been dismissed.
 are in seconds and default to 30, 30 and 60. The minimum is 5: a smaller or
 non-numeric value is reported in the log and replaced, since 0 would poll the
 NAS continuously.
+.IR poll_interval_cameras
+also paces recovery: a live view slot whose stream gave up is retried on the
+next camera poll, so it is the interval between one attempt and the next.
 .PP
 The
 .B [session]
