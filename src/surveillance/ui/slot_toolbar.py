@@ -421,7 +421,11 @@ class SlotToolbar(Gtk.Revealer):
         doesn't carry one (mjpeg has none at all), or — for a
         WebSocket-protocol camera — DSM's codec-info frame reported an
         audio codec ffmpeg can't mux (see ws_bridge.py; PCMU and AAC are
-        supported). Ghosts the button rather than hiding it, so a camera
+        supported), or that camera stopped sending audio mid-session and
+        the bridge ended the stream to keep its video moving. Called
+        again on the camera-status poll, since the last of those happens
+        long after the stream started. Ghosts the button rather than
+        hiding it, so a camera
         with a microphone that just isn't playable right now doesn't
         look like a camera without one, and says why in the tooltip:
         GTK picks with GTK_PICK_INSENSITIVE for tooltips, so a ghosted
@@ -433,8 +437,10 @@ class SlotToolbar(Gtk.Revealer):
         else:
             self._mute_btn.set_tooltip_text(
                 "Audio isn't available for this camera right now — no audio "
-                "track, an unsupported codec, or a protocol that doesn't "
-                "carry one (mjpeg). Try switching protocol in the sidebar."
+                "track, an unsupported codec, a protocol that doesn't carry "
+                "one (mjpeg), or the camera stopped sending audio and it was "
+                "dropped to keep the video going. Try switching protocol in "
+                "the sidebar, or restart the stream."
             )
 
     def update_mute_icon(self) -> None:

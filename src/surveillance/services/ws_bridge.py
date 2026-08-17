@@ -321,9 +321,11 @@ class WebSocketBridge:
         """Whether this session ended up muxing real audio in.
 
         Only meaningful once the first codec-info frame has arrived (see
-        _setup_pipes) — False before that, and permanently False for a
-        camera whose audio codec isn't muxable (see _FFMPEG_AUDIO_ARGS)
-        or that has no audio at all.
+        _setup_pipes) — False before that, and False for a camera whose
+        audio codec isn't muxable (see _FFMPEG_AUDIO_ARGS) or that has no
+        audio at all. Can also go False mid-session, when a camera stops
+        sending audio and the gap watchdog ends the stream, so a caller
+        showing audio controls has to read it again rather than once.
         """
         return self._audio_active
 
@@ -1325,6 +1327,9 @@ class WebSocketBridge:
         if fd >= 0:
             with contextlib.suppress(OSError):
                 os.close(fd)
+        # No audio can reach the player from here on, so the caller's
+        # audio controls have something to go on besides a log line.
+        self._audio_active = False
 
     def _write_pipe(self, audio: bool, data: bytes) -> None:
         """Write to one of the pipes through a private copy of the fd.

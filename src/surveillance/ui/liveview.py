@@ -1122,6 +1122,13 @@ class LiveView(Gtk.Box):
             fresh = cam_map.get(slot.camera.id)
             if fresh is None:
                 continue
+            # A bridge that was muxing audio can stop mid-session, when
+            # the camera goes quiet and the gap watchdog ends the stream
+            # to keep the video moving. Nothing else revisits the audio
+            # control after the stream started, so it would go on
+            # offering a volume slider that reaches nothing.
+            if slot._ws_bridge is not None and not slot._ws_bridge.audio_active:
+                slot.set_audio_playable(False)
             status_changed = fresh.status != slot.camera.status
             retry_lost_stream = slot._stream_lost and fresh.status == CameraStatus.ENABLED
             if not status_changed and not retry_lost_stream:
