@@ -275,8 +275,18 @@ class TestPresetRange:
 
         from_ts, to_ts = preset_range("last7d")
         diff_days = (to_ts - from_ts) / 86400
-        # from_ts is midnight 7 days ago; to_ts is now - window is 7-8 days wide
+        # from_ts is midnight 7 days ago; to_ts is 23:59:59 today - window is
+        # 7-8 days wide
         assert 7.0 <= diff_days < 8.0
+
+    def test_last30d_range_is_roughly_30_days(self) -> None:
+        from surveillance.services.recording import preset_range
+
+        from_ts, to_ts = preset_range("last30d")
+        diff_days = (to_ts - from_ts) / 86400
+        # from_ts is midnight 30 days ago; to_ts is 23:59:59 today - window
+        # is 30-31 days wide
+        assert 30.0 <= diff_days < 31.0
 
     def test_unknown_preset_raises(self) -> None:
         from surveillance.services.recording import preset_range
@@ -287,7 +297,7 @@ class TestPresetRange:
     def test_today_to_ts_is_after_from_ts(self) -> None:
         from surveillance.services.recording import preset_range
 
-        for preset in ("today", "yesterday", "last24h", "last7d"):
+        for preset in ("today", "yesterday", "last24h", "last7d", "last30d"):
             from_ts, to_ts = preset_range(preset)
             assert to_ts > from_ts, f"preset={preset}: to_ts <= from_ts"
 

@@ -49,6 +49,7 @@ from surveillance.config import load_search_filters, save_search_filters
 from surveillance.services.recording import (
     PRESET_LAST7D,
     PRESET_LAST24H,
+    PRESET_LAST30D,
     PRESET_TODAY,
     PRESET_YESTERDAY,
     preset_range,
@@ -169,7 +170,7 @@ class SnapshotsView(Gtk.Box):
         for key, text in [
             (PRESET_TODAY, "Today"),
             (PRESET_YESTERDAY, "Yesterday"),
-            (PRESET_LAST24H, "Last 24 h"),
+            (PRESET_LAST24H, "Last 24 hrs"),
             (PRESET_LAST7D, "Last 7 days"),
         ]:
             btn = Gtk.ToggleButton(label=text)
@@ -382,6 +383,7 @@ class SnapshotsView(Gtk.Box):
             to_dt: datetime | None,
             _event_type_ids: list[str] | None,
             _event_types_match_all: bool,
+            time_preset: str | None,
         ) -> None:
             # Snapshots has no event-type filter (Events-only feature) — the
             # dialog always passes these last two arguments regardless of
@@ -389,8 +391,9 @@ class SnapshotsView(Gtk.Box):
             self._search_camera_ids = camera_ids
             self._search_from_time = int(from_dt.timestamp()) if from_dt else None
             self._search_to_time = int(to_dt.timestamp()) if to_dt else None
-            # Custom range clears preset
-            self._search_time_preset = ""
+            # A preset picked in the dialog behaves exactly like clicking it
+            # on the toolbar; a custom range (no preset) clears it.
+            self._search_time_preset = time_preset or ""
             self._sync_preset_buttons()
             self._page = 0
             self._save_search_to_config()
@@ -407,6 +410,7 @@ class SnapshotsView(Gtk.Box):
             selected_ids=self._search_camera_ids,
             from_time=from_time,
             to_time=to_time,
+            selected_preset=self._search_time_preset or None,
             title="Search Snapshots",
         )
         dialog.present()
@@ -558,8 +562,9 @@ class SnapshotsView(Gtk.Box):
         _PRESET_LABELS = {
             PRESET_TODAY: "Today",
             PRESET_YESTERDAY: "Yesterday",
-            PRESET_LAST24H: "Last 24 h",
+            PRESET_LAST24H: "Last 24 hrs",
             PRESET_LAST7D: "Last 7 days",
+            PRESET_LAST30D: "Last 30 days",
         }
         if self._search_time_preset:
             label = _PRESET_LABELS.get(self._search_time_preset, self._search_time_preset)
