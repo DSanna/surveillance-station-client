@@ -570,6 +570,13 @@ class WebSocketBridge:
         returncode = await proc.wait()
         if self._stopping or self._ffmpeg_proc is not proc:
             return  # our own teardown asked for this
+        if self._pump_task is None or self._pump_task.done():
+            # The pump has already finished and recorded why. Closing the
+            # write ends on its way out is what ffmpeg is exiting from, so
+            # reporting that exit here would replace the real reason (a
+            # stalled pipe write, say) with its own consequence: wait_closed
+            # reads _error after the pump returns, so the last writer wins.
+            return
         self._error = f"ffmpeg exited with code {returncode}"
         log.warning("WebSocket bridge for %s: %s", self._label, self._error)
         if self._pump_task is not None:

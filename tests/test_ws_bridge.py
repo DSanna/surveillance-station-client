@@ -39,6 +39,7 @@ expect start() to raise instead.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import threading
@@ -385,6 +386,42 @@ class TestWriteStall:
         # about pipe writes at all.
         assert "video pipe write stalled" in reason, reason
         await bridge.stop()
+
+
+class TestFfmpegExitReporting:
+    """A muxer that exits reports itself only while it is the news."""
+
+    async def test_a_finished_pump_keeps_its_own_give_up_reason(self) -> None:
+        # Closing the write ends on the way out of the pump is what makes
+        # ffmpeg exit, so the watcher runs on every muxed give-up. Left
+        # unguarded it overwrites the reason with its own consequence,
+        # and wait_closed reads _error after the pump has returned.
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        bridge._error = "video pipe write stalled for 5s"
+        done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        bridge._pump_task = done  # type: ignore[assignment]
+        proc = _ExitingFfmpegProc(after=0)
+        bridge._ffmpeg_proc = proc  # type: ignore[assignment]
+
+        await bridge._watch_ffmpeg(proc)  # type: ignore[arg-type]
+
+        assert bridge._error == "video pipe write stalled for 5s"
+
+    async def test_a_running_pump_is_still_told_ffmpeg_died(self) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        running = asyncio.create_task(asyncio.sleep(30))
+        bridge._pump_task = running
+        proc = _ExitingFfmpegProc(after=0)
+        bridge._ffmpeg_proc = proc  # type: ignore[assignment]
+
+        await bridge._watch_ffmpeg(proc)  # type: ignore[arg-type]
+
+        assert "ffmpeg exited" in bridge._error
+        assert running.cancelled() or running.cancelling()
+        running.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await running
 
 
 class TestAttemptScoring:
