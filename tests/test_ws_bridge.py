@@ -437,8 +437,18 @@ class TestAudioGapWatchdog:
         bridge._video_write_fd = video_w
         bridge._last_audio_at = time.monotonic()
 
+        async def keep_video_arriving() -> None:
+            # Only a camera still sending video can be wedging the mux.
+            while True:
+                await asyncio.sleep(0.005)
+                bridge._last_video_at = time.monotonic()
+
+        feeder = asyncio.create_task(keep_video_arriving())
         watch = asyncio.create_task(bridge._watch_audio_gap())
         await asyncio.wait_for(watch, timeout=2.0)
+        feeder.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await feeder
 
         assert bridge._audio_write_fd == -1, "the audio write end should be closed"
         assert bridge._video_write_fd == video_w, "the video pipe must be left alone"
@@ -463,6 +473,33 @@ class TestAudioGapWatchdog:
             bridge._last_audio_at = time.monotonic()
 
         assert not watch.done(), "a camera still sending audio must keep it"
+        assert bridge._audio_write_fd == audio_w
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+        os.close(audio_r)
+        os.close(audio_w)
+
+    async def test_a_silent_session_keeps_its_audio_for_the_reconnect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A session the NAS drops silently delivers neither stream until
+        # recv() times out after _IDLE_TIMEOUT and the pump reconnects.
+        # Nothing is wedged while both are quiet, and the camera comes
+        # back, so ending its audio here would mute it for no reason.
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.05)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.01)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        stopped_at = time.monotonic()
+        bridge._last_audio_at = stopped_at
+        bridge._last_video_at = stopped_at
+
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+        await asyncio.sleep(0.3)  # six times the gap timeout
+
+        assert not watch.done(), "both streams quiet is an idle mux, not a wedged one"
         assert bridge._audio_write_fd == audio_w
         watch.cancel()
         with contextlib.suppress(asyncio.CancelledError):

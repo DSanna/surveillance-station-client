@@ -263,10 +263,12 @@ class WebSocketBridge:
         self._ffmpeg_watch: asyncio.Task[None] | None = None
         self._ffmpeg_stderr: asyncio.Task[None] | None = None
         self._audio_gap_watch: asyncio.Task[None] | None = None
-        # When audio last reached the pipe. Armed when the muxer starts,
-        # so a camera that announces an audio codec and then never sends
-        # one is caught by the same deadline as one that goes quiet.
+        # When each stream last reached its pipe. Both armed when the
+        # muxer starts, so a camera that announces an audio codec and then
+        # never sends one is caught by the same deadline as one that goes
+        # quiet, and neither reads as stale before anything has arrived.
         self._last_audio_at = 0.0
+        self._last_video_at = 0.0
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
@@ -484,7 +486,7 @@ class WebSocketBridge:
         self._audio_write_fd = audio_w
         self._read_fd = out_r
         self._audio_active = True
-        self._last_audio_at = time.monotonic()
+        self._last_audio_at = self._last_video_at = time.monotonic()
         self._audio_gap_watch = asyncio.create_task(self._watch_audio_gap())
 
     async def _spawn_ffmpeg(
@@ -1261,13 +1263,22 @@ class WebSocketBridge:
         gone for the rest of the session: the stream cannot be reopened
         without restarting ffmpeg, and a camera silent this long has no
         audio worth muxing anyway.
+
+        Only fires while video is still arriving, which is the whole of
+        the fault: a mux with nothing coming in on either input is idle,
+        not wedged. Without that condition a session the NAS drops
+        silently would trip this every time, since recv() waits out
+        _IDLE_TIMEOUT before reconnecting and neither stream arrives
+        meanwhile, and a camera that recovers perfectly would come back
+        mute.
         """
         while True:
             await asyncio.sleep(_AUDIO_GAP_CHECK_INTERVAL)
             if self._audio_write_fd < 0:
                 return  # torn down, or already closed by an earlier gap
-            gap = time.monotonic() - self._last_audio_at
-            if gap < _AUDIO_GAP_TIMEOUT:
+            now = time.monotonic()
+            gap = now - self._last_audio_at
+            if gap < _AUDIO_GAP_TIMEOUT or now - self._last_video_at >= _AUDIO_GAP_TIMEOUT:
                 continue
             log.warning(
                 "WebSocket bridge for %s: no audio for %.0fs, ending the audio stream "
@@ -1314,11 +1325,13 @@ class WebSocketBridge:
         to ever raise, reconnect, or hand off to the stream-lost recovery
         path that's built for exactly this.
         """
+        # Stamped here rather than at the call sites, so the gap watchdog
+        # measures when media reached the pipe and cannot be kept alive by
+        # frames that never got that far.
         if audio:
-            # Stamped here rather than at the two call sites, so the gap
-            # watchdog measures when audio reached the pipe and cannot be
-            # kept alive by frames that never got that far.
             self._last_audio_at = time.monotonic()
+        else:
+            self._last_video_at = time.monotonic()
         with self._fd_lock:
             fd = self._audio_write_fd if audio else self._video_write_fd
             if fd < 0:
