@@ -755,6 +755,15 @@ class WebSocketBridge:
         event loop hand control back to mpv (via the asyncio.to_thread
         yield points in the flush loop below) before that can happen.
         """
+        if self._stopping:
+            # Torn down while detection was still running. The pipe this
+            # would build gets no reader: the caller stopped watching for
+            # _ready_event, so nobody opens the read end, and the flush
+            # below would fill the buffer and then park a worker thread
+            # on it for the whole write timeout on the way out.
+            self._aac_video_buffer.clear()
+            self._aac_audio_buffer.clear()
+            return
         self._read_fd, self._video_write_fd = os.pipe()
         _grow_pipe_buffer(self._read_fd)
         _grow_pipe_buffer(self._video_write_fd)
