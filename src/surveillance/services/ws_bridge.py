@@ -163,6 +163,8 @@ _F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", None)
 
 
 def _grow_pipe_buffer(fd: int) -> None:
+    """Resize the pipe one end of it belongs to. Either end will do: the
+    buffer is a property of the pipe, not of the descriptor."""
     if _F_SETPIPE_SZ is None:
         return  # BSD pipe buffers are not tunable from userland
     with contextlib.suppress(OSError):
@@ -437,7 +439,7 @@ class WebSocketBridge:
             video_r, video_w = os.pipe()
             audio_r, audio_w = os.pipe()
             out_r, out_w = os.pipe()
-            for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
+            for fd in (video_r, audio_r, out_r):
                 _grow_pipe_buffer(fd)
             _set_write_end_nonblocking(video_w)
             _set_write_end_nonblocking(audio_w)
@@ -766,7 +768,6 @@ class WebSocketBridge:
             return
         self._read_fd, self._video_write_fd = os.pipe()
         _grow_pipe_buffer(self._read_fd)
-        _grow_pipe_buffer(self._video_write_fd)
         _set_write_end_nonblocking(self._video_write_fd)
         self._audio_active = False
         self._ready_event.set()
