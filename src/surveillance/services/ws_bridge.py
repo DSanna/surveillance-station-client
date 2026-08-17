@@ -274,6 +274,9 @@ class WebSocketBridge:
         # only a reconstructed frame says what the layout is. Stereo until
         # then, which is what every camera got before.
         self._aac_channels = 2
+        # Whether the last framing check ran out of time rather than
+        # reaching a verdict, so the two are not reported as one.
+        self._aac_probe_timed_out = False
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
         # Only meaningful while _aac_detecting; _setup_pipes sets it when
@@ -688,6 +691,9 @@ class WebSocketBridge:
         # bridge (payload-prefix first, then header-prepend), so an
         # unqualified verdict says nothing about which one produced it.
         mode = "header-embedded prefix" if self._aac_use_header_prepend else "frame prefix"
+        # Cleared per attempt, so it describes the framing tried last
+        # rather than any earlier one that also ran out of time.
+        self._aac_probe_timed_out = False
         try:
             _, stderr = await asyncio.wait_for(
                 proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
@@ -695,6 +701,7 @@ class WebSocketBridge:
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+            self._aac_probe_timed_out = True
             log.debug(
                 "WebSocket bridge for %s: %s framing check did not finish in %.0fs",
                 self._label,
@@ -716,10 +723,14 @@ class WebSocketBridge:
         return not complaint
 
     async def _fall_back_to_video_only(self) -> None:
-        """Give up on muxing this camera's AAC in — its framing didn't
-        validate (see _aac_frames_look_valid) — and use the original
+        """Give up on muxing this camera's AAC in and use the original
         raw-video-only passthrough instead, flushing the video buffered
         during detection into it.
+
+        Says nothing about why: the three callers give up for reasons
+        that are not the same finding at all (a camera that sent no audio,
+        a framing that would not decode, an ffmpeg that would not run),
+        and each logs its own before calling this.
 
         Unlike the muxed path (where ffmpeg is already running and
         draining its input pipes before any flush happens), nothing
@@ -731,11 +742,6 @@ class WebSocketBridge:
         event loop hand control back to mpv (via the asyncio.to_thread
         yield points in the flush loop below) before that can happen.
         """
-        log.warning(
-            "WebSocket bridge for %s: this camera's AAC audio can't be decoded through "
-            "this path — falling back to video-only audio",
-            self._label,
-        )
         self._read_fd, self._video_write_fd = os.pipe()
         _grow_pipe_buffer(self._read_fd)
         _grow_pipe_buffer(self._video_write_fd)
@@ -784,7 +790,11 @@ class WebSocketBridge:
             # deadline, so it can finish having seen no audio at all.
             # There is nothing to work out from an empty buffer, and
             # nothing to hand ffmpeg either.
-            log.info("WebSocket bridge for %s: no AAC audio arrived during detection", self._label)
+            log.warning(
+                "WebSocket bridge for %s: no AAC audio arrived during detection, "
+                "streaming video without audio",
+                self._label,
+            )
             await self._fall_back_to_video_only()
             return
 
@@ -812,12 +822,21 @@ class WebSocketBridge:
             valid = False
             reason = "AAC frames are longer than an ADTS header can describe"
         else:
-            reason = "AAC frames are not in a recognized framing"
+            # A probe that ran out of time established nothing about the
+            # camera, so it must not be reported as a framing that was
+            # tried and rejected.
+            reason = (
+                f"the AAC framing check did not finish in {_AAC_PROBE_TIMEOUT:.0f}s"
+                if self._aac_probe_timed_out
+                else "AAC frames are not in a recognized framing"
+            )
 
         if valid:
             await self._start_aac_pipeline()
             return
-        log.info("WebSocket bridge for %s: %s", self._label, reason)
+        log.warning(
+            "WebSocket bridge for %s: %s, streaming video without audio", self._label, reason
+        )
         await self._fall_back_to_video_only()
 
     async def _start_aac_pipeline(self) -> None:
