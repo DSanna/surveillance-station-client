@@ -163,8 +163,8 @@ _F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", None)
 
 
 def _grow_pipe_buffer(fd: int) -> None:
-    """Resize the pipe one end of it belongs to. Either end will do: the
-    buffer is a property of the pipe, not of the descriptor."""
+    """Resize the pipe this descriptor is an end of. Either end will do:
+    the buffer is a property of the pipe, not of the descriptor."""
     if _F_SETPIPE_SZ is None:
         return  # BSD pipe buffers are not tunable from userland
     with contextlib.suppress(OSError):
@@ -600,8 +600,7 @@ class WebSocketBridge:
             return
         self._error = f"ffmpeg exited with code {returncode}"
         log.warning("WebSocket bridge for %s: %s", self._label, self._error)
-        if self._pump_task is not None:
-            self._pump_task.cancel()
+        self._pump_task.cancel()
 
     async def _handle_control_frame(self, fields: dict[str, str], header: bytes) -> None:
         """Handle a close notice or codec-info frame (anything that isn't
@@ -1256,10 +1255,11 @@ class WebSocketBridge:
             while view:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    # Which pipe, and how much was left, separates the two
-                    # things that produce this: a muxed camera whose ffmpeg
-                    # stopped draining both inputs, and a video-only camera
-                    # whose mpv never opened the one pipe there is.
+                    # Video NALs go down this path in both modes, so a
+                    # video pipe stall is either ffmpeg or mpv. An audio
+                    # one can only be a muxed camera, since nothing else
+                    # writes that pipe. The byte counts tell a reader that
+                    # never started from one that stopped part way.
                     raise _PipeWriteStalled(
                         f"{'audio' if audio else 'video'} pipe write stalled for "
                         f"{_WRITE_TIMEOUT:.0f}s with {len(view)} of {len(data)} bytes "
