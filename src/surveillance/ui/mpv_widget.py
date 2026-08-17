@@ -254,16 +254,30 @@ class MpvGLArea(Gtk.GLArea):
         return False
 
     def _mpv_log(self, loglevel: str, component: str, message: str) -> None:
-        """Handle mpv log messages."""
-        if loglevel in ("error", "fatal"):
-            log.error("mpv [%s]: %s", component, message.strip())
+        """Handle mpv log messages.
+
+        mpv routes libavcodec and libavformat through the same client log
+        under components named ffmpeg/*, and maps AV_LOG_ERROR to its own
+        "error". Those are routine on a live stream: a decoder started
+        mid-GOP reports a missing PPS and a failed slice header for every
+        frame until the next keyframe, which is what a WebSocket bridge
+        reconnecting onto the same pipe hands it. Reporting that as an
+        application error would call a healthy stream broken, several
+        hundred lines at a time and once per slot, so the decoder's own
+        complaints stay at debug and only mpv's own components speak up.
+        """
+        text = message.strip()
+        if component.startswith("ffmpeg"):
+            log.debug("mpv [%s] %s: %s", component, loglevel, text)
+        elif loglevel in ("error", "fatal"):
+            log.error("mpv [%s]: %s", component, text)
         elif loglevel == "warn":
-            log.warning("mpv [%s]: %s", component, message.strip())
+            log.warning("mpv [%s]: %s", component, text)
         else:
             # Only reachable on a debug run, which is the only time libmpv
             # is asked for these. Dropping them instead would mean paying
             # to carry every message across the C boundary for nothing.
-            log.debug("mpv [%s] %s: %s", component, loglevel, message.strip())
+            log.debug("mpv [%s] %s: %s", component, loglevel, text)
 
     def _apply_playback_options(self) -> None:
         """Apply buffering and timing options for the current playback profile."""
