@@ -145,7 +145,13 @@ class MpvGLArea(Gtk.GLArea):
                 input_default_bindings=False,
                 input_vo_keyboard=False,
                 log_handler=self._mpv_log,
-                loglevel="fatal",
+                # A minimum level, not a filter: at "fatal" libmpv delivers
+                # nothing else, so _mpv_log's error and warn branches could
+                # never run and mpv was silent about every problem short of
+                # a fatal one. It writes nothing to stderr either, terminal
+                # being off, so this handler is the only way its diagnostics
+                # reach a log at all.
+                loglevel="debug" if log.isEnabledFor(logging.DEBUG) else "warn",
                 demuxer_lavf_o="rtsp_transport=tcp",
                 tls_verify=self._tls_verify,
                 mute=self._muted,
@@ -253,6 +259,11 @@ class MpvGLArea(Gtk.GLArea):
             log.error("mpv [%s]: %s", component, message.strip())
         elif loglevel == "warn":
             log.warning("mpv [%s]: %s", component, message.strip())
+        else:
+            # Only reachable on a debug run, which is the only time libmpv
+            # is asked for these. Dropping them instead would mean paying
+            # to carry every message across the C boundary for nothing.
+            log.debug("mpv [%s] %s: %s", component, loglevel, message.strip())
 
     def _apply_playback_options(self) -> None:
         """Apply buffering and timing options for the current playback profile."""
