@@ -420,6 +420,57 @@ class TestMuxSetupCleanup:
         assert bridge._audio_write_fd == -1
 
 
+class TestAudioGapWatchdog:
+    """A muxed camera that stops sending audio must lose its audio, not
+    its whole stream: ffmpeg holds the video input while any input has
+    nothing to deliver."""
+
+    async def test_a_silent_camera_loses_only_its_audio_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.05)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.01)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        video_r, video_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        bridge._video_write_fd = video_w
+        bridge._last_audio_at = time.monotonic()
+
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+        await asyncio.wait_for(watch, timeout=2.0)
+
+        assert bridge._audio_write_fd == -1, "the audio write end should be closed"
+        assert bridge._video_write_fd == video_w, "the video pipe must be left alone"
+        assert os.read(audio_r, 1) == b"", "ffmpeg should see EOF on the audio input"
+        for fd in (audio_r, video_r, video_w):
+            os.close(fd)
+
+    async def test_audio_that_keeps_arriving_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.2)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.01)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        bridge._last_audio_at = time.monotonic()
+
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+        # Keep it fed the way a healthy camera does, well inside the gap.
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            bridge._last_audio_at = time.monotonic()
+
+        assert not watch.done(), "a camera still sending audio must keep it"
+        assert bridge._audio_write_fd == audio_w
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+        os.close(audio_r)
+        os.close(audio_w)
+
+
 class TestFfmpegExitReporting:
     """A muxer that exits reports itself only while it is the news."""
 

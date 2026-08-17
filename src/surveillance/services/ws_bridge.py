@@ -95,6 +95,16 @@ _KEEPALIVE_INTERVAL = 10.0  # seconds
 # genuinely stopped draining.
 _WRITE_TIMEOUT = 5.0  # seconds
 
+# How long a muxed camera may deliver no audio at all before its audio
+# stream is ended to stop it holding up the video (see _watch_audio_gap).
+# Must fire before the write timeout above does: the mux stops draining
+# video 0.7s into the gap, and _WRITE_TIMEOUT only starts once the 1MiB
+# video pipe has filled on top of that, so 3s plus a check interval
+# leaves room even on a camera that fills the pipe quickly. Well beyond
+# any real inter-frame gap: audio arrives every 20-125ms.
+_AUDIO_GAP_TIMEOUT = 3.0  # seconds
+_AUDIO_GAP_CHECK_INTERVAL = 0.5  # seconds
+
 # How long to let ffmpeg live before believing it started. An ffmpeg that
 # doesn't like its arguments prints its complaint and exits in tens of
 # milliseconds, so this only has to outlast that, not cover a slow start.
@@ -252,6 +262,11 @@ class WebSocketBridge:
         self._ffmpeg_proc: asyncio.subprocess.Process | None = None
         self._ffmpeg_watch: asyncio.Task[None] | None = None
         self._ffmpeg_stderr: asyncio.Task[None] | None = None
+        self._audio_gap_watch: asyncio.Task[None] | None = None
+        # When audio last reached the pipe. Armed when the muxer starts,
+        # so a camera that announces an audio codec and then never sends
+        # one is caught by the same deadline as one that goes quiet.
+        self._last_audio_at = 0.0
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
@@ -469,6 +484,8 @@ class WebSocketBridge:
         self._audio_write_fd = audio_w
         self._read_fd = out_r
         self._audio_active = True
+        self._last_audio_at = time.monotonic()
+        self._audio_gap_watch = asyncio.create_task(self._watch_audio_gap())
 
     async def _spawn_ffmpeg(
         self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
@@ -1225,6 +1242,55 @@ class WebSocketBridge:
             return ""
         return self._error or "stream ended"
 
+    async def _watch_audio_gap(self) -> None:
+        """End the audio stream if the camera stops delivering audio.
+
+        A live mux holds its video input for as long as one of its inputs
+        has nothing to deliver: measured on ffmpeg 7.1.5, video stops
+        being drained 0.7s after audio goes quiet and never resumes, so
+        the video pipe fills, _write_pipe times out and the whole slot is
+        given up and rebuilt into the same wedge on the next poll. A
+        camera whose audio simply stops (silence suppression, a dropped
+        microphone, an audio codec DSM announces but never sends) would
+        do that every poll interval, forever.
+
+        Closing the write end releases it. ffmpeg ends that stream and
+        goes back to muxing video alone, within about 130ms even when it
+        has been wedged for some time, so this does not have to beat the
+        0.7s window, only the write timeout that follows it. The audio is
+        gone for the rest of the session: the stream cannot be reopened
+        without restarting ffmpeg, and a camera silent this long has no
+        audio worth muxing anyway.
+        """
+        while True:
+            await asyncio.sleep(_AUDIO_GAP_CHECK_INTERVAL)
+            if self._audio_write_fd < 0:
+                return  # torn down, or already closed by an earlier gap
+            gap = time.monotonic() - self._last_audio_at
+            if gap < _AUDIO_GAP_TIMEOUT:
+                continue
+            log.warning(
+                "WebSocket bridge for %s: no audio for %.0fs, ending the audio stream "
+                "so it stops holding up the video",
+                self._label,
+                gap,
+            )
+            self._close_audio_write_fd()
+            return
+
+    def _close_audio_write_fd(self) -> None:
+        """Close just the audio write end. Thread-safe, idempotent.
+
+        Takes the same lock _write_pipe reads the descriptor under, so a
+        write already in flight keeps its own dup of it and this cannot
+        close the number out from under a later one.
+        """
+        with self._fd_lock:
+            fd, self._audio_write_fd = self._audio_write_fd, -1
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
     def _write_pipe(self, audio: bool, data: bytes) -> None:
         """Write to one of the pipes through a private copy of the fd.
 
@@ -1248,6 +1314,11 @@ class WebSocketBridge:
         to ever raise, reconnect, or hand off to the stream-lost recovery
         path that's built for exactly this.
         """
+        if audio:
+            # Stamped here rather than at the two call sites, so the gap
+            # watchdog measures when audio reached the pipe and cannot be
+            # kept alive by frames that never got that far.
+            self._last_audio_at = time.monotonic()
         with self._fd_lock:
             fd = self._audio_write_fd if audio else self._video_write_fd
             if fd < 0:
@@ -1327,6 +1398,10 @@ class WebSocketBridge:
         if self._ffmpeg_stderr is not None:
             self._ffmpeg_stderr.cancel()
             self._ffmpeg_stderr = None
+
+        if self._audio_gap_watch is not None:
+            self._audio_gap_watch.cancel()
+            self._audio_gap_watch = None
 
         if self._ffmpeg_proc is not None:
             proc = self._ffmpeg_proc
