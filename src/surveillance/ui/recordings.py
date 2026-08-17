@@ -632,12 +632,14 @@ class RecordingsView(Gtk.Box):
         play_btn = Gtk.Button()
         play_btn.set_icon_name("media-playback-start-symbolic")
         play_btn.set_tooltip_text("Play")
+        play_btn.set_valign(Gtk.Align.CENTER)
         play_btn.connect("clicked", self._on_play, rec)
         box.append(play_btn)
 
         dl_btn = Gtk.Button()
         dl_btn.set_icon_name("document-save-symbolic")
         dl_btn.set_tooltip_text("Download")
+        dl_btn.set_valign(Gtk.Align.CENTER)
         dl_btn.connect("clicked", self._on_download, rec)
         box.append(dl_btn)
 

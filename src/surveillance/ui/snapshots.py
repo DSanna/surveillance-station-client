@@ -662,18 +662,21 @@ class SnapshotsView(Gtk.Box):
         view_btn = Gtk.Button()
         view_btn.set_icon_name("media-playback-start-symbolic")
         view_btn.set_tooltip_text("View")
+        view_btn.set_valign(Gtk.Align.CENTER)
         view_btn.connect("clicked", self._on_view, snap)
         box.append(view_btn)
 
         dl_btn = Gtk.Button()
         dl_btn.set_icon_name("document-save-symbolic")
         dl_btn.set_tooltip_text("Download")
+        dl_btn.set_valign(Gtk.Align.CENTER)
         dl_btn.connect("clicked", self._on_download, snap)
         box.append(dl_btn)
 
         del_btn = Gtk.Button()
         del_btn.set_icon_name("user-trash-symbolic")
         del_btn.set_tooltip_text("Delete")
+        del_btn.set_valign(Gtk.Align.CENTER)
         del_btn.connect("clicked", self._on_delete, snap)
         box.append(del_btn)
 
