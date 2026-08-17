@@ -569,16 +569,10 @@ class LiveView(Gtk.Box):
         self._save_session()
 
     def _on_slot_clicked(self, slot_idx: int) -> None:
-        """Select a grid slot, or switch to 1x1 if clicking a selected slot with a camera."""
+        """Select a grid slot, or deselect it if already selected."""
         if slot_idx not in self._active:
             return
         if self._selected_slot == slot_idx:
-            cam = self._slots[slot_idx].camera
-            if cam and self._current_layout != "1x1":
-                # Second click on selected slot with a camera: zoom to 1x1
-                self._select_slot(None)
-                self.on_camera_selected(cam)
-                return
             self._select_slot(None)
         else:
             self._select_slot(slot_idx)
@@ -844,8 +838,7 @@ class LiveView(Gtk.Box):
 
     def _on_slot_open_1x1(self, slot_idx: int) -> None:
         """Right-click menu action: switch to 1x1 layout showing just this
-        slot's camera — the same "zoom in" behavior as clicking an
-        already-selected slot with a camera (see _on_slot_clicked)."""
+        slot's camera."""
         camera = self._slots[slot_idx].camera
         if not camera:
             return
