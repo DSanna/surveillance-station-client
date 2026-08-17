@@ -511,11 +511,19 @@ class WebSocketBridge:
             "1",
             "pipe:1",
         ]
+        # Let the muxer's own complaints through on a debug run. ffmpeg is
+        # the prime suspect whenever a muxed slot stalls, and with its
+        # stderr discarded it is the one component in the pipeline that
+        # says nothing at any log level. Inheriting stderr rather than
+        # piping it keeps the reader out of the picture entirely, which is
+        # safe only because this argv is pipe fds and codec names: no URL,
+        # no credentials, so nothing here needs the redacting formatter.
+        debugging = log.isEnabledFor(logging.DEBUG)
         self._ffmpeg_proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=subprocess.DEVNULL,
             stdout=out_w,
-            stderr=subprocess.DEVNULL,
+            stderr=None if debugging else subprocess.DEVNULL,
             pass_fds=[video_r, audio_r],
         )
         # An ffmpeg that starts but rejects these arguments (a build too
