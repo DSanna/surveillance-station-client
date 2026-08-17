@@ -1180,6 +1180,15 @@ class WebSocketBridge:
                         log.debug("WebSocket connected for %s", self._label)
                         connected = True
                         self._connected_at = time.monotonic()
+                        # A new session gets the full gap timeout to
+                        # deliver its first audio frame. Left at whatever
+                        # the dropped session ended on, the stamp is stale
+                        # by the whole outage, and the first video frame
+                        # back would make the gap watchdog read the
+                        # reconnect itself as a camera that went quiet.
+                        # The video stamp needs no such reset: a stale one
+                        # can only delay a fire, never cause it.
+                        self._last_audio_at = self._connected_at
                         delay = 0.0
                         await self._read_messages_with_keepalive(ws)
                 except _PipeWriteStalled as exc:

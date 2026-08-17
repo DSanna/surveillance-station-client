@@ -506,6 +506,30 @@ class TestAudioGapWatchdog:
         assert os.read(audio_r, 1) == b""
         os.close(audio_r)
 
+    async def test_a_reconnect_gives_the_new_session_time_to_send_audio(
+        self, connect: Any
+    ) -> None:
+        # Nothing else resets the stamp per session, so after an outage
+        # longer than the gap timeout the first video frame back would
+        # make the reconnect itself look like a camera gone quiet.
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        stale = time.monotonic() - 30.0
+        bridge._last_audio_at = stale
+        # Two sessions: the first ends at once, the second holds open.
+        connect([_FakeWS([]), _FakeWS([], hang=True)])
+
+        pump = asyncio.create_task(bridge._pump())
+        await asyncio.sleep(0.6)  # past the 0.25s reconnect delay
+        refreshed = bridge._last_audio_at
+        bridge._stopping = True
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+        assert refreshed > stale, "the reconnect left the audio clock stale"
+        assert bridge._connected_at is not None
+        assert refreshed >= bridge._connected_at
+
     async def test_a_silent_session_keeps_its_audio_for_the_reconnect(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
