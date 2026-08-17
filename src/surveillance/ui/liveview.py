@@ -991,10 +991,22 @@ class LiveView(Gtk.Box):
                 # was actually mixable (PCMU or AAC) is known for certain.
                 s.set_audio_playable(bridge.audio_active)
 
+        def _on_start_failed(exc: Exception) -> None:
+            if self._slots[slot_idx]._ws_bridge is not bridge:
+                # Same case _on_ready guards, arriving down the other
+                # branch: a bridge stopped while start() was still pending
+                # ends its pump without ever becoming ready, so start()
+                # raises. Switching camera or leaving the page during the
+                # second or two a stream takes to come up is ordinary, and
+                # was being reported as a failure to start it.
+                log.debug("WebSocket bridge stopped before it was ready: %s", exc)
+                return
+            log.error("WebSocket bridge failed: %s", exc)
+
         run_async(
             bridge.start(),
             callback=_on_ready,
-            error_callback=lambda e: log.error("WebSocket bridge failed: %s", e),
+            error_callback=_on_start_failed,
         )
         # WebSocketBridge reconnects on the same pipe internally and never
         # surfaces a routine drop as a "closed" event, so mpv never sees a
