@@ -381,6 +381,12 @@ class WebSocketBridge:
                 muxable = False
         if not muxable:
             self._read_fd, self._video_write_fd = os.pipe()
+            # Grown like every other pipe here: mpv does not open the read
+            # end until start() has returned and the caller has acted on
+            # it, so the frames written in between have only the buffer to
+            # sit in, and on the default 64KiB a couple of H.265 keyframes
+            # fill it before any reader exists.
+            _grow_pipe_buffer(self._read_fd)
             _set_write_end_nonblocking(self._video_write_fd)
             self._audio_active = False
         log.debug(

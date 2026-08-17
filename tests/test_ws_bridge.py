@@ -369,15 +369,21 @@ class TestWriteStall:
         bridge give up outright, not endlessly reconnect the WebSocket and
         refeed data into the same stuck pipe."""
         monkeypatch.setattr(ws_bridge, "_WRITE_TIMEOUT", 0.05)
-        # Bigger than the pipe's default kernel buffer (64KiB) and nothing
-        # ever reads the other end in this test, so the write actually
-        # blocks instead of completing immediately.
+        # Pin the pipe small rather than sizing the frame against whatever
+        # the buffer happens to be: nothing ever reads the other end here,
+        # so the write only blocks while the frame cannot fit, and a test
+        # written around the 64KiB default silently stops testing anything
+        # the moment the pipe is grown.
+        monkeypatch.setattr(ws_bridge, "_PIPE_CAPACITY", 4096)
         big_frame = _frame(b"mediaType=1", b"\xaa" * (200 * 1024))
         connect(_FakeWS([_codec_frame(), big_frame], hang=True))
         bridge = WebSocketBridge("wss://nas/stream", False, "sid")
         await bridge.start()
         reason = await bridge.wait_closed()
-        assert "stalled" in reason
+        # The exact fault, not just "stalled": the idle timeout reports a
+        # stall too, and would pass this assertion having tested nothing
+        # about pipe writes at all.
+        assert "video pipe write stalled" in reason, reason
         await bridge.stop()
 
 
