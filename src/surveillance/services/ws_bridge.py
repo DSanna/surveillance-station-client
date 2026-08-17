@@ -277,8 +277,8 @@ class WebSocketBridge:
         # only a reconstructed frame says what the layout is. Stereo until
         # then, which is what every camera got before.
         self._aac_channels = 2
-        # Whether the last framing check ran out of time rather than
-        # reaching a verdict, so the two are not reported as one.
+        # Whether any framing check ran out of time rather than reaching a
+        # verdict, so the two are not reported as one.
         self._aac_probe_timed_out = False
         self._aac_intervals: list[float] = []
         self._aac_detecting = False
@@ -725,9 +725,6 @@ class WebSocketBridge:
         # bridge (payload-prefix first, then header-prepend), so an
         # unqualified verdict says nothing about which one produced it.
         mode = "header-embedded prefix" if self._aac_use_header_prepend else "frame prefix"
-        # Cleared per attempt, so it describes the framing tried last
-        # rather than any earlier one that also ran out of time.
-        self._aac_probe_timed_out = False
         try:
             _, stderr = await asyncio.wait_for(
                 proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
@@ -842,6 +839,11 @@ class WebSocketBridge:
 
         payloads = [payload for _header_tail, payload in self._aac_audio_buffer]
         prefix_len = detect_frame_prefix_len(payloads)
+        # Sticky across both framings tried below, not cleared per probe:
+        # "not in a recognized framing" claims every framing was tried and
+        # rejected, so one that ran out of time instead has to disqualify
+        # that sentence even when the other reached a real verdict.
+        self._aac_probe_timed_out = False
         try:
             valid = False
             if prefix_len is not None:
