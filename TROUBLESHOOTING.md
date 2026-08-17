@@ -95,20 +95,26 @@ ffmpeg, and this section does not apply.
 **The camera's audio stopping is handled, and is no longer this.** A live
 mux holds its video input while any of its inputs has nothing to deliver:
 measured on ffmpeg 7.1.5, video stops being drained 0.7s after audio goes
-quiet and never resumes. The client now watches for that and ends the
-audio stream after three seconds of silence, which releases ffmpeg within
-about 130ms and keeps the video going. You will see this instead, once
-per affected camera, and the slot stays up:
+quiet and never resumes. The client watches for a camera whose audio has
+stopped while its video keeps arriving, and ends the audio stream after
+three seconds of that. You will see this instead, once per affected
+camera, and the slot stays up:
 
 ```
 WARNING surveillance.services.ws_bridge: WebSocket bridge for entree: no
   audio for 3s, ending the audio stream so it stops holding up the video
 ```
 
-That camera plays without sound until its stream is restarted (switch
-page and back, or right-click it in the sidebar and restart it). Nothing
-else is wrong with it. Cameras with silence suppression or an
-intermittent microphone will do this routinely.
+The picture pauses for those three seconds and then catches up. That
+camera plays without sound for the rest of the session; to get it back,
+restart its stream by switching page and back, or by right-clicking it in
+the sidebar, opening Stream Protocol and clicking Apply. Nothing else is
+wrong with it, and cameras with silence suppression or an intermittent
+microphone will do this routinely.
+
+Both conditions matter. A session the NAS drops silently delivers neither
+stream for up to ten seconds before reconnecting, and its audio is
+deliberately kept: nothing is being held up while both inputs are quiet.
 
 What remains, if a slot still gives up with a stalled pipe write, is **an
 ffmpeg regression**. On ffmpeg 7.0 and higher (all versions released at
