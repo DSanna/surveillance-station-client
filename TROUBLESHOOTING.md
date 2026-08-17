@@ -92,28 +92,37 @@ message does not by itself mean the camera's audio is being muxed. An
 muxed audio, the cause is elsewhere: the reader is mpv rather than
 ffmpeg, and this section does not apply.
 
-Two causes are known, and the log line above cannot tell them apart:
+**The camera's audio stopping is handled, and is no longer this.** A live
+mux holds its video input while any of its inputs has nothing to deliver:
+measured on ffmpeg 7.1.5, video stops being drained 0.7s after audio goes
+quiet and never resumes. The client now watches for that and ends the
+audio stream after three seconds of silence, which releases ffmpeg within
+about 130ms and keeps the video going. You will see this instead, once
+per affected camera, and the slot stays up:
 
-- **The camera's audio stops while its video keeps going.** Measured on
-  ffmpeg 7.1.5: a live mux whose audio input goes quiet stops draining
-  its video input within about a second and never resumes, while the same
-  mux with audio flowing throughout keeps up indefinitely. Whether older
-  ffmpeg behaves the same way has not been tested. A camera with silence
-  suppression, an intermittent microphone, or audio the NAS stops
-  forwarding will do this repeatedly.
-- **An ffmpeg regression.** On ffmpeg 7.0 and higher (all versions
-  released at least until 2026-08-08), muxing live piped H.264/HEVC video
-  with PCMU audio under `-use_wallclock_as_timestamps` can stall or fully
-  deadlock ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected. Filed
-  upstream: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
+```
+WARNING surveillance.services.ws_bridge: WebSocket bridge for entree: no
+  audio for 3s, ending the audio stream so it stops holding up the video
+```
+
+That camera plays without sound until its stream is restarted (switch
+page and back, or right-click it in the sidebar and restart it). Nothing
+else is wrong with it. Cameras with silence suppression or an
+intermittent microphone will do this routinely.
+
+What remains, if a slot still gives up with a stalled pipe write, is **an
+ffmpeg regression**. On ffmpeg 7.0 and higher (all versions released at
+least until 2026-08-08), muxing live piped H.264/HEVC video with PCMU
+audio under `-use_wallclock_as_timestamps` can stall or fully deadlock
+ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected. Filed upstream:
+https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
 
 The app detects the stall and retries, but the retry rebuilds the same
 pipeline and meets the same cause, so this shows up as a slot that
 recovers and gives up again once per camera poll (30s by default) rather
 than a one-off recovery. Workarounds:
 
-- Point the app at an ffmpeg build known good for the second cause (it has
-  not been tested against the first): put an ffmpeg 6.1.1 binary in
+- Point the app at a known-good ffmpeg build: put an ffmpeg 6.1.1 binary in
   its own directory and launch with `PATH=/path/to/ffmpeg-6.1.1:$PATH
   surveillance`. This only affects this app's process, not the rest of the
   system. It works the same way on the AppImage, whose bundled ffmpeg is a
@@ -122,10 +131,10 @@ than a one-off recovery. Workarounds:
   effect on those; earlier ones bundled no ffmpeg at all).
 - Switch that camera to RTSP instead of WebSocket (right-click it in the
   sidebar). RTSP streams go straight to mpv and never go through this
-  app's ffmpeg muxing path, so neither cause applies.
+  app's ffmpeg muxing path, so this does not apply to them.
 - Turn the camera's audio off in Surveillance Station. With no audio
-  codec to mux, the stream is piped straight to mpv, so neither cause
-  applies to it either. This keeps WebSocket, at the price of the audio.
+  codec to mux, the stream is piped straight to mpv, so this does not
+  apply to it either. Keeps WebSocket, at the price of the audio.
 
 ## Recording playback never starts
 

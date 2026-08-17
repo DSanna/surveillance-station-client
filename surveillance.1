@@ -33,6 +33,9 @@ protocol when the camera's audio codec is PCMU or AAC (muxed in via
 ffmpeg); otherwise the mute button stays greyed out until the protocol is
 changed (or DSM reports a different codec) by right-clicking the camera
 in the sidebar. A camera with no audio track gets no mute button at all.
+A muxed camera that stops sending audio for three seconds keeps playing
+without sound until its stream is restarted, rather than holding up its
+own video.
 Cameras with a speaker also show a push-to-talk microphone button — tap to
 start talking, tap again to stop.
 Video is rendered via mpv with hardware acceleration.
