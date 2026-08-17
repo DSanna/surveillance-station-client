@@ -131,21 +131,12 @@
     min-height: 68px;
 }
 
-.snapshot-flow > picture {
-    margin: 4px;
-    border-radius: 4px;
-}
-
 .event-row {
     padding: 8px 12px;
 }
 
 .event-row.motion {
     border-left: 3px solid @warning_color;
-}
-
-.event-row.alarm {
-    border-left: 3px solid @error_color;
 }
 
 .home-mode-active {
