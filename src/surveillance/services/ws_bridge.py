@@ -269,6 +269,9 @@ class WebSocketBridge:
         # quiet, and neither reads as stale before anything has arrived.
         self._last_audio_at = 0.0
         self._last_video_at = 0.0
+        # Set while a video write is blocked, which freezes the stamp
+        # above for as long as it lasts (see _write_pipe).
+        self._video_write_in_flight = False
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
@@ -1278,7 +1281,10 @@ class WebSocketBridge:
                 return  # torn down, or already closed by an earlier gap
             now = time.monotonic()
             gap = now - self._last_audio_at
-            if gap < _AUDIO_GAP_TIMEOUT or now - self._last_video_at >= _AUDIO_GAP_TIMEOUT:
+            video_arriving = (
+                self._video_write_in_flight or now - self._last_video_at < _AUDIO_GAP_TIMEOUT
+            )
+            if gap < _AUDIO_GAP_TIMEOUT or not video_arriving:
                 continue
             log.warning(
                 "WebSocket bridge for %s: no audio for %.0fs, ending the audio stream "
@@ -1337,6 +1343,14 @@ class WebSocketBridge:
             if fd < 0:
                 return
             dup = os.dup(fd)
+        # A video write that has started and cannot finish is what a
+        # wedged mux looks like from here, and it stops the stamp above
+        # advancing for as long as it lasts. The gap watchdog has to read
+        # that as video still arriving, or the very case it exists for
+        # looks to it like a camera that went quiet altogether. One video
+        # write is in flight at a time: the read loop awaits each.
+        if not audio:
+            self._video_write_in_flight = True
         try:
             view = memoryview(data)
             poller = select.poll()
@@ -1366,6 +1380,8 @@ class WebSocketBridge:
                 # take to hand over.
                 deadline = time.monotonic() + _WRITE_TIMEOUT
         finally:
+            if not audio:
+                self._video_write_in_flight = False
             os.close(dup)
 
     def _close_write_fd(self) -> None:

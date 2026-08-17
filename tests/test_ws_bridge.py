@@ -480,6 +480,32 @@ class TestAudioGapWatchdog:
         os.close(audio_r)
         os.close(audio_w)
 
+    async def test_a_blocked_video_write_still_counts_as_video_arriving(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The wedge this whole watchdog exists for IS a video write that
+        # started and cannot finish, which freezes _last_video_at for the
+        # whole write timeout. Read literally, the video clock then says
+        # "video stopped too" and the watchdog never fires, which is the
+        # bug it was meant to fix.
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.05)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.01)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        stale = time.monotonic() - 10.0  # both clocks long stale
+        bridge._last_audio_at = stale
+        bridge._last_video_at = stale
+        bridge._video_write_in_flight = True
+
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+        await asyncio.wait_for(watch, timeout=2.0)
+
+        assert bridge._audio_write_fd == -1
+        os.set_blocking(audio_r, False)
+        assert os.read(audio_r, 1) == b""
+        os.close(audio_r)
+
     async def test_a_silent_session_keeps_its_audio_for_the_reconnect(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
