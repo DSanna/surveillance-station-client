@@ -44,10 +44,11 @@
     min-height: 48px;
 }
 
+/* The 2px gutter is set on the widget in liveview.py: row-spacing and
+   column-spacing are GtkGrid properties, not CSS ones, and GTK's own
+   grid layout adds any CSS border-spacing on top of them. */
 .live-grid {
     background-color: black;
-    row-spacing: 2px;
-    column-spacing: 2px;
 }
 
 .slot-header {
