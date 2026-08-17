@@ -251,6 +251,7 @@ class WebSocketBridge:
         self._audio_write_fd: int = -1
         self._ffmpeg_proc: asyncio.subprocess.Process | None = None
         self._ffmpeg_watch: asyncio.Task[None] | None = None
+        self._ffmpeg_stderr: asyncio.Task[None] | None = None
         self._audio_active = False
         self._audio_codec: str = ""
         self._ready_event = asyncio.Event()
@@ -530,16 +531,17 @@ class WebSocketBridge:
         # Let the muxer's own complaints through on a debug run. ffmpeg is
         # the prime suspect whenever a muxed slot stalls, and with its
         # stderr discarded it is the one component in the pipeline that
-        # says nothing at any log level. Inheriting stderr rather than
-        # piping it keeps the reader out of the picture entirely, which is
-        # safe only because this argv is pipe fds and codec names: no URL,
-        # no credentials, so nothing here needs the redacting formatter.
+        # says nothing at any log level. Piped and drained by us rather
+        # than inherited: inheriting hands ffmpeg whatever the app's stderr
+        # is, which on the capture command the docs give is a pipe with
+        # tee on the far end, so a reader that stops keeping up would block
+        # ffmpeg in write(2) and stall the very stream being diagnosed.
         debugging = log.isEnabledFor(logging.DEBUG)
         self._ffmpeg_proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=subprocess.DEVNULL,
             stdout=out_w,
-            stderr=None if debugging else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if debugging else subprocess.DEVNULL,
             pass_fds=[video_r, audio_r],
         )
         # An ffmpeg that starts but rejects these arguments (a build too
@@ -555,6 +557,23 @@ class WebSocketBridge:
         if self._ffmpeg_proc.returncode is not None:
             raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
         self._ffmpeg_watch = asyncio.create_task(self._watch_ffmpeg(self._ffmpeg_proc))
+        if self._ffmpeg_proc.stderr is not None:
+            self._ffmpeg_stderr = asyncio.create_task(
+                self._drain_ffmpeg_stderr(self._ffmpeg_proc.stderr)
+            )
+
+    async def _drain_ffmpeg_stderr(self, stream: asyncio.StreamReader) -> None:
+        """Log what the muxer writes to stderr, and keep it unblocked.
+
+        Only runs on a debug run, where the stderr pipe exists. It has to
+        be drained by someone: ffmpeg blocks in write(2) once the pipe
+        fills, and a muxer blocked there stops draining its input pipes,
+        which is a stalled slot.
+        """
+        async for line in stream:
+            text = line.decode(errors="replace").strip()
+            if text:
+                log.debug("ffmpeg for %s: %s", self._label, text)
 
     async def _watch_ffmpeg(self, proc: asyncio.subprocess.Process) -> None:
         """End the bridge if ffmpeg exits while the session is running.
@@ -1296,6 +1315,10 @@ class WebSocketBridge:
         if self._ffmpeg_watch is not None:
             self._ffmpeg_watch.cancel()
             self._ffmpeg_watch = None
+
+        if self._ffmpeg_stderr is not None:
+            self._ffmpeg_stderr.cancel()
+            self._ffmpeg_stderr = None
 
         if self._ffmpeg_proc is not None:
             proc = self._ffmpeg_proc

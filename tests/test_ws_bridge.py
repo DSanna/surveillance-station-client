@@ -458,9 +458,14 @@ class _FakeFfmpegProc:
     returncode is None because a spawned ffmpeg is still running: the
     bridge reads it to tell a live muxer from one that rejected its
     arguments and exited. wait() still returns at once, so a teardown
-    doesn't have to sit out the drain timeout."""
+    doesn't have to sit out the drain timeout.
+
+    stderr is None the way a real Process reports it when the caller did
+    not ask for a pipe, which is every one of these tests: they run at
+    default log level, and the bridge only pipes it on a debug run."""
 
     returncode: int | None = None
+    stderr: Any = None
 
     async def wait(self) -> int:
         return 0
