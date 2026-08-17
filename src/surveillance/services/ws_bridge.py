@@ -125,6 +125,11 @@ _AAC_DETECTION_TIMEOUT = 10.0  # seconds
 # play the whole session at the wrong pitch.
 _AAC_DETECTION_INTERVALS = 11
 
+# How long the throwaway ffmpeg that checks a reconstructed AAC framing
+# may take. It decodes a handful of buffered frames from a pipe and
+# exits, so this only has to cover a loaded machine, not real work.
+_AAC_PROBE_TIMEOUT = 3.0  # seconds
+
 # ffmpeg -f value for each video codec DSM reports.
 _FFMPEG_VIDEO_FORMAT = {"H264": "h264", "H265": "hevc"}
 # ffmpeg input args for each audio codec DSM reports -- anything else
@@ -679,13 +684,36 @@ class WebSocketBridge:
             # Can't validate without ffmpeg; say yes and let _start_muxed's
             # own OSError handling drop us to video-only.
             return True
+        # Which framing was under test, on every line: this runs twice per
+        # bridge (payload-prefix first, then header-prepend), so an
+        # unqualified verdict says nothing about which one produced it.
+        mode = "header-embedded prefix" if self._aac_use_header_prepend else "frame prefix"
         try:
-            _, stderr = await asyncio.wait_for(proc.communicate(bytes(buf)), timeout=3.0)
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
+            )
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+            log.debug(
+                "WebSocket bridge for %s: %s framing check did not finish in %.0fs",
+                self._label,
+                mode,
+                _AAC_PROBE_TIMEOUT,
+            )
             return False
-        return not stderr.strip()
+        # The verdict is "ffmpeg printed nothing", so the text it printed is
+        # the whole of the reason a camera loses its audio. Logging it is
+        # the only way to tell a real framing error from, say, a build that
+        # dislikes an argument.
+        complaint = stderr.decode(errors="replace").strip()
+        log.debug(
+            "WebSocket bridge for %s: %s framing %s",
+            self._label,
+            mode,
+            f"rejected by ffmpeg: {complaint}" if complaint else "decodes",
+        )
+        return not complaint
 
     async def _fall_back_to_video_only(self) -> None:
         """Give up on muxing this camera's AAC in — its framing didn't
