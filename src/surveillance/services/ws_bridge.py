@@ -1157,9 +1157,14 @@ class WebSocketBridge:
             while view:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    # Which pipe, and how much was left, separates the two
+                    # things that produce this: a muxed camera whose ffmpeg
+                    # stopped draining both inputs, and a video-only camera
+                    # whose mpv never opened the one pipe there is.
                     raise _PipeWriteStalled(
-                        f"pipe write stalled for {_WRITE_TIMEOUT:.0f}s, "
-                        "downstream reader stopped draining"
+                        f"{'audio' if audio else 'video'} pipe write stalled for "
+                        f"{_WRITE_TIMEOUT:.0f}s with {len(view)} of {len(data)} bytes "
+                        "left, downstream reader stopped draining"
                     )
                 poller.poll(remaining * 1000)
                 try:
