@@ -10,8 +10,9 @@ one.
 ## HTTP 502 in the WebSocket live view
 
 ```
-ERROR surveillance.services.ws_bridge: WebSocket bridge error:
-  HTTP 502 (NAS overloaded or camera stream not ready)
+ERROR surveillance.services.ws_bridge: WebSocket for entree failed to
+  establish 5 times in a row — giving up: HTTP 502 (NAS overloaded or
+  camera stream not ready)
 ```
 
 Surveillance Station's WebSocket proxy returned a 502. Typical causes:
@@ -29,8 +30,9 @@ What to try:
 ## A live view slot's log shows "reconnecting on the same pipe"
 
 ```
-WARNING surveillance.services.ws_bridge: WebSocket dropped after 18s
-  (ConnectionClosedError: no close frame received or sent); reconnecting on the same pipe
+WARNING surveillance.services.ws_bridge: WebSocket for entree dropped
+  after 18s (ConnectionClosedError: no close frame received or sent) —
+  reconnecting on the same pipe
 ```
 
 The client sends a periodic keepalive to hold each WebSocket session open,
@@ -51,9 +53,11 @@ and the real feed comes back on its own once the camera is reachable again.
 ## A live view slot shows "(stream lost)" or "(attempting reconnect)"
 
 This means the stream stopped responding mid-session and didn't recover on
-its own: for WebSocket, the bridge tried several times in a row and never
-re-established a connection; for RTSP, mpv's demuxer stopped decoding
-without the camera's status necessarily changing. Either way the slot
+its own: for WebSocket, either the bridge tried several times in a row and
+never re-established a connection, or a pipe write stalled, which gives up
+on the first occurrence (see the stalled-pipe section below); for RTSP,
+mpv's demuxer stopped decoding without the camera's status necessarily
+changing. Either way the slot
 falls back to the same "Camera offline" placeholder rather than a frozen
 frame. "(attempting reconnect)" means it's currently retrying the real
 stream after such a failure.
@@ -76,13 +80,17 @@ ERROR surveillance.ui.liveview: Stream for entree gave up (video pipe
   stopped draining)
 ```
 
-Only WebSocket cameras whose audio this client muxes are affected, which
-means any camera DSM reports as PCMU or AAC. It was first reported with
-PCMU on Hikvision and Reolink models, but the muxing arguments do not
-distinguish the two codecs: both are decoded to PCM under
-`-use_wallclock_as_timestamps` and reach the muxer the same way. Whether
-AAC fails identically has not been shown, only that nothing in the
-construct treats it differently.
+This affects WebSocket cameras whose audio this client muxes, which means
+any camera DSM reports as PCMU or AAC. It was first reported with PCMU on
+Hikvision and Reolink models, but the two codecs differ only in how the
+input is opened: past that, both are decoded to PCM under
+`-use_wallclock_as_timestamps` and reach the muxer identically.
+
+Note that a *video* pipe write stalls in both modes, so that half of the
+message does not by itself mean the camera's audio is being muxed. An
+*audio* pipe write can only stall on a muxed camera. If the slot has no
+muxed audio, the cause is elsewhere: the reader is mpv rather than
+ffmpeg, and this section does not apply.
 
 Two causes are known, and the log line above cannot tell them apart:
 
@@ -104,7 +112,8 @@ pipeline and meets the same cause, so this shows up as a slot that
 recovers and gives up again once per camera poll (30s by default) rather
 than a one-off recovery. Workarounds:
 
-- Point the app at a known-good ffmpeg build: put an ffmpeg 6.1.1 binary in
+- Point the app at an ffmpeg build known good for the second cause (it has
+  not been tested against the first): put an ffmpeg 6.1.1 binary in
   its own directory and launch with `PATH=/path/to/ffmpeg-6.1.1:$PATH
   surveillance`. This only affects this app's process, not the rest of the
   system. It works the same way on the AppImage, whose bundled ffmpeg is a
@@ -113,10 +122,10 @@ than a one-off recovery. Workarounds:
   effect on those; earlier ones bundled no ffmpeg at all).
 - Switch that camera to RTSP instead of WebSocket (right-click it in the
   sidebar). RTSP streams go straight to mpv and never go through this
-  app's ffmpeg muxing path, so neither cause applies. Turning the
-  camera's audio off in Surveillance Station works too, and is the one
-  workaround that also covers a camera whose audio simply stops: with no
-  audio codec to mux, the stream is piped straight to mpv.
+  app's ffmpeg muxing path, so neither cause applies.
+- Turn the camera's audio off in Surveillance Station. With no audio
+  codec to mux, the stream is piped straight to mpv, so neither cause
+  applies to it either. This keeps WebSocket, at the price of the audio.
 
 ## Recording playback never starts
 
