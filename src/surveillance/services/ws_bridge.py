@@ -548,6 +548,15 @@ class WebSocketBridge:
             # See _start_muxed for why both inputs are on one clock.
             "-af",
             "aresample=async=1000",
+            # The interleaver has no notion of a stream that ended part
+            # way through a live mux: when the gap watchdog closes the
+            # audio input, it goes on holding video back waiting for audio
+            # that will never come, and only lets it through on this
+            # valve, which defaults to 10s. That is a 10s freeze followed
+            # by a backlog that never clears. 0 does not mean "no wait",
+            # it disables the valve and makes the hold permanent.
+            "-max_interleave_delta",
+            "100000",  # microseconds
             "-f",
             "matroska",
             "-live",
