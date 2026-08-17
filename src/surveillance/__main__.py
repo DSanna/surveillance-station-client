@@ -29,7 +29,11 @@ import logging
 import re
 import sys
 
-_LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
+# Timestamped so a bug report can be lined up against the timestamps the
+# libraries this app drives print on the same stderr (mpv, ffmpeg,
+# PipeWire, GTK), which is usually the only way to tell whether a stream
+# failed before or after the thing being blamed for it.
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 # Credentials the client sends as query parameters.
 _REDACT_PARAMS = re.compile(
