@@ -53,6 +53,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/surveillance/services/live.py" = ["PLR0911"]
+"appimage_entry.py" = ["E402"]
 "src/surveillance/ui/*.py" = ["E402", "PLC0415"]
 "src/surveillance/app.py" = ["E402", "PLC0415"]
 "src/surveillance/__main__.py" = ["PLC0415"]
