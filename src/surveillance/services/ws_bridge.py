@@ -445,12 +445,18 @@ class WebSocketBridge:
             _set_write_end_nonblocking(video_w)
             _set_write_end_nonblocking(audio_w)
             await self._spawn_ffmpeg(video_codec, audio_codec, video_r, audio_r, out_w)
-        except OSError:
+        except BaseException:
             # Either a pipe, the spawn itself, or ffmpeg's own startup
             # failed. Whichever fds exist have no subprocess to inherit
             # them now, and this runs again on every reconnect attempt
             # until the bridge gives up, so leaking them here would
             # compound quickly.
+            #
+            # BaseException, not OSError: _spawn_ffmpeg waits out a start
+            # grace, and this runs on the pump task, so a bridge stopped
+            # in that window raises CancelledError right here. None of
+            # these fds is on the object yet, so nothing else would ever
+            # close them. The clause ends in a bare raise either way.
             for fd in (video_r, video_w, audio_r, audio_w, out_r, out_w):
                 if fd >= 0:
                     with contextlib.suppress(OSError):

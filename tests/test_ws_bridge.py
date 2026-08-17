@@ -388,6 +388,38 @@ class TestWriteStall:
         await bridge.stop()
 
 
+class TestMuxSetupCleanup:
+    """Building the mux hands six pipe fds around before any of them is
+    stored on the bridge, so whatever goes wrong in between has to close
+    them itself."""
+
+    async def test_a_teardown_during_ffmpeg_startup_leaks_no_fds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # stop() cancels the pump task, and _start_muxed runs on it, so a
+        # camera switch or page exit within the start grace lands a
+        # CancelledError inside _spawn_ffmpeg. That is not an OSError.
+        async def _fake_exec(*args: Any, **kwargs: Any) -> Any:
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        monkeypatch.setattr(ws_bridge, "_FFMPEG_START_GRACE", 5.0)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        before = set(os.listdir("/proc/self/fd"))
+
+        task = asyncio.create_task(bridge._start_muxed("H264", "PCMU"))
+        await asyncio.sleep(0.05)  # inside the start grace
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        leaked = sorted(set(os.listdir("/proc/self/fd")) - before)
+        assert not leaked, f"leaked fds {leaked}"
+        assert bridge._read_fd == -1
+        assert bridge._video_write_fd == -1
+        assert bridge._audio_write_fd == -1
+
+
 class TestFfmpegExitReporting:
     """A muxer that exits reports itself only while it is the news."""
 
