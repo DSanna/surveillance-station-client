@@ -94,6 +94,7 @@ class AdvancedSearchDialog(Gtk.Window):
         self._preset_buttons: dict[str, Gtk.ToggleButton] = {}
         self._time_range_set = from_time is not None or to_time is not None
         self._selected_preset = selected_preset
+        self._syncing_fields = False
         self._on_search = on_search
         self._on_reset = on_reset
 
@@ -148,7 +149,8 @@ class AdvancedSearchDialog(Gtk.Window):
         from_box.append(from_label)
 
         self.from_date = Gtk.Calendar()
-        self.from_date.connect("day-selected", self._on_day_selected)
+        for prop in ("notify::day", "notify::month", "notify::year"):
+            self.from_date.connect(prop, self._on_calendar_date_changed)
         from_box.append(self.from_date)
 
         self.from_time_entry = Gtk.Entry()
@@ -165,7 +167,8 @@ class AdvancedSearchDialog(Gtk.Window):
         to_box.append(to_label)
 
         self.to_date = Gtk.Calendar()
-        self.to_date.connect("day-selected", self._on_day_selected)
+        for prop in ("notify::day", "notify::month", "notify::year"):
+            self.to_date.connect(prop, self._on_calendar_date_changed)
         to_box.append(self.to_date)
 
         self.to_time_entry = Gtk.Entry()
@@ -388,6 +391,8 @@ class AdvancedSearchDialog(Gtk.Window):
         self._sync_preset_buttons()
 
     def _on_time_field_edited(self, entry: Gtk.Entry) -> None:
+        if self._syncing_fields:
+            return
         self._time_range_set = True
         self._clear_preset_selection()
 
@@ -395,15 +400,17 @@ class AdvancedSearchDialog(Gtk.Window):
         gdt = GLib.DateTime.new_local(
             dt.year, dt.month, dt.day, dt.hour, dt.minute, float(dt.second)
         )
-        # Blocked so a preset's own programmatic update doesn't immediately
-        # clear the preset it just set, the same way _sync_preset_buttons
-        # blocks the toggle handler while it sets button state.
-        calendar.handler_block_by_func(self._on_day_selected)
-        calendar.select_day(gdt)
-        calendar.handler_unblock_by_func(self._on_day_selected)
-        time_entry.handler_block_by_func(self._on_time_field_edited)
-        time_entry.set_text(dt.strftime("%H:%M:%S"))
-        time_entry.handler_unblock_by_func(self._on_time_field_edited)
+        # Guarded so a preset's own programmatic update doesn't immediately
+        # clear the preset it just set. A flag rather than handler blocking:
+        # each calendar reports its date through three notify connections to
+        # one handler, and handler_block_by_func blocks a single handler per
+        # call, so it cannot cover them.
+        self._syncing_fields = True
+        try:
+            calendar.select_day(gdt)
+            time_entry.set_text(dt.strftime("%H:%M:%S"))
+        finally:
+            self._syncing_fields = False
 
     def _get_datetime(
         self, calendar: Gtk.Calendar, time_entry: Gtk.Entry, default_time: str = "00:00:00"
@@ -449,13 +456,23 @@ class AdvancedSearchDialog(Gtk.Window):
             return False
         return bool(self.event_types_mode_combo.get_active_id() == "and")
 
-    def _on_day_selected(self, calendar: Gtk.Calendar) -> None:
-        """Picking a day counts as setting the time range.
+    def _on_calendar_date_changed(self, calendar: Gtk.Calendar, _pspec: object) -> None:
+        """Changing a calendar's date counts as setting the time range.
 
         Otherwise the range only counted as set when a preset was used or a
-        time of day was typed, so a search where the user had only clicked
+        time of day was typed, so a search where the user had only picked
         dates dropped both bounds and quietly searched everything.
+
+        Watching day, month and year rather than "day-selected": GtkCalendar
+        suppresses that signal for every month and year navigation (the
+        header arrows, scrolling the widget, Ctrl with an arrow key) and for
+        a click landing on the day number already selected. Each of those
+        still moves the date this dialog hands back, and a preset left
+        selected across one of them makes the page recompute the range from
+        the preset and discard the dates the user picked.
         """
+        if self._syncing_fields:
+            return
         self._time_range_set = True
         self._clear_preset_selection()
 
