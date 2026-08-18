@@ -341,6 +341,7 @@ class TimeLapseView(Gtk.Box):
         play_btn = Gtk.Button()
         play_btn.set_icon_name("media-playback-start-symbolic")
         play_btn.set_tooltip_text("Play")
+        play_btn.set_valign(Gtk.Align.CENTER)
         play_btn.connect("clicked", self._on_play, rec)
         box.append(play_btn)
 
@@ -348,6 +349,7 @@ class TimeLapseView(Gtk.Box):
         dl_btn = Gtk.Button()
         dl_btn.set_icon_name("document-save-symbolic")
         dl_btn.set_tooltip_text("Download")
+        dl_btn.set_valign(Gtk.Align.CENTER)
         dl_btn.connect("clicked", self._on_download, rec)
         box.append(dl_btn)
 
@@ -359,6 +361,7 @@ class TimeLapseView(Gtk.Box):
         else:
             lock_btn.set_icon_name("changes-allow-symbolic")
             lock_btn.set_tooltip_text("Lock")
+        lock_btn.set_valign(Gtk.Align.CENTER)
         lock_btn.connect("clicked", self._on_lock_toggle, rec)
         box.append(lock_btn)
 
@@ -366,6 +369,7 @@ class TimeLapseView(Gtk.Box):
         del_btn = Gtk.Button()
         del_btn.set_icon_name("user-trash-symbolic")
         del_btn.set_tooltip_text("Delete")
+        del_btn.set_valign(Gtk.Align.CENTER)
         del_btn.connect("clicked", self._on_delete, rec)
         box.append(del_btn)
 

@@ -29,7 +29,7 @@ Recordings, Snapshots, and Events."""
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 import gi
@@ -41,6 +41,7 @@ from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
 from surveillance.services.recording import (
     PRESET_LAST7D,
     PRESET_LAST24H,
+    PRESET_LAST30D,
     PRESET_TODAY,
     PRESET_YESTERDAY,
     preset_range,
@@ -61,12 +62,21 @@ class AdvancedSearchDialog(Gtk.Window):
         parent: Gtk.Window,
         cameras: list[Camera],
         on_search: Callable[
-            [list[int] | None, datetime | None, datetime | None, list[str] | None, bool], None
+            [
+                list[int] | None,
+                datetime | None,
+                datetime | None,
+                list[str] | None,
+                bool,
+                str | None,
+            ],
+            None,
         ],
         on_reset: Callable[[], None],
         selected_ids: list[int] | None = None,
         from_time: datetime | None = None,
         to_time: datetime | None = None,
+        selected_preset: str | None = None,
         title: str = "Advanced Search",
         event_types: list[tuple[str, str]] | None = None,
         selected_event_type_ids: list[str] | None = None,
@@ -81,7 +91,9 @@ class AdvancedSearchDialog(Gtk.Window):
         self._cameras = cameras
         self._camera_checks: dict[int, Gtk.CheckButton] = {}
         self._event_type_checks: dict[str, Gtk.CheckButton] = {}
+        self._preset_buttons: dict[str, Gtk.ToggleButton] = {}
         self._time_range_set = from_time is not None or to_time is not None
+        self._selected_preset = selected_preset
         self._on_search = on_search
         self._on_reset = on_reset
 
@@ -107,28 +119,24 @@ class AdvancedSearchDialog(Gtk.Window):
         preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         preset_box.set_halign(Gtk.Align.START)
 
-        self.today_btn = Gtk.Button(label="Today")
-        self.today_btn.connect("clicked", self._on_preset_today)
-        preset_box.append(self.today_btn)
-
-        self.yesterday_btn = Gtk.Button(label="Yesterday")
-        self.yesterday_btn.connect("clicked", self._on_preset_yesterday)
-        preset_box.append(self.yesterday_btn)
-
-        self.last24h_btn = Gtk.Button(label="Last 24 h")
-        self.last24h_btn.connect("clicked", self._on_preset_last24h)
-        preset_box.append(self.last24h_btn)
-
+        preset_defs = [
+            (PRESET_TODAY, "Today"),
+            (PRESET_YESTERDAY, "Yesterday"),
+            (PRESET_LAST24H, "Last 24 hrs"),
+        ]
         # Hidden for Events (see show_extended_presets) to match its
-        # quick-filter toolbar, which only offers Today/Yesterday/Last 24h.
+        # quick-filter toolbar, which only offers Today/Yesterday/Last 24 hrs.
         if show_extended_presets:
-            self.week_btn = Gtk.Button(label="Last 7 days")
-            self.week_btn.connect("clicked", self._on_preset_week)
-            preset_box.append(self.week_btn)
-
-            self.month_btn = Gtk.Button(label="Last 30 days")
-            self.month_btn.connect("clicked", self._on_preset_month)
-            preset_box.append(self.month_btn)
+            preset_defs += [
+                (PRESET_LAST7D, "Last 7 days"),
+                (PRESET_LAST30D, "Last 30 days"),
+            ]
+        for key, label in preset_defs:
+            btn = Gtk.ToggleButton(label=label)
+            btn.set_active(key == self._selected_preset)
+            btn.connect("toggled", self._on_preset_toggled, key)
+            preset_box.append(btn)
+            self._preset_buttons[key] = btn
 
         time_box.append(preset_box)
 
@@ -146,6 +154,7 @@ class AdvancedSearchDialog(Gtk.Window):
         self.from_time_entry = Gtk.Entry()
         self.from_time_entry.set_placeholder_text("00:00:00")
         self.from_time_entry.set_max_length(8)
+        self.from_time_entry.connect("changed", self._on_time_field_edited)
         from_box.append(self.from_time_entry)
 
         range_box.append(from_box)
@@ -162,6 +171,7 @@ class AdvancedSearchDialog(Gtk.Window):
         self.to_time_entry = Gtk.Entry()
         self.to_time_entry.set_placeholder_text("23:59:59")
         self.to_time_entry.set_max_length(8)
+        self.to_time_entry.connect("changed", self._on_time_field_edited)
         to_box.append(self.to_time_entry)
 
         range_box.append(to_box)
@@ -347,38 +357,53 @@ class AdvancedSearchDialog(Gtk.Window):
         # than leave a control that does nothing.
         self.event_types_mode_combo.set_sensitive(selected_count >= 2)
 
-    def _apply_preset(self, preset: str) -> None:
-        """Apply a named time preset using the shared preset_range helper."""
+    def _sync_preset_buttons(self) -> None:
+        """Update toggle state of preset buttons to match the active preset."""
+        for key, btn in self._preset_buttons.items():
+            btn.handler_block_by_func(self._on_preset_toggled)
+            btn.set_active(key == self._selected_preset)
+            btn.handler_unblock_by_func(self._on_preset_toggled)
+
+    def _on_preset_toggled(self, btn: Gtk.ToggleButton, key: str) -> None:
+        if not btn.get_active():
+            # Deactivating — only clear if this was the active preset
+            if self._selected_preset == key:
+                self._selected_preset = None
+            return
+
         self._time_range_set = True
-        from_ts, to_ts = preset_range(preset)
+        self._selected_preset = key
+        from_ts, to_ts = preset_range(key)
         self._set_datetime(self.from_date, self.from_time_entry, datetime.fromtimestamp(from_ts))
         self._set_datetime(self.to_date, self.to_time_entry, datetime.fromtimestamp(to_ts))
+        self._sync_preset_buttons()
 
-    def _on_preset_today(self, btn: Gtk.Button) -> None:
-        self._apply_preset(PRESET_TODAY)
+    def _clear_preset_selection(self) -> None:
+        """Drop the active preset because the user edited a date/time field
+        directly — a real custom range takes precedence over a stale preset
+        label, same as picking a date does on the page toolbars."""
+        if self._selected_preset is None:
+            return
+        self._selected_preset = None
+        self._sync_preset_buttons()
 
-    def _on_preset_yesterday(self, btn: Gtk.Button) -> None:
-        self._apply_preset(PRESET_YESTERDAY)
-
-    def _on_preset_last24h(self, btn: Gtk.Button) -> None:
-        self._apply_preset(PRESET_LAST24H)
-
-    def _on_preset_week(self, btn: Gtk.Button) -> None:
-        self._apply_preset(PRESET_LAST7D)
-
-    def _on_preset_month(self, btn: Gtk.Button) -> None:
+    def _on_time_field_edited(self, entry: Gtk.Entry) -> None:
         self._time_range_set = True
-        now = datetime.now()
-        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-        self._set_datetime(self.from_date, self.from_time_entry, start)
-        self._set_datetime(self.to_date, self.to_time_entry, now)
+        self._clear_preset_selection()
 
     def _set_datetime(self, calendar: Gtk.Calendar, time_entry: Gtk.Entry, dt: datetime) -> None:
         gdt = GLib.DateTime.new_local(
             dt.year, dt.month, dt.day, dt.hour, dt.minute, float(dt.second)
         )
+        # Blocked so a preset's own programmatic update doesn't immediately
+        # clear the preset it just set, the same way _sync_preset_buttons
+        # blocks the toggle handler while it sets button state.
+        calendar.handler_block_by_func(self._on_day_selected)
         calendar.select_day(gdt)
+        calendar.handler_unblock_by_func(self._on_day_selected)
+        time_entry.handler_block_by_func(self._on_time_field_edited)
         time_entry.set_text(dt.strftime("%H:%M:%S"))
+        time_entry.handler_unblock_by_func(self._on_time_field_edited)
 
     def _get_datetime(
         self, calendar: Gtk.Calendar, time_entry: Gtk.Entry, default_time: str = "00:00:00"
@@ -432,6 +457,7 @@ class AdvancedSearchDialog(Gtk.Window):
         dates dropped both bounds and quietly searched everything.
         """
         self._time_range_set = True
+        self._clear_preset_selection()
 
     def _get_from_time(self) -> datetime | None:
         """Return the start of the time range, or None if not set."""
@@ -452,6 +478,7 @@ class AdvancedSearchDialog(Gtk.Window):
             self._get_to_time(),
             self._get_selected_event_type_ids(),
             self._get_event_types_match_all(),
+            self._selected_preset,
         )
         self.close()
 

@@ -51,6 +51,7 @@ PRESET_TODAY = "today"
 PRESET_YESTERDAY = "yesterday"
 PRESET_LAST24H = "last24h"
 PRESET_LAST7D = "last7d"
+PRESET_LAST30D = "last30d"
 
 # Recording.Download by recording id needs version 6 or later. Version 5
 # returns a 400 "Execution failed" with no file. The official client uses
@@ -64,12 +65,12 @@ def preset_range(preset: str) -> tuple[int, int]:
     """Return (from_time, to_time) unix timestamps for a named time preset."""
     now = datetime.now()
     if preset == PRESET_TODAY:
-        # Full day (00:00:00-23:59:59), not "now": "Today"/"Yesterday" name
-        # calendar days, so they're expected to cover the whole day
-        # regardless of when the query runs. "Last N" presets (Last 24h and
-        # Last 7 days below, Last 30 days in the Advanced Search dialog's
-        # _on_preset_month) are relative to now by name, so ending at "now"
-        # there is correct as-is.
+        # Full day (00:00:00-23:59:59), not "now": every day-named preset
+        # (Today, Yesterday, and the two "Last N days" below) names calendar
+        # days, so it's expected to cover them in full regardless of when
+        # the query runs — including the as-yet-unelapsed rest of today.
+        # DSM tolerates a to_time past the current moment (it can only ever
+        # have data up to now anyway), so this doesn't need special-casing.
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = now.replace(hour=23, minute=59, second=59, microsecond=0)
         return int(start.timestamp()), int(end.timestamp())
@@ -79,10 +80,17 @@ def preset_range(preset: str) -> tuple[int, int]:
         end = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
         return int(start.timestamp()), int(end.timestamp())
     if preset == PRESET_LAST24H:
+        # The one duration-named (not day-named) preset: a literal rolling
+        # 24h window ending at "now", not a calendar-day boundary.
         return int((now - timedelta(hours=24)).timestamp()), int(now.timestamp())
     if preset == PRESET_LAST7D:
         start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return int(start.timestamp()), int(now.timestamp())
+        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        return int(start.timestamp()), int(end.timestamp())
+    if preset == PRESET_LAST30D:
+        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        return int(start.timestamp()), int(end.timestamp())
     raise ValueError(f"unknown preset: {preset}")
 
 
