@@ -161,7 +161,7 @@ last_page = "live"             # last active page
 # search_camera_ids = [1, 3]
 # search_from_time = "2026-02-01T00:00:00"
 # search_to_time = "2026-02-19T23:59:59"
-# search_time_preset = "today"  # "today", "yesterday", "last24h", "last7d", or ""
+# search_time_preset = "today"  # "today", "yesterday", "last24h", "last7d", "last30d", or ""
 
 [camera_overrides]
 # Direct RTSP URLs keyed by camera ID.

@@ -123,10 +123,15 @@ class AppConfig:
     search_camera_ids: list[int] = field(default_factory=list)
     search_from_time: str = ""
     search_to_time: str = ""
-    search_time_preset: str = ""  # "today", "yesterday", "last24h", "last7d", or ""
+    # "today", "yesterday", "last24h", "last7d", "last30d", or "". Advanced
+    # Search offers one preset more than the quick filter bar, so "last30d"
+    # can only arrive from there.
+    search_time_preset: str = ""
     events_search_camera_ids: list[int] = field(default_factory=list)
     events_search_from_time: str = ""
     events_search_to_time: str = ""
+    # Events stops at "last24h": neither its quick filter nor its Advanced
+    # Search offers the longer ranges.
     events_search_time_preset: str = "today"
     # Filter keys (e.g. "08", "25:hikvision"), not raw event_map flag
     # values — see services.event_bits. A config saved before that switch
@@ -139,7 +144,7 @@ class AppConfig:
     snapshots_search_camera_ids: list[int] = field(default_factory=list)
     snapshots_search_from_time: str = ""
     snapshots_search_to_time: str = ""
-    snapshots_search_time_preset: str = ""
+    snapshots_search_time_preset: str = ""  # same values as search_time_preset
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
