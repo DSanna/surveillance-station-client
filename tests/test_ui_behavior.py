@@ -270,23 +270,30 @@ class TestPresetRange:
         diff_hours = (to_ts - from_ts) / 3600
         assert 23.9 <= diff_hours <= 24.1
 
-    def test_last7d_range_is_roughly_7_days(self) -> None:
+    def test_last7d_range_is_full_days(self) -> None:
+        self._assert_full_days_back("last7d", 7)
+
+    def test_last30d_range_is_full_days(self) -> None:
+        self._assert_full_days_back("last30d", 30)
+
+    def _assert_full_days_back(self, preset: str, days: int) -> None:
+        """Both ends land on a day boundary, N days apart on the calendar.
+
+        Asserted as wall-clock components and calendar dates rather than as
+        an elapsed-seconds width: preset_range does naive local arithmetic,
+        so a DST transition inside the window shifts the real elapsed time
+        by an hour while the boundaries themselves stay correct.
+        """
         from surveillance.services.recording import preset_range
 
-        from_ts, to_ts = preset_range("last7d")
-        diff_days = (to_ts - from_ts) / 86400
-        # from_ts is midnight 7 days ago; to_ts is 23:59:59 today - window is
-        # 7-8 days wide
-        assert 7.0 <= diff_days < 8.0
-
-    def test_last30d_range_is_roughly_30_days(self) -> None:
-        from surveillance.services.recording import preset_range
-
-        from_ts, to_ts = preset_range("last30d")
-        diff_days = (to_ts - from_ts) / 86400
-        # from_ts is midnight 30 days ago; to_ts is 23:59:59 today - window
-        # is 30-31 days wide
-        assert 30.0 <= diff_days < 31.0
+        from_ts, to_ts = preset_range(preset)
+        from_dt = datetime.fromtimestamp(from_ts)
+        to_dt = datetime.fromtimestamp(to_ts)
+        assert (from_dt.hour, from_dt.minute, from_dt.second) == (0, 0, 0)
+        assert (to_dt.hour, to_dt.minute, to_dt.second) == (23, 59, 59)
+        today = datetime.now().date()
+        assert to_dt.date() == today
+        assert from_dt.date() == today - timedelta(days=days)
 
     def test_unknown_preset_raises(self) -> None:
         from surveillance.services.recording import preset_range
