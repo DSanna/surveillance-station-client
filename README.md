@@ -450,8 +450,11 @@ surveillance
 ```
 
 This produces `Surveillance-<version>-<arch>.AppImage` in the project root.
-Requires `libmpv`, `libportaudio2`, `ffmpeg`, GTK4 development files, and
-`libfuse2` on the build machine.
+Requires `libmpv`, `libportaudio2`, `ffmpeg` and GTK4 development files on
+the build machine. Unless an `appimagetool` is already on `PATH`, the script
+downloads one from [AppImage/appimagetool](https://github.com/AppImage/appimagetool),
+which in turn fetches the statically linked AppImage runtime, so the build
+needs network access.
 
 After PyInstaller runs, `libpipewire-0.3.so.0`, `libasound.so.2` and
 `libjack.so.0` are moved out of `_internal/` into

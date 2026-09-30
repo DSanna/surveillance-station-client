@@ -48,7 +48,10 @@ fi
 if ! command -v appimagetool &> /dev/null; then
     echo "appimagetool not found. Downloading..."
     mkdir -p build
-    wget -q -O build/appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+    # Not the AppImageKit one: that embeds a runtime which dlopens the
+    # host's libfuse.so.2, so the AppImage would not start without it.
+    # This one fetches the statically linked type2-runtime at build time.
+    wget -q -O build/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
     chmod +x build/appimagetool
     APPIMAGETOOL="build/appimagetool"
 else
