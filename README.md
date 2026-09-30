@@ -115,7 +115,8 @@ chmod +x Surveillance-*-x86_64.AppImage
 ```
 
 Available for **x86_64** and **aarch64**. A new release with AppImages is built
-automatically every time the version is bumped.
+automatically every time the version is bumped. They are built on Debian 13
+and need glibc 2.39 or newer on the host (Ubuntu 24.04, Debian 13 or later).
 
 The AppImage carries its own Python, GTK and mpv, but uses the host's
 PipeWire, ALSA and JACK libraries wherever the host has them. Those load
