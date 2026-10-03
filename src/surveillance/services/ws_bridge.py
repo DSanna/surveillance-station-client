@@ -2160,8 +2160,9 @@ class WebSocketBridge:
         mute.
 
         A History bridge fills its gaps with silence instead (see
-        _fill_silence), which keeps this from ever firing there; it
-        remains the fallback for an AAC layout with no silent frame.
+        _fill_silence), so this only fires there once the fill itself
+        stops reaching the mux, or for an AAC layout with no silent
+        frame.
         """
         while True:
             await asyncio.sleep(_AUDIO_GAP_CHECK_INTERVAL)

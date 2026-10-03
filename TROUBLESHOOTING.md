@@ -134,6 +134,12 @@ Both conditions matter. A session the NAS drops silently delivers neither
 stream for up to ten seconds before reconnecting, and its audio is
 deliberately kept: nothing is being held up while both inputs are quiet.
 
+Recorded video in History mode is the exception. DSM sends no audio at
+some playback speeds or in reverse, so there the client fills the gap with
+silence instead of ending the audio stream, no warning is logged, and
+sound comes back by itself once playback returns to a speed DSM sends
+audio at.
+
 The other known cause is **an ffmpeg regression**, filed upstream as
 https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053. On ffmpeg 7.0 and
 higher, muxing live piped H.264/HEVC video with PCMU audio under
