@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import collections
 import contextlib
 import fcntl
 import logging
@@ -142,6 +143,15 @@ _KEEPALIVE_INTERVAL = 10.0  # seconds
 # genuinely stopped draining.
 _WRITE_TIMEOUT = 5.0  # seconds
 
+# How much video the muxed path may hold for its writer task, not
+# counting the NAL being written, before the read loop waits for room
+# (see _queue_video). Only has to cover what arrives while ffmpeg holds
+# video back for audio, a fraction of a second in practice. Kept small on
+# purpose: like the pipe behind it, this buffer is invisible to the
+# player's cache control, so whatever it holds is lag. Once it is full,
+# the read loop stops and the backlog stays on the socket instead.
+_VIDEO_QUEUE_LIMIT = 256 * 1024  # bytes
+
 # Floor for how close to wall clock any History target may land --
 # entering History mode, seeking, or resuming from pause, whichever is
 # asking (see _anchor_history_position, the single place this is
@@ -162,8 +172,8 @@ _HISTORY_TAIL_MARGIN = MIN_HISTORY_DELTA_SECONDS
 # How long a muxed camera may deliver no audio at all before its audio
 # stream is ended to stop it holding up the video (see _watch_audio_gap).
 # Must fire before the write timeout above does: the mux stops draining
-# video 0.7s into the gap, and _WRITE_TIMEOUT only starts once the 1MiB
-# video pipe has filled on top of that, so 3s plus a check interval
+# video 0.7s into the gap, and _WRITE_TIMEOUT only starts once the video
+# pipe and queue have filled on top of that, so 3s plus a check interval
 # leaves room even on a camera that fills the pipe quickly. Well beyond
 # any real inter-frame gap: audio arrives every 20-125ms.
 _AUDIO_GAP_TIMEOUT = 3.0  # seconds
@@ -211,6 +221,12 @@ _AAC_AUDIO_CODECS = frozenset({"MPEG4-GENERIC"})
 # /proc/sys/fs/pipe-max-size) gives the flush headroom to finish first.
 _PIPE_CAPACITY = 1024 * 1024
 
+# The muxed video input is the exception, pinned to Linux's default.
+# ffmpeg is reading it before the first write, and _queue_video absorbs
+# the bursts it would otherwise have to, so a bigger buffer here would
+# only be more lag hidden from the player's cache control.
+_MUXED_VIDEO_PIPE_CAPACITY = 64 * 1024
+
 
 # Linux-only (>= 2.6.35); CPython defines it only where the platform header
 # does. Looking it up on the fcntl module directly raises AttributeError on
@@ -218,13 +234,14 @@ _PIPE_CAPACITY = 1024 * 1024
 _F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", None)
 
 
-def _grow_pipe_buffer(fd: int) -> None:
-    """Resize the pipe this descriptor is an end of. Either end will do:
-    the buffer is a property of the pipe, not of the descriptor."""
+def _grow_pipe_buffer(fd: int, capacity: int | None = None) -> None:
+    """Resize the pipe this descriptor is an end of, to *capacity* or
+    _PIPE_CAPACITY. Either end will do: the buffer is a property of the
+    pipe, not of the descriptor."""
     if _F_SETPIPE_SZ is None:
         return  # BSD pipe buffers are not tunable from userland
     with contextlib.suppress(OSError):
-        fcntl.fcntl(fd, _F_SETPIPE_SZ, _PIPE_CAPACITY)
+        fcntl.fcntl(fd, _F_SETPIPE_SZ, _PIPE_CAPACITY if capacity is None else capacity)
 
 
 def _set_write_end_nonblocking(fd: int) -> None:
@@ -418,6 +435,13 @@ class WebSocketBridge:
         # Set while a video write is blocked, which freezes the stamp
         # above for as long as it lasts (see _write_pipe).
         self._video_write_in_flight = False
+        # Muxed path only: video NALs waiting for _run_video_writer, and
+        # what ended it if it failed (see _queue_video).
+        self._video_pending: collections.deque[bytes] = collections.deque()
+        self._video_pending_bytes = 0
+        self._video_cond = asyncio.Condition()
+        self._video_writer: asyncio.Task[None] | None = None
+        self._video_writer_error: Exception | None = None
         self._audio_active = False
         self._audio_codec: str = ""
         # libavformat's name for DSM's video codec, set from the
@@ -631,7 +655,8 @@ class WebSocketBridge:
             video_r, video_w = os.pipe()
             audio_r, audio_w = os.pipe()
             out_r, out_w = os.pipe()
-            for fd in (video_r, audio_r, out_r):
+            _grow_pipe_buffer(video_r, _MUXED_VIDEO_PIPE_CAPACITY)
+            for fd in (audio_r, out_r):
                 _grow_pipe_buffer(fd)
             _set_write_end_nonblocking(video_w)
             _set_write_end_nonblocking(audio_w)
@@ -662,6 +687,7 @@ class WebSocketBridge:
         self._audio_active = True
         self._last_audio_at = self._last_video_at = time.monotonic()
         self._audio_gap_watch = asyncio.create_task(self._watch_audio_gap())
+        self._video_writer = asyncio.create_task(self._run_video_writer())
 
     async def _spawn_ffmpeg(
         self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
@@ -978,9 +1004,14 @@ class WebSocketBridge:
         derives frame timing from real elapsed time between writes, and a
         whole buffer written with near-zero time between frames looks like
         a degenerate rate to its estimation and can stall it entirely.
+
+        Goes through the writer task like any later NAL (see
+        _queue_video), so a blocked write cannot hold up the audio flush
+        running alongside, or the live audio the read loop is waiting to
+        get back to.
         """
         for nal in self._aac.video_buffer:
-            await asyncio.to_thread(self._write_pipe, False, nal)
+            await self._queue_video(nal)
             await asyncio.sleep(0.04)
         self._aac.video_buffer.clear()
 
@@ -994,13 +1025,67 @@ class WebSocketBridge:
         self._aac.audio_buffer.clear()
 
     async def _handle_video_frame(self, nal: bytes) -> None:
-        """Route a video NAL to ffmpeg's input, or buffer it if still
-        waiting on AAC sample-rate detection (see _setup_pipes)."""
+        """Route a video NAL to its pipe, or buffer it if still waiting
+        on AAC sample-rate detection (see _setup_pipes). Queued for the
+        writer task when muxing (see _queue_video), written inline when
+        mpv reads the raw video directly, where no audio can be held up."""
         if self._aac.detecting:
             if self._aac.feed_video(nal):
                 await self._finish_aac_detection()
+        elif self._video_writer is not None:
+            await self._queue_video(nal)
         else:
             await asyncio.to_thread(self._write_pipe, False, nal)
+
+    async def _queue_video(self, nal: bytes) -> None:
+        """Hand a video NAL to the muxed path's writer task, waiting only
+        while _VIDEO_QUEUE_LIMIT is used up. The NAL being written does
+        not count, so one of any size can always queue behind it.
+
+        Written inline, a video NAL ffmpeg will not take holds up every
+        message behind it on the socket, audio included, and ffmpeg's
+        scheduler routinely holds video back until audio catches up. A
+        keyframe bigger than the pipe's free space then deadlocks the two
+        until the gap watchdog ends the audio. Queueing lets audio keep
+        arriving, while the limit keeps the backpressure that a reader
+        which really stopped draining has to exert on the socket.
+
+        Raises whatever ended the writer (a _PipeWriteStalled, or an
+        OSError from a muxer gone away), so the read loop gives up the
+        same way it would have on an inline write.
+        """
+        async with self._video_cond:
+            await self._video_cond.wait_for(
+                lambda: (
+                    self._video_writer_error is not None
+                    or self._video_pending_bytes < _VIDEO_QUEUE_LIMIT
+                )
+            )
+            if self._video_writer_error is not None:
+                raise self._video_writer_error
+            self._video_pending.append(nal)
+            self._video_pending_bytes += len(nal)
+            self._video_cond.notify_all()
+
+    async def _run_video_writer(self) -> None:
+        """Write queued video NALs to ffmpeg, one at a time and in order,
+        for the life of the mux (see _queue_video). Being the only video
+        writer is also what keeps a reconnect from interleaving two
+        frames into the pipe: the queue simply carries on across it."""
+        try:
+            while True:
+                async with self._video_cond:
+                    await self._video_cond.wait_for(lambda: bool(self._video_pending))
+                    nal = self._video_pending.popleft()
+                    self._video_pending_bytes -= len(nal)
+                    self._video_cond.notify_all()
+                await asyncio.to_thread(self._write_pipe, False, nal)
+        except Exception as exc:
+            async with self._video_cond:
+                self._video_writer_error = exc
+                self._video_pending.clear()
+                self._video_pending_bytes = 0
+                self._video_cond.notify_all()
 
     async def _dispatch_audio_frame(self, header_tail: bytes, payload: bytes) -> None:
         """Route a real audio payload to whichever handler matches the
@@ -2061,7 +2146,8 @@ class WebSocketBridge:
         # advancing for as long as it lasts. The gap watchdog has to read
         # that as video still arriving, or the very case it exists for
         # looks to it like a camera that went quiet altogether. One video
-        # write is in flight at a time: the read loop awaits each.
+        # write is in flight at a time: the read loop, or on the muxed path
+        # the video writer task, awaits each.
         if not audio:
             self._video_write_in_flight = True
         try:
@@ -2175,6 +2261,12 @@ class WebSocketBridge:
         if self._audio_gap_watch is not None:
             self._audio_gap_watch.cancel()
             self._audio_gap_watch = None
+
+        if self._video_writer is not None:
+            self._video_writer.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._video_writer
+            self._video_writer = None
 
         if self._history_tail_watch is not None:
             self._history_tail_watch.cancel()

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import os
 import sys
 import threading
@@ -411,6 +412,122 @@ class TestWriteStall:
         # about pipe writes at all.
         assert "video pipe write stalled" in reason, reason
         await bridge.stop()
+
+
+def _muxed_bridge_on_pipes() -> tuple[WebSocketBridge, int, int]:
+    """A bridge set up the way _start_muxed leaves it, on real pipes
+    nothing reads yet: returns it with the video and audio read ends.
+    A 200KiB NAL cannot fit the default 64KiB pipe, so writing one
+    blocks the way a keyframe does against an ffmpeg holding video
+    back."""
+    bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+    video_r, video_w = os.pipe()
+    audio_r, audio_w = os.pipe()
+    for fd in (video_w, audio_w):
+        ws_bridge._set_write_end_nonblocking(fd)
+    bridge._video_write_fd = video_w
+    bridge._audio_write_fd = audio_w
+    bridge._audio_codec = "PCMU"
+    bridge._video_writer = asyncio.create_task(bridge._run_video_writer())
+    return bridge, video_r, audio_r
+
+
+class TestVideoWriterQueue:
+    """On the muxed path a video write ffmpeg is not taking must not hold
+    up the audio behind it: ffmpeg's scheduler holds video back until
+    audio catches up, so that would deadlock the two."""
+
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_audio_is_delivered_while_a_video_write_is_blocked(
+        self, audio_codec: str
+    ) -> None:
+        bridge, video_r, audio_r = _muxed_bridge_on_pipes()
+        bridge._audio_codec = audio_codec
+        await bridge._handle_video_frame(b"\xaa" * (200 * 1024))
+        await _wait_until(lambda: bridge._video_write_in_flight)
+
+        # Through the same dispatch the read loop uses, so each codec's
+        # own write path is the one exercised.
+        await asyncio.wait_for(
+            bridge._dispatch_audio_frame(b"\x00" * 4, b"\x00\x00" + b"\x7f" * 160), timeout=1.0
+        )
+
+        os.set_blocking(audio_r, False)
+        assert b"\x7f" * 160 in os.read(audio_r, 1024)
+        assert bridge._video_write_in_flight, "the video write should still be blocked"
+        # Read ends first, so a write still blocked fails at once instead
+        # of keeping its worker thread for the whole write timeout.
+        os.close(video_r)
+        os.close(audio_r)
+        await bridge.stop()
+
+    async def test_a_stalled_video_write_still_ends_the_bridge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The queue must not swallow the stall: the read loop raising it
+        # is what makes the pump give up and the slot get rebuilt.
+        monkeypatch.setattr(ws_bridge, "_WRITE_TIMEOUT", 0.05)
+        bridge, video_r, audio_r = _muxed_bridge_on_pipes()
+        await bridge._handle_video_frame(b"\xaa" * (200 * 1024))
+        assert bridge._video_writer is not None
+        await asyncio.wait_for(asyncio.shield(bridge._video_writer), timeout=2.0)
+
+        with pytest.raises(ws_bridge._PipeWriteStalled):
+            await bridge._handle_video_frame(b"\xbb" * 10)
+        os.close(video_r)
+        os.close(audio_r)
+        await bridge.stop()
+
+    async def test_a_full_queue_holds_the_read_loop_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A reader that really stopped draining has to push back on the
+        # socket, or the queue grows for as long as the camera sends.
+        monkeypatch.setattr(ws_bridge, "_VIDEO_QUEUE_LIMIT", 1024)
+        bridge, video_r, audio_r = _muxed_bridge_on_pipes()
+        await bridge._handle_video_frame(b"\xaa" * (200 * 1024))
+        await _wait_until(lambda: bridge._video_write_in_flight)
+
+        # The NAL being written does not count against the limit, so one
+        # bigger than the limit still queues behind it...
+        await asyncio.wait_for(bridge._handle_video_frame(b"\xbb" * 2048), timeout=1.0)
+        # ...and only the next one waits for room.
+        third = asyncio.create_task(bridge._handle_video_frame(b"\xcc" * 10))
+        await asyncio.sleep(0.1)
+        assert not third.done(), "the third NAL should wait for room"
+
+        # Draining the pipe lets the writer move on, which makes room.
+        os.set_blocking(video_r, False)
+
+        def _drain() -> bool:
+            with contextlib.suppress(BlockingIOError):
+                os.read(video_r, 65536)
+            return third.done()
+
+        await _wait_until(_drain)
+        await third
+        os.close(video_r)
+        os.close(audio_r)
+        await bridge.stop()
+
+    @pytest.mark.skipif(
+        not hasattr(fcntl, "F_GETPIPE_SZ"), reason="pipe buffers are only tunable on Linux"
+    )
+    async def test_the_muxed_video_pipe_stays_small(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Whatever this pipe holds is lag the player's cache control
+        # cannot see, so it must not be grown with the other pipes.
+        async def _fake_exec(*args: Any, **kwargs: Any) -> Any:
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge._start_muxed("H264", "PCMU")
+
+        video = fcntl.fcntl(bridge._video_write_fd, fcntl.F_GETPIPE_SZ)
+        audio = fcntl.fcntl(bridge._audio_write_fd, fcntl.F_GETPIPE_SZ)
+        await bridge.stop()
+        assert video == ws_bridge._MUXED_VIDEO_PIPE_CAPACITY
+        assert audio == ws_bridge._PIPE_CAPACITY
 
 
 class TestMuxSetupCleanup:
