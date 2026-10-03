@@ -742,14 +742,18 @@ class WebSocketBridge:
             # FFmpeg/FFmpeg/issues/24053) where muxing two live piped
             # inputs under -use_wallclock_as_timestamps stalls our pipe
             # writes for seconds at a time, or starves the audio input
-            # outright on 8.1+. Both come from ffmpeg subtracting each
-            # input's start time independently, leaving the two on
-            # skewed clocks. -copyts keeps them on one shared wallclock
-            # origin instead. That leaves epoch-based timestamps in the
-            # muxed output, which is harmless since nothing downstream
-            # of this pipe reads absolute PTS. Do not add -start_at_zero
-            # alongside this -- it re-subtracts each input's own start
-            # time, undoing the shared origin.
+            # outright on 8.1+. Both involve the two inputs' start times
+            # being subtracted independently. The starvation is traced on
+            # the issue to the audio input's start time never being
+            # probed, so only video is moved to zero; the older stalls
+            # come with about half a second of skew between the two, their
+            # cause not settled. -copyts keeps both on one shared wallclock
+            # origin, and the issue's reproducer runs clean with it. That
+            # leaves epoch-based timestamps in the muxed output, which is
+            # harmless since nothing downstream of this pipe reads
+            # absolute PTS. Do not add -start_at_zero alongside this -- it
+            # re-subtracts each input's own start time, undoing the shared
+            # origin.
             "-copyts",
             "-probesize",
             "2000000",

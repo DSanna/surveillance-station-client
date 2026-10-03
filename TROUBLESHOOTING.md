@@ -139,10 +139,14 @@ https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053. On ffmpeg 7.0 and
 higher, muxing live piped H.264/HEVC video with PCMU audio under
 `-use_wallclock_as_timestamps` can stall ffmpeg's own pipe writes for
 several seconds at a time, and from 8.1 onwards can hold the audio input
-back indefinitely. ffmpeg 6.1.1 is unaffected. Both come from ffmpeg
-offsetting the two inputs' timestamps independently of each other, and the
-client now passes `-copyts` to keep them on one shared clock, which avoids
-both.
+back indefinitely. ffmpeg 6.1.1 is unaffected. Both involve ffmpeg
+offsetting the two inputs' timestamps independently of each other. The
+audio hold is traced on the issue to 8.1 no longer probing the audio
+input's start time at all; the older stalls come with about half a second
+of skew between the two inputs, but their cause is not settled. The
+client now passes `-copyts` to keep both inputs on one shared clock, and
+the reproducer attached to the issue runs clean with it on 7.1 and on
+ffmpeg's development branch. The issue is still open upstream.
 
 The app detects the stall and retries, but the retry rebuilds the same
 pipeline and meets the same cause, so this shows up as a slot that
