@@ -2065,11 +2065,11 @@ class WebSocketBridge:
 
         DSM sends audio from 1/2x to 2x forward, but none at 1/4x and
         below, at 4x or in reverse, and picks it up again on the same
-        connection the moment playback returns to 1x. Ending the stream (see _watch_audio_gap)
-        would lose it for the rest of the session. It also leaves the
-        player holding a track that never delivers, which reads as an
-        empty cache to its cache control and, at high speed, stops it
-        draining ffmpeg's output altogether.
+        connection the moment playback returns to 1x. Ending the stream
+        (see _watch_audio_gap) would lose it for the rest of the session.
+        It also leaves the player holding a track that never delivers,
+        which reads as an empty cache to its cache control and, at high
+        speed, stops it draining ffmpeg's output altogether.
 
         Only fills while video is arriving and playback is not paused:
         a paused History session gets nothing from DSM, and silence
