@@ -72,6 +72,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import subprocess
 import time
 from collections.abc import Sequence
@@ -292,6 +293,42 @@ _AAC_DETECTION_INTERVALS = 11
 # exits, so this only has to cover a loaded machine, not real work.
 _AAC_PROBE_TIMEOUT = 3.0  # seconds
 
+# A dynamically linked ffmpeg built with --enable-lib*-dlopen (common on
+# distros that split or omit optional codec libraries) prints noise like
+# this to stderr for ANY of its configured-but-missing libraries,
+# independent of whether the command being run ever touches that codec.
+# Seen live with libx265 absent during a plain AAC decode that never
+# calls it (startup codec registration touches it regardless):
+#
+#   libx265.so.215: cannot open shared object file: No such file or directory
+#   libx265.so.215 is missing, x265 support will be disabled
+#
+# And, when ffmpeg actually tries to instantiate a missing dlopen'd
+# codec rather than just registering it (seen live by explicitly
+# requesting the also-absent libfdk_aac decoder), the same two lines
+# gain a "[codec @ pointer]" context tag and can repeat, collapsed by
+# ffmpeg's own rate limiter:
+#
+#   [libfdk_aac @ 0x...] libfdk-aac.so.2: cannot open shared object file: ...
+#   libfdk-aac.so.2 is missing, libfdk-aac support will be disabled
+#       Last message repeated 2 times
+#
+# frames_look_valid's verdict below is deliberately "ffmpeg stayed
+# completely quiet" (see its own docstring and the module docstring's
+# note on why a real framing bug can decode without a peep), so every
+# one of these decode-irrelevant lines has to be stripped before that
+# check, or a camera on such a build loses its audio to a warning that
+# has nothing to do with it. Each line is matched on its own rather
+# than paired by library name: ffmpeg's build lists six of these
+# (libx264/libx265/libxvid/libfdk-aac/libopencore-amrnb/-amrwb), any
+# combination of which can be missing and surface together.
+_FFMPEG_DLOPEN_CODEC_NOISE_RE = re.compile(
+    r"(?m)^(?:\[[^\]\n]+\] )?\S+\.so(?:\.\d+)*: cannot open shared object file: "
+    r"No such file or directory\n?"
+    r"|^(?:\[[^\]\n]+\] )?\S+\.so(?:\.\d+)* is missing, \S+ support will be disabled\n?"
+    r"|^[ \t]*Last message repeated \d+ times?\n?"
+)
+
 
 class AacDetector:
     """Works out how to turn one camera's raw AAC into something
@@ -500,8 +537,10 @@ class AacDetector:
         # The verdict is "ffmpeg printed nothing", so the text it
         # printed is the whole of the reason a camera loses its audio.
         # Logging it is the only way to tell a real framing error from,
-        # say, a build that dislikes an argument.
-        complaint = stderr.decode(errors="replace").strip()
+        # say, a build that dislikes an argument -- or, stripped out
+        # before this, dlopen build boilerplate that doesn't bear on the
+        # decode at all (see _FFMPEG_DLOPEN_CODEC_NOISE_RE).
+        complaint = _FFMPEG_DLOPEN_CODEC_NOISE_RE.sub("", stderr.decode(errors="replace")).strip()
         log.debug(
             "WebSocket bridge for %s: %s framing %s",
             label,

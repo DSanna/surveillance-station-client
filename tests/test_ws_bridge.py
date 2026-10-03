@@ -1079,6 +1079,75 @@ class TestAudioMuxDecision:
         assert bridge._ffmpeg_proc is None
         await bridge.stop()
 
+    async def test_aac_validation_survives_missing_dlopen_codec_noise(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dynamically linked ffmpeg built with --enable-lib*-dlopen
+        prints noise like this for ANY of its configured-but-absent
+        optional codec libraries, independent of whether the command
+        touches that codec at all. Seen live in two different shapes:
+        a plain pair at startup registration (here, libx265, while
+        decoding AAC through a pipeline that never calls it), and a
+        "[codec @ pointer]"-tagged, rate-limit-collapsed pair when
+        ffmpeg actually tries to instantiate a missing one (here,
+        libfdk-aac). frames_look_valid must not read either shape as a
+        framing rejection, or every camera on such a build loses its
+        audio to warnings that have nothing to do with it."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(
+                    stderr=b"libx265.so.215: cannot open shared object file: "
+                    b"No such file or directory\n"
+                    b"libx265.so.215 is missing, x265 support will be disabled\n"
+                    b"[libfdk_aac @ 0x5567411929c0] libfdk-aac.so.2: cannot open "
+                    b"shared object file: No such file or directory\n"
+                    b"libfdk-aac.so.2 is missing, libfdk-aac support will be disabled\n"
+                    b"    Last message repeated 2 times\n"
+                )
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert bridge._ffmpeg_proc is not None
+        await bridge.stop()
+
+    async def test_aac_validation_still_rejects_a_real_error_amid_dlopen_codec_noise(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The noise-stripping in frames_look_valid must not get greedy
+        and swallow a genuine decode complaint just because it happens
+        to arrive alongside unrelated missing-codec noise."""
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _FakeValidationProc(
+                    stderr=b"libx265.so.215: cannot open shared object file: "
+                    b"No such file or directory\n"
+                    b"libx265.so.215 is missing, x265 support will be disabled\n"
+                    b"[aac] Reserved bit set.\n"
+                )
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is False
+        assert bridge._ffmpeg_proc is None
+        await bridge.stop()
+
     async def test_falls_back_to_video_only_when_the_prefix_is_undetectable(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
