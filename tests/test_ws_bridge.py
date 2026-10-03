@@ -1082,11 +1082,10 @@ class TestAudioMuxDecision:
     async def test_aac_validation_survives_missing_dlopen_codec_noise(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A dynamically linked ffmpeg built with --enable-lib*-dlopen
-        prints noise like this for ANY of its configured-but-absent
-        optional codec libraries, independent of whether the command
-        touches that codec at all. Seen live with libx265 missing, while
-        decoding AAC through a pipeline that never calls it.
+        """A distro ffmpeg that loads libx265 with dlopen prints this
+        pair on every run when the library is missing, because codec
+        registration asks libx265 for its pixel formats. Seen live
+        while decoding AAC through a pipeline that never calls it.
         frames_look_valid must not read it as a framing rejection, or
         every camera on such a build loses its audio to a warning that
         has nothing to do with it."""

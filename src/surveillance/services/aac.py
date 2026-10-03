@@ -293,12 +293,12 @@ _AAC_DETECTION_INTERVALS = 11
 # exits, so this only has to cover a loaded machine, not real work.
 _AAC_PROBE_TIMEOUT = 3.0  # seconds
 
-# A dynamically linked ffmpeg built with --enable-lib*-dlopen (common on
-# distros that split or omit optional codec libraries) prints noise like
-# this to stderr for ANY of its configured-but-missing libraries,
-# independent of whether the command being run ever touches that codec.
-# Seen live with libx265 absent during a plain AAC decode that never
-# calls it (startup codec registration touches it regardless):
+# Some distro builds of ffmpeg patch in --enable-lib*-dlopen options, so
+# optional codec libraries are loaded at run time instead of linked, and
+# log a fatal-level pair to stderr when one is not installed. Codec
+# registration, which every run goes through, asks libx265 for its pixel
+# formats (libx265_get_supported_config), so a missing libx265 prints
+# this even during a plain AAC decode that never uses it:
 #
 #   libx265.so.215: cannot open shared object file: No such file or directory
 #   libx265.so.215 is missing, x265 support will be disabled
@@ -315,10 +315,9 @@ _AAC_PROBE_TIMEOUT = 3.0  # seconds
 # note on why a real framing bug can decode without a peep), so every
 # one of these decode-irrelevant lines has to be stripped before that
 # check, or a camera on such a build loses its audio to a warning that
-# has nothing to do with it. Each line is matched on its own rather
-# than paired by library name: ffmpeg's build lists six of these
-# (libx264/libx265/libxvid/libfdk-aac/libopencore-amrnb/-amrwb), any
-# combination of which can be missing and surface together.
+# has nothing to do with it. The lines are matched on their own rather
+# than by library name, so the same pair from another library is
+# covered too.
 _FFMPEG_DLOPEN_CODEC_NOISE_RE = re.compile(
     r"(?m)^\S+\.so(?:\.\d+)*: cannot open shared object file: No such file or directory\n?"
     r"|^\S+\.so(?:\.\d+)* is missing, \S+ support will be disabled\n?"
