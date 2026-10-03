@@ -1085,14 +1085,11 @@ class TestAudioMuxDecision:
         """A dynamically linked ffmpeg built with --enable-lib*-dlopen
         prints noise like this for ANY of its configured-but-absent
         optional codec libraries, independent of whether the command
-        touches that codec at all. Seen live in two different shapes:
-        a plain pair at startup registration (here, libx265, while
-        decoding AAC through a pipeline that never calls it), and a
-        "[codec @ pointer]"-tagged, rate-limit-collapsed pair when
-        ffmpeg actually tries to instantiate a missing one (here,
-        libfdk-aac). frames_look_valid must not read either shape as a
-        framing rejection, or every camera on such a build loses its
-        audio to warnings that have nothing to do with it."""
+        touches that codec at all. Seen live with libx265 missing, while
+        decoding AAC through a pipeline that never calls it.
+        frames_look_valid must not read it as a framing rejection, or
+        every camera on such a build loses its audio to a warning that
+        has nothing to do with it."""
 
         async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
             if "null" in args:
@@ -1100,10 +1097,6 @@ class TestAudioMuxDecision:
                     stderr=b"libx265.so.215: cannot open shared object file: "
                     b"No such file or directory\n"
                     b"libx265.so.215 is missing, x265 support will be disabled\n"
-                    b"[libfdk_aac @ 0x5567411929c0] libfdk-aac.so.2: cannot open "
-                    b"shared object file: No such file or directory\n"
-                    b"libfdk-aac.so.2 is missing, libfdk-aac support will be disabled\n"
-                    b"    Last message repeated 2 times\n"
                 )
             return await _spawn_fake_mux_holder(**kwargs)
 

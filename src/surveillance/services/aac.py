@@ -303,15 +303,12 @@ _AAC_PROBE_TIMEOUT = 3.0  # seconds
 #   libx265.so.215: cannot open shared object file: No such file or directory
 #   libx265.so.215 is missing, x265 support will be disabled
 #
-# And, when ffmpeg actually tries to instantiate a missing dlopen'd
-# codec rather than just registering it (seen live by explicitly
-# requesting the also-absent libfdk_aac decoder), the same two lines
-# gain a "[codec @ pointer]" context tag and can repeat, collapsed by
-# ffmpeg's own rate limiter:
-#
-#   [libfdk_aac @ 0x...] libfdk-aac.so.2: cannot open shared object file: ...
-#   libfdk-aac.so.2 is missing, libfdk-aac support will be disabled
-#       Last message repeated 2 times
+# The same pair gains a "[codec @ 0x...]" tag when ffmpeg opens a
+# missing codec rather than just registering it, but the probe only
+# ever opens the native aac decoder and pcm encoder, so that form never
+# reaches it. Neither does ffmpeg's "Last message repeated" line, which
+# is only flushed when a different message follows, and anything that
+# follows here is a real complaint.
 #
 # frames_look_valid's verdict below is deliberately "ffmpeg stayed
 # completely quiet" (see its own docstring and the module docstring's
@@ -323,10 +320,8 @@ _AAC_PROBE_TIMEOUT = 3.0  # seconds
 # (libx264/libx265/libxvid/libfdk-aac/libopencore-amrnb/-amrwb), any
 # combination of which can be missing and surface together.
 _FFMPEG_DLOPEN_CODEC_NOISE_RE = re.compile(
-    r"(?m)^(?:\[[^\]\n]+\] )?\S+\.so(?:\.\d+)*: cannot open shared object file: "
-    r"No such file or directory\n?"
-    r"|^(?:\[[^\]\n]+\] )?\S+\.so(?:\.\d+)* is missing, \S+ support will be disabled\n?"
-    r"|^[ \t]*Last message repeated \d+ times?\n?"
+    r"(?m)^\S+\.so(?:\.\d+)*: cannot open shared object file: No such file or directory\n?"
+    r"|^\S+\.so(?:\.\d+)* is missing, \S+ support will be disabled\n?"
 )
 
 
