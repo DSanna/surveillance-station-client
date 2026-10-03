@@ -68,8 +68,8 @@ def rss_kb() -> int | None:
 
 
 def open_fds() -> int | None:
-    """Open descriptors. Each muxed camera holds three 1 MiB pipes, which
-    is kernel memory the Python heap never shows, so a climbing count here
+    """Open descriptors. Each muxed camera holds two 1 MiB pipes and a
+    64 KiB one, which is kernel memory the Python heap never shows, so a climbing count here
     accounts for growth nothing else would explain."""
     try:
         return len(os.listdir("/proc/self/fd"))

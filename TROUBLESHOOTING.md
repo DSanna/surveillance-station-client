@@ -90,12 +90,6 @@ vice versa) as a workaround.
 
 ## A camera with audio repeatedly stalls or loses its WebSocket stream
 
-The app checks the ffmpeg on its own `PATH` each time it connects and
-shows a notice (with a "Don't show this again" checkbox) if it's a version
-known to have this problem, since History mode reaches it regardless of a
-camera's own Live protocol. The rest of this section covers what to do
-about it.
-
 The symptom in the log is a slot giving up with a stalled pipe write:
 
 ```
@@ -140,17 +134,21 @@ Both conditions matter. A session the NAS drops silently delivers neither
 stream for up to ten seconds before reconnecting, and its audio is
 deliberately kept: nothing is being held up while both inputs are quiet.
 
-What remains, if a slot still gives up with a stalled pipe write, is **an
-ffmpeg regression**. On ffmpeg 7.0 and higher (all versions released at
-least until 2026-08-08), muxing live piped H.264/HEVC video with PCMU
-audio under `-use_wallclock_as_timestamps` can stall or fully deadlock
-ffmpeg's own pipe writes. ffmpeg 6.1.1 is unaffected. Filed upstream:
-https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053
+The other known cause is **an ffmpeg regression**, filed upstream as
+https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/24053. On ffmpeg 7.0 and
+higher, muxing live piped H.264/HEVC video with PCMU audio under
+`-use_wallclock_as_timestamps` can stall ffmpeg's own pipe writes for
+several seconds at a time, and from 8.1 onwards can hold the audio input
+back indefinitely. ffmpeg 6.1.1 is unaffected. Both come from ffmpeg
+offsetting the two inputs' timestamps independently of each other, and the
+client now passes `-copyts` to keep them on one shared clock, which avoids
+both.
 
 The app detects the stall and retries, but the retry rebuilds the same
 pipeline and meets the same cause, so this shows up as a slot that
 recovers and gives up again once per camera poll (30s by default) rather
-than a one-off recovery. Workarounds:
+than a one-off recovery. If you still see this on a muxed camera, please
+report it with a debug log. Workarounds in the meantime:
 
 - Point the app at a known-good ffmpeg build: put an ffmpeg 6.1.1 binary in
   its own directory and launch with `PATH=/path/to/ffmpeg-6.1.1:$PATH
