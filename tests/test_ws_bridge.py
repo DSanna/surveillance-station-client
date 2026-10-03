@@ -771,6 +771,145 @@ class TestAudioGapWatchdog:
         os.close(audio_w)
 
 
+def _filling_bridge(audio_codec: str = "PCMU") -> tuple[WebSocketBridge, int]:
+    """A History bridge on a real audio pipe, with real audio long
+    stale: returns it with the audio read end. Video is the caller's to
+    keep arriving or not."""
+    bridge = WebSocketBridge("wss://nas/stream", False, "sid", history_recording=_recording())
+    audio_r, audio_w = os.pipe()
+    ws_bridge._set_write_end_nonblocking(audio_w)
+    os.set_blocking(audio_r, False)
+    bridge._audio_write_fd = audio_w
+    bridge._audio_codec = audio_codec
+    bridge._last_real_audio_at = time.monotonic() - 10.0
+    return bridge, audio_r
+
+
+def _read_available(fd: int) -> bytes:
+    with contextlib.suppress(BlockingIOError):
+        return os.read(fd, 1 << 20)
+    return b""
+
+
+class TestSilenceFill:
+    """A History camera's audio gap is filled with silence rather than
+    the audio stream being ended: DSM sends none at some speeds and in
+    reverse, and resumes on the same connection back at 1x."""
+
+    @pytest.fixture(autouse=True)
+    def _fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ws_bridge, "_SILENCE_FILL_AFTER", 0.05)
+        monkeypatch.setattr(ws_bridge, "_SILENCE_FILL_INTERVAL", 0.01)
+
+    async def _run_fill(self, bridge: WebSocketBridge, video: bool, seconds: float = 0.3) -> None:
+        async def keep_video_arriving() -> None:
+            while True:
+                bridge._last_video_at = time.monotonic()
+                await asyncio.sleep(0.005)
+
+        feeder = asyncio.create_task(keep_video_arriving()) if video else None
+        fill = asyncio.create_task(bridge._fill_silence())
+        await asyncio.sleep(seconds)
+        for task in (fill, feeder):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def test_a_pcmu_gap_is_filled_with_mu_law_silence(self) -> None:
+        bridge, audio_r = _filling_bridge()
+        await self._run_fill(bridge, video=True)
+
+        written = _read_available(audio_r)
+        assert written, "nothing was filled"
+        assert set(written) == {0xFF}
+        # Paced at 8000 bytes a second, not dumped all at once.
+        assert len(written) < 8000
+        assert bridge._audio_write_fd >= 0, "the audio stream must stay open"
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    @pytest.mark.parametrize("channels", [1, 2])
+    async def test_an_aac_gap_is_filled_with_whole_silent_frames(self, channels: int) -> None:
+        bridge, audio_r = _filling_bridge("MPEG4-GENERIC")
+        bridge._aac.sample_rate = 16000
+        bridge._aac.channels = channels
+        await self._run_fill(bridge, video=True)
+
+        frame = ws_bridge._AAC_SILENT_FRAMES[channels]
+        unit = adts_header(len(frame), 16000, channels) + frame
+        written = _read_available(audio_r)
+        assert written, "nothing was filled"
+        assert written == unit * (len(written) // len(unit))
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    async def test_nothing_is_filled_while_real_audio_arrives(self) -> None:
+        bridge, audio_r = _filling_bridge()
+
+        async def keep_audio_arriving() -> None:
+            while True:
+                bridge._last_real_audio_at = time.monotonic()
+                await asyncio.sleep(0.005)
+
+        audio = asyncio.create_task(keep_audio_arriving())
+        await self._run_fill(bridge, video=True)
+        audio.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await audio
+
+        assert _read_available(audio_r) == b""
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    async def test_nothing_is_filled_without_video(self) -> None:
+        # A paused or silently dropped session sends neither stream, and
+        # silence written then only backs up behind a player not reading.
+        bridge, audio_r = _filling_bridge()
+        bridge._last_video_at = time.monotonic() - 10.0
+        await self._run_fill(bridge, video=False)
+
+        assert _read_available(audio_r) == b""
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    async def test_nothing_is_filled_while_paused(self) -> None:
+        bridge, audio_r = _filling_bridge()
+        bridge._paused = True
+        await self._run_fill(bridge, video=True)
+
+        assert _read_available(audio_r) == b""
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    async def test_an_aac_layout_without_a_silent_frame_is_left_alone(self) -> None:
+        bridge, audio_r = _filling_bridge("MPEG4-GENERIC")
+        bridge._aac.channels = 6
+        await self._run_fill(bridge, video=True)
+
+        assert _read_available(audio_r) == b""
+        os.close(audio_r)
+        os.close(bridge._audio_write_fd)
+
+    @pytest.mark.parametrize("history", [True, False])
+    async def test_only_a_history_mux_fills(
+        self, monkeypatch: pytest.MonkeyPatch, history: bool
+    ) -> None:
+        async def _fake_exec(*args: Any, **kwargs: Any) -> Any:
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=_recording() if history else None
+        )
+        await bridge._start_muxed("H264", "PCMU")
+
+        filling = bridge._silence_fill is not None
+        await bridge.stop()
+        assert filling is history
+        assert bridge._silence_fill is None, "stop() must not leave the task running"
+
+
 class TestFfmpegExitReporting:
     """A muxer that exits reports itself only while it is the news."""
 

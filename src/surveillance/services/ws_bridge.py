@@ -179,6 +179,21 @@ _HISTORY_TAIL_MARGIN = MIN_HISTORY_DELTA_SECONDS
 _AUDIO_GAP_TIMEOUT = 3.0  # seconds
 _AUDIO_GAP_CHECK_INTERVAL = 0.5  # seconds
 
+# How long a History camera may deliver no audio, while its video keeps
+# arriving, before the bridge fills the gap with silence (see
+# _fill_silence). DSM sends no audio at all at some speeds and in
+# reverse, and the mux holds video from 0.7s into an audio gap, so this
+# has to land before that.
+_SILENCE_FILL_AFTER = 0.5  # seconds
+_SILENCE_FILL_INTERVAL = 0.1  # seconds
+
+# One silent unit of each muxed audio format: a mu-law sample at 8kHz,
+# or a 1024-sample AAC-LC frame per channel layout. The AAC frames are
+# what ffmpeg's own encoder produces for digital silence, the same at
+# every sample rate; the ADTS header around them carries the rate.
+_PCMU_SILENCE = b"\xff"
+_AAC_SILENT_FRAMES = {1: bytes.fromhex("01182007"), 2: bytes.fromhex("211004608c1c")}
+
 # How long to let ffmpeg live before believing it started. An ffmpeg that
 # doesn't like its arguments prints its complaint and exits in tens of
 # milliseconds, so this only has to outlast that, not cover a slow start.
@@ -452,6 +467,12 @@ class WebSocketBridge:
         # Raised once _watch_audio_gap has ended the audio stream, so the
         # player can be told the track is gone (see wait_audio_ended).
         self._audio_ended_event = asyncio.Event()
+        # History only: when real audio, as opposed to fill, last reached
+        # the pipe (see _fill_silence). The lock keeps a fill write and a
+        # real one from interleaving inside the same AAC frame.
+        self._last_real_audio_at = 0.0
+        self._audio_write_lock = asyncio.Lock()
+        self._silence_fill: asyncio.Task[None] | None = None
         # ffmpeg's Matroska muxer needs a correct, stable rate from its
         # very first probe to write valid output -- a wrong initial guess
         # that self-corrects a few frames in still poisons the muxer's
@@ -688,6 +709,9 @@ class WebSocketBridge:
         self._last_audio_at = self._last_video_at = time.monotonic()
         self._audio_gap_watch = asyncio.create_task(self._watch_audio_gap())
         self._video_writer = asyncio.create_task(self._run_video_writer())
+        if self.is_history:
+            self._last_real_audio_at = self._last_audio_at
+            self._silence_fill = asyncio.create_task(self._fill_silence())
 
     async def _spawn_ffmpeg(
         self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
@@ -871,7 +895,14 @@ class WebSocketBridge:
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
-        await asyncio.to_thread(self._write_pipe, True, payload)
+        await self._write_real_audio(payload)
+
+    async def _write_real_audio(self, data: bytes) -> None:
+        """Write camera audio, as opposed to fill, to ffmpeg's audio
+        input, stamping it for _fill_silence."""
+        async with self._audio_write_lock:
+            self._last_real_audio_at = time.monotonic()
+            await asyncio.to_thread(self._write_pipe, True, data)
 
     async def _handle_aac_audio_frame(self, header_tail: bytes, payload: bytes) -> None:
         """Write a real AAC frame to ffmpeg's audio input, after
@@ -886,7 +917,7 @@ class WebSocketBridge:
         """
         frame = self._aac.reconstruct_frame(header_tail, payload)
         header = adts_header(len(frame), self._aac.sample_rate, self._aac.channels)
-        await asyncio.to_thread(self._write_pipe, True, header + frame)
+        await self._write_real_audio(header + frame)
 
     async def _fall_back_to_video_only(self) -> None:
         """Give up on muxing this camera's AAC in and use the original
@@ -2013,6 +2044,89 @@ class WebSocketBridge:
                 )
                 self._history_recording = fresh
 
+    def _silence_unit(self) -> tuple[bytes, float] | None:
+        """One silent unit of this mux's audio input and how long it
+        plays, or None if this format has none (see _AAC_SILENT_FRAMES)."""
+        if self._audio_codec in _AAC_AUDIO_CODECS:
+            frame = _AAC_SILENT_FRAMES.get(self._aac.channels)
+            if frame is None:
+                return None
+            header = adts_header(len(frame), self._aac.sample_rate, self._aac.channels)
+            return header + frame, 1024 / self._aac.sample_rate
+        return _PCMU_SILENCE, 1 / 8000
+
+    async def _fill_silence(self) -> None:
+        """Feed the mux silence while a History camera sends video but no
+        audio, so its audio stream never has to be ended.
+
+        DSM sends audio from 1/2x to 2x forward, but none at 1/4x and
+        below, at 4x or in reverse, and picks it up again on the same
+        connection the moment playback returns to 1x. Ending the stream (see _watch_audio_gap)
+        would lose it for the rest of the session. It also leaves the
+        player holding a track that never delivers, which reads as an
+        empty cache to its cache control and, at high speed, stops it
+        draining ffmpeg's output altogether.
+
+        Only fills while video is arriving and playback is not paused:
+        a paused History session gets nothing from DSM, and silence
+        written into it would only back up behind a player that is not
+        reading. Real audio takes over again as soon as it arrives.
+        """
+        unit = self._silence_unit()
+        if unit is None:
+            log.debug(
+                "WebSocket bridge for %s: no silent frame for %d-channel AAC, "
+                "audio gaps will not be filled",
+                self._label,
+                self._aac.channels,
+            )
+            return
+        silence, unit_seconds = unit
+        owed = 0.0
+        last_tick: float | None = None
+        filling_since = 0.0
+        try:
+            while True:
+                await asyncio.sleep(_SILENCE_FILL_INTERVAL)
+                if self._audio_write_fd < 0:
+                    return
+                now = time.monotonic()
+                video_arriving = (
+                    self._video_write_in_flight or now - self._last_video_at < _AUDIO_GAP_TIMEOUT
+                )
+                gap = now - self._last_real_audio_at
+                if self._paused or not video_arriving or gap < _SILENCE_FILL_AFTER:
+                    if last_tick is not None:
+                        log.debug(
+                            "WebSocket bridge for %s: filled %.1fs of silence",
+                            self._label,
+                            now - filling_since,
+                        )
+                    owed, last_tick = 0.0, None
+                    continue
+                if last_tick is None:
+                    log.debug(
+                        "WebSocket bridge for %s: no audio for %.1fs, filling with silence",
+                        self._label,
+                        gap,
+                    )
+                    filling_since = now
+                    last_tick = now - _SILENCE_FILL_INTERVAL
+                # Paced by the clock rather than by tick count, so a late
+                # tick writes what it owes instead of falling behind.
+                owed += min(now - last_tick, _SILENCE_FILL_AFTER)
+                last_tick = now
+                units = int(owed / unit_seconds)
+                if not units:
+                    continue
+                owed -= units * unit_seconds
+                async with self._audio_write_lock:
+                    await asyncio.to_thread(self._write_pipe, True, silence * units)
+        except (OSError, _PipeWriteStalled) as exc:
+            # A mux that stopped taking audio is the read loop's to
+            # report, through its own writes; this only stops filling.
+            log.debug("WebSocket bridge for %s: stopped filling silence: %s", self._label, exc)
+
     async def _watch_audio_gap(self) -> None:
         """End the audio stream if the camera stops delivering audio.
 
@@ -2040,6 +2154,10 @@ class WebSocketBridge:
         _IDLE_TIMEOUT before reconnecting and neither stream arrives
         meanwhile, and a camera that recovers perfectly would come back
         mute.
+
+        A History bridge fills its gaps with silence instead (see
+        _fill_silence), which keeps this from ever firing there; it
+        remains the fallback for an AAC layout with no silent frame.
         """
         while True:
             await asyncio.sleep(_AUDIO_GAP_CHECK_INTERVAL)
@@ -2267,6 +2385,12 @@ class WebSocketBridge:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._video_writer
             self._video_writer = None
+
+        if self._silence_fill is not None:
+            self._silence_fill.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._silence_fill
+            self._silence_fill = None
 
         if self._history_tail_watch is not None:
             self._history_tail_watch.cancel()
