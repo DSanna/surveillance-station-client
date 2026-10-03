@@ -33,6 +33,7 @@ import ctypes.util
 import logging
 import math
 import os
+import re
 import shlex
 from collections.abc import Callable
 from typing import Any
@@ -254,6 +255,37 @@ def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
     return 0
 
 
+# libmpv 0.40 and 0.41 create a GL fence for every rendered frame but only
+# delete them in a swap_buffers step the render API never runs, so every
+# frame leaks one (mpv commit f74adc4 fixes it upstream, unreleased as of
+# 0.41). Some drivers hold several KB per fence, so a full grid leaks
+# gigabytes an hour. Handing those versions a glFenceSync that returns no
+# fence stops the leak: mpv checks for a null fence before keeping one, and
+# its only other user, the PBO upload path (off by default), treats a null
+# fence as already signaled.
+_NO_FENCE_SYNC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint)(
+    lambda _condition, _flags: None
+)
+_NO_FENCE_SYNC_ADDR = ctypes.cast(_NO_FENCE_SYNC, ctypes.c_void_p).value
+
+
+def _get_gl_proc_address_no_fences(_ctx: ctypes.c_void_p, name: bytes) -> int:
+    """_get_gl_proc_address, except glFenceSync resolves to a stub that
+    never creates a fence (see _NO_FENCE_SYNC)."""
+    if name == b"glFenceSync":
+        return _NO_FENCE_SYNC_ADDR  # type: ignore[return-value]
+    return _get_gl_proc_address(_ctx, name)
+
+
+def _mpv_leaks_vsync_fences(version: str) -> bool:
+    """Whether this mpv-version string ("mpv 0.41.0", "mpv v0.41.0-12-g...")
+    is one of the releases with the per-frame fence leak."""
+    match = re.search(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return False
+    return (0, 40) <= (int(match.group(1)), int(match.group(2))) < (0, 42)
+
+
 def _mpv_options_from_env() -> tuple[list[str], dict[str, str]]:
     """Flags and options named in SURVEILLANCE_MPV_OPTS, for mpv.MPV().
 
@@ -394,8 +426,14 @@ class MpvGLArea(Gtk.GLArea):
             options.update(extra_opts)
             self._mpv = mpv.MPV(*extra_flags, log_handler=self._mpv_log, **options)
 
+            version = str(getattr(self._mpv, "mpv_version", ""))
+            if _mpv_leaks_vsync_fences(version):
+                log.debug("%s leaks GL fences, rendering without them", version)
+                resolver = _get_gl_proc_address_no_fences
+            else:
+                resolver = _get_gl_proc_address
             # Wrap with mpv's own CFUNCTYPE so ctypes type identity matches
-            self._proc_addr_fn = mpv.MpvGlGetProcAddressFn(_get_gl_proc_address)
+            self._proc_addr_fn = mpv.MpvGlGetProcAddressFn(resolver)
 
             # Set up OpenGL render context
             self._ctx = mpv.MpvRenderContext(
