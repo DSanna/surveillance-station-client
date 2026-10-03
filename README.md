@@ -239,7 +239,6 @@ theme = "auto"                  # "auto" (follow OS), "dark", or "light"
 sidebar_visible = true          # camera sidebar shown at startup
 timeline_visible = true         # Live View timeline strip shown at startup
 dismissed_update_version = ""   # release tag whose update notice was dismissed
-ffmpeg_warning_dismissed = false  # "Don't show this again" on the ffmpeg compatibility notice
 poll_interval_cameras = 30      # seconds, minimum 5; also how often a lost stream is retried
 poll_interval_alerts = 30
 poll_interval_homemode = 60
@@ -578,7 +577,6 @@ surveillance-station-client/
 │   │   ├── homemode.py                  home mode toggle
 │   │   ├── license.py                   license management
 │   │   ├── timelapse.py                 time lapse management
-│   │   ├── ffmpeg_check.py              muxing-compatibility check on the ffmpeg found on PATH
 │   │   └── update_check.py              GitHub release version check
 │   ├── ui/
 │   │   ├── window.py                    main window
@@ -616,7 +614,6 @@ surveillance-station-client/
     ├── test_config.py
     ├── test_date_time_picker.py
     ├── test_event_bits.py
-    ├── test_ffmpeg_check.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py
     ├── test_logging.py

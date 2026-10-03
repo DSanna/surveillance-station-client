@@ -688,6 +688,19 @@ class WebSocketBridge:
             "-loglevel",
             "warning",
             "-nostdin",
+            # Works around an ffmpeg regression (7.0+, code.ffmpeg.org/
+            # FFmpeg/FFmpeg/issues/24053) where muxing two live piped
+            # inputs under -use_wallclock_as_timestamps stalls our pipe
+            # writes for seconds at a time, or starves the audio input
+            # outright on 8.1+. Both come from ffmpeg subtracting each
+            # input's start time independently, leaving the two on
+            # skewed clocks. -copyts keeps them on one shared wallclock
+            # origin instead. That leaves epoch-based timestamps in the
+            # muxed output, which is harmless since nothing downstream
+            # of this pipe reads absolute PTS. Do not add -start_at_zero
+            # alongside this -- it re-subtracts each input's own start
+            # time, undoing the shared origin.
+            "-copyts",
             "-probesize",
             "2000000",
             "-analyzeduration",

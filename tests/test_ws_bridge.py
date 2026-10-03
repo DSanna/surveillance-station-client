@@ -1495,6 +1495,19 @@ class TestFfmpegTimestampArgs:
         assert args[args.index("-c:a") + 1] == "pcm_s16le"
         assert args[args.index("-af") + 1].startswith("aresample=async=")
 
+    @pytest.mark.parametrize("audio_codec", ["PCMU", "MPEG4-GENERIC"])
+    async def test_copyts_keeps_both_inputs_on_one_shared_clock(
+        self, monkeypatch: pytest.MonkeyPatch, audio_codec: str
+    ) -> None:
+        """Works around an ffmpeg regression (code.ffmpeg.org/FFmpeg/
+        FFmpeg/issues/24053): without -copyts, ffmpeg independently
+        subtracts each input's own start time, and the skew between the
+        two results is what triggers intermittent multi-second pipe-write
+        stalls. -copyts must be global (before either -i), not per-input."""
+        args = await _capture_spawn_args(monkeypatch, audio_codec)
+        assert "-copyts" in args
+        assert args.index("-copyts") < args.index("-i")
+
 
 class TestPipeLifetime:
     async def test_descriptors_are_recycled(self, connect: Any) -> None:
