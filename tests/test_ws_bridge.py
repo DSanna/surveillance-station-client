@@ -2428,6 +2428,38 @@ class TestPauseResume:
         await _wait_until(lambda: len(fresh_connections) > 1)
         await bridge.stop()
 
+    async def test_a_wait_spanning_a_whole_pause_is_not_a_stall(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wait that began before a pause and timed out just after the
+        resume used to count the whole wait, paused part included, and
+        reconnect before DSM had time to send anything."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.5)
+        rec = _recording()
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=rec.start_time
+        )
+        frames: asyncio.Queue[bytes] = asyncio.Queue()
+        socket = SimpleNamespace(recv=frames.get)
+
+        async def pause_then_resume() -> None:
+            await asyncio.sleep(0.05)
+            bridge.request_pause()
+            await asyncio.sleep(0.4)
+            bridge._paused = False  # resume(), without the message it sends
+            await asyncio.sleep(0.15)  # past the first wait's timeout
+            frames.put_nowait(b"\x00\x00\x00\x00")
+
+        driver = asyncio.create_task(pause_then_resume())
+        reader = asyncio.create_task(bridge._read_messages(socket))
+        await asyncio.sleep(0.7)
+        assert not reader.done(), "a stall was raised across the pause"
+        assert frames.empty(), "the frame after the resume was read"
+        for task in (driver, reader):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     async def test_pause_landing_on_a_pending_recv_does_not_reconnect(
         self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
     ) -> None:

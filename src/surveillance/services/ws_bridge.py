@@ -430,6 +430,10 @@ class WebSocketBridge:
         # so it means "don't write frames to the pipe" for one and "DSM
         # was asked to stop sending" for the other.
         self._paused = False
+        # Bumped on every pause, so a receive wait can tell it spanned
+        # one that had already ended by the time it timed out (see
+        # _read_messages).
+        self._pause_count = 0
         # The position _current_history_target() freezes at while
         # self._paused, instead of continuing to advance -- None
         # whenever not paused. Set by pause(), cleared by resume().
@@ -1221,6 +1225,7 @@ class WebSocketBridge:
             # and a connection that went silent meanwhile would never be
             # noticed. A wait that spans a pause just starts over below.
             paused_at_start = self._paused and self.is_history
+            pauses_at_start = self._pause_count
             timeout = _IDLE_TIMEOUT
             if self._aac.detecting:
                 # Waiting the full idle timeout on a camera whose detection
@@ -1237,7 +1242,8 @@ class WebSocketBridge:
                     # video rather than another reconnect it can't use.
                     await self._expire_aac_detection()
                     continue
-                if paused_at_start or (self._paused and self.is_history):
+                paused_since = self._pause_count != pauses_at_start and self.is_history
+                if paused_at_start or paused_since or (self._paused and self.is_history):
                     # Paused for some of the wait: the silence is what
                     # pause() asked DSM for. Starting over gives a resumed
                     # session a full idle timeout before it counts as a
@@ -1483,6 +1489,7 @@ class WebSocketBridge:
         A plain bool write -- idempotent, and safe to call from any
         thread.
         """
+        self._pause_count += 1
         self._paused = True
 
     async def pause(self) -> int | None:
