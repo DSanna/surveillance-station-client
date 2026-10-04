@@ -834,7 +834,12 @@ class WebSocketBridge:
         # already exited counts.
         await asyncio.sleep(_FFMPEG_START_GRACE)
         if self._ffmpeg_proc.returncode is not None:
-            raise OSError(f"ffmpeg exited at once with code {self._ffmpeg_proc.returncode}")
+            code = self._ffmpeg_proc.returncode
+            # Dropped, not kept: the camera falls back to a raw pipe mpv
+            # reads, and _stall_detail would describe that pipe as
+            # ffmpeg's output.
+            self._ffmpeg_proc = None
+            raise OSError(f"ffmpeg exited at once with code {code}")
         self._ffmpeg_watch = asyncio.create_task(self._watch_ffmpeg(self._ffmpeg_proc))
         if self._ffmpeg_proc.stderr is not None:
             self._ffmpeg_stderr = asyncio.create_task(

@@ -1195,6 +1195,10 @@ class TestAudioMuxDecision:
         await bridge.start()
         assert bridge.audio_active is False
         assert bridge._read_fd >= 0, "the raw-video pipe must still be there to play"
+        # Kept, it made a stall on the raw pipe report that pipe's
+        # backlog as ffmpeg's output.
+        assert bridge._ffmpeg_proc is None
+        assert bridge._stall_detail() == ""
         await bridge.stop()
 
     async def test_ffmpeg_dying_mid_session_ends_the_bridge_with_a_reason(
