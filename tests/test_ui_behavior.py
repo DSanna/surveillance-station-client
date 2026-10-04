@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -980,3 +981,50 @@ class TestSidebarLoggedOut:
 
         assert sidebar._list_header.visible is True  # type: ignore[attr-defined]
         assert all(b.visible for b in sidebar._nav_buttons.values())  # type: ignore[attr-defined]
+
+
+class TestPlayerSeekHold:
+    """The player's slider stops following playback while the user moves
+    it, and only then. The click gesture that did this never saw a
+    release, since GtkRange claims every press, so one click froze the
+    slider and the time label for the rest of the session."""
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.values: list[object] = []
+
+        def set_value(self, value: object) -> None:
+            self.values.append(value)
+
+        def set_text(self, value: object) -> None:
+            self.values.append(value)
+
+    def _dialog(self) -> SimpleNamespace:
+        player = SimpleNamespace(time_pos=30.0, duration=120.0, seek_absolute=lambda pos: None)
+        return SimpleNamespace(
+            player=player,
+            position_scale=self._Recorder(),
+            time_label=self._Recorder(),
+            _status_label=self._Recorder(),
+            _loading=False,
+            _seek_hold_until=0.0,
+        )
+
+    def test_updates_hold_off_after_a_seek_then_resume(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.ui import player
+        from surveillance.ui.player import PlayerDialog
+
+        clock = [1000.0]
+        monkeypatch.setattr(player.time, "monotonic", lambda: clock[0])
+        dialog = self._dialog()
+
+        PlayerDialog._on_seek(dialog, None, None, 50.0)  # type: ignore[arg-type]
+        PlayerDialog._update_position(dialog)  # type: ignore[arg-type]
+        assert dialog.position_scale.values == []
+
+        clock[0] += player._SEEK_HOLD_SECONDS + 0.1
+        PlayerDialog._update_position(dialog)  # type: ignore[arg-type]
+        assert dialog.position_scale.values == [25.0]
+        assert dialog.time_label.values == ["00:30 / 02:00"]

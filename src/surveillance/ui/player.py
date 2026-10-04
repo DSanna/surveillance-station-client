@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _PLAYBACK_START_TIMEOUT_MS = 7000
+
+# How long position updates stay off after the user moves the slider,
+# so a seek mpv has not finished yet does not snap it back.
+_SEEK_HOLD_SECONDS = 1.0
 
 
 class PlayerDialog(Gtk.Window):
@@ -127,13 +132,13 @@ class PlayerDialog(Gtk.Window):
         self.position_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self.position_scale.set_hexpand(True)
         self.position_scale.set_draw_value(False)
-        self._seeking = False
+        # Position updates hold off this long after the user moves the
+        # slider (see _on_seek). A click gesture on the scale cannot do
+        # it: GtkRange claims every press, which denies any other gesture
+        # on the widget, and a denied one never sees the release, so it
+        # froze the slider and the time label for good after one click.
+        self._seek_hold_until = 0.0
         self.position_scale.connect("change-value", self._on_seek)
-        click = Gtk.GestureClick()
-        click.connect("pressed", lambda *_: setattr(self, "_seeking", True))
-        click.connect("released", lambda *_: setattr(self, "_seeking", False))
-        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        self.position_scale.add_controller(click)
         controls.append(self.position_scale)
 
         # Time label
@@ -202,6 +207,9 @@ class PlayerDialog(Gtk.Window):
             btn.set_icon_name("media-playback-start-symbolic")
 
     def _on_seek(self, scale: Gtk.Scale, scroll_type: Gtk.ScrollType, value: float) -> bool:
+        # Emitted for every step of a drag, so this holds for its whole
+        # length and then briefly while mpv completes the last seek.
+        self._seek_hold_until = time.monotonic() + _SEEK_HOLD_SECONDS
         duration = self.player.duration
         if duration:
             pos = value / 100.0 * duration
@@ -213,7 +221,7 @@ class PlayerDialog(Gtk.Window):
 
     def _update_position(self) -> bool:
         """Update position slider and time label."""
-        if self._seeking:
+        if time.monotonic() < self._seek_hold_until:
             return True
 
         pos = self.player.time_pos
