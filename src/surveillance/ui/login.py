@@ -185,6 +185,11 @@ class LoginDialog(Gtk.Window):
                 self.port_entry.set_text(str(profile.port))
                 self.https_check.set_active(profile.https)
                 self.verify_ssl_check.set_active(profile.verify_ssl)
+                # Whatever the form holds belongs to the profile shown
+                # before, so another NAS. A profile with nothing stored
+                # must not send it to this one.
+                self.user_entry.set_text("")
+                self.pass_entry.set_text("")
                 # Try to load saved credentials. Off the main thread: a
                 # locked keyring blocks until the user answers the unlock
                 # prompt, which would freeze the dialog meanwhile.
