@@ -1028,3 +1028,35 @@ class TestPlayerSeekHold:
         PlayerDialog._update_position(dialog)  # type: ignore[arg-type]
         assert dialog.position_scale.values == [25.0]
         assert dialog.time_label.values == ["00:30 / 02:00"]
+
+
+class TestLogoutShowsLoginOnce:
+    """The login dialog comes up at once on logout, and only once. Shown
+    after the old session's cleanup instead, it left the header's Login
+    button live for up to the 30s request timeout, and a login made
+    through that was followed by a second dialog over the new session."""
+
+    def test_dialog_shown_before_the_cleanup_and_not_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.app import SurveillanceApp
+        from surveillance.util import async_bridge
+
+        pending: list[object] = []
+        monkeypatch.setattr(
+            async_bridge, "run_async", lambda coro, **kwargs: pending.append((coro, kwargs))
+        )
+        shown: list[str] = []
+        window = SimpleNamespace(
+            on_disconnected=lambda: shown.append("disconnected"),
+            show_login=lambda: shown.append("login"),
+        )
+        app = SimpleNamespace(_window=window, api=SimpleNamespace())
+
+        SurveillanceApp._on_logout(app, None, None)  # type: ignore[arg-type]
+
+        assert shown == ["disconnected", "login"]
+        assert app.api is None
+        coro, kwargs = pending[0]  # type: ignore[misc]
+        assert "callback" not in kwargs, "nothing may show a dialog once the cleanup lands"
+        coro.close()  # type: ignore[attr-defined]

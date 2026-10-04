@@ -186,10 +186,12 @@ class SurveillanceApp(Gtk.Application):
                 await logout(api)
                 await api.close()
 
-            def _done(_: object) -> None:
-                if self._window:
-                    self._window.show_login()
-
-            run_async(_cleanup(), callback=_done)
-        elif self._window:
+            # In the background, with the dialog shown at once: logging in
+            # again does not need the old session gone. Shown only once
+            # the cleanup returned, which can take the whole 30s request
+            # timeout, it left the header's Login button live meanwhile,
+            # and a login made through that was followed by a second
+            # dialog over the new session.
+            run_async(_cleanup())
+        if self._window:
             self._window.show_login()
