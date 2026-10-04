@@ -1478,6 +1478,7 @@ class LiveView(Gtk.Box):
             return
         _, active_camera_ids = self._active_timeline_cameras()
         if not active_camera_ids:
+            self.timeline.set_calendar_month_unknown(year, month, "No cameras in this layout")
             return
         month_start = datetime(year, month, 1)
         last_day = calendar.monthrange(year, month)[1]
@@ -1495,7 +1496,19 @@ class LiveView(Gtk.Box):
             callback=lambda result, gen=generation: self._on_calendar_availability_fetched(
                 gen, year, month, result
             ),
-            error_callback=lambda exc: log.debug("Calendar availability fetch failed: %s", exc),
+            error_callback=lambda exc, gen=generation: self._on_calendar_availability_failed(
+                gen, year, month, exc
+            ),
+        )
+
+    def _on_calendar_availability_failed(
+        self, generation: int, year: int, month: int, exc: BaseException
+    ) -> None:
+        log.debug("Calendar availability fetch failed: %s", exc)
+        if generation != self._calendar_generation:
+            return  # superseded by a newer month view
+        self.timeline.set_calendar_month_unknown(
+            year, month, "Could not check recordings for this month"
         )
 
     def _on_calendar_availability_fetched(

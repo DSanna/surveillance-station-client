@@ -107,6 +107,7 @@ def _make_picker(
     picker.time_entry = FakeEntry(time_text)  # type: ignore[assignment]
     picker._available_days = available_days
     picker._available_intervals = available_intervals
+    picker._month_unknown_reason = ""
     picker._last_valid_date = date  # type: ignore[assignment]
     picker._last_valid_month = (date.year, date.month)
     picker._programmatic_change = False
@@ -159,6 +160,24 @@ class TestRefreshStatusAndValidity:
         picker = _make_picker(date=FakeDateTime(2026, 9, 6), available_days=None)
         picker._refresh_status_and_validity()
         assert picker.selected_date_label.get_label() == "Selected: 2026-09-06"
+
+
+class TestMonthUnknown:
+    """A month whose availability will never arrive, a failed lookup or a
+    layout with no cameras, used to promise a check forever."""
+
+    def test_shows_the_reason_and_keeps_jump_off(self) -> None:
+        validity: list[bool] = []
+        picker = _make_picker(date=FakeDateTime(2026, 9, 6))
+        picker._validity_changed_callback = validity.append
+        picker.set_month_unknown(2026, 9, "Could not check recordings for this month")
+        assert picker.status_label.get_label() == "Could not check recordings for this month"
+        assert validity == [False]
+
+    def test_a_reason_for_another_month_is_ignored(self) -> None:
+        picker = _make_picker(date=FakeDateTime(2026, 9, 6))
+        picker.set_month_unknown(2026, 8, "Could not check recordings for this month")
+        assert picker.status_label.get_label() == ""
 
 
 class TestOnDateNotify:

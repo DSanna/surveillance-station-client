@@ -832,3 +832,29 @@ class TestSelectedSlotPrompt:
 
         CameraSlot.set_selected(slot, False)  # type: ignore[arg-type]
         assert slot._header.label == "cam renamed (attempting reconnect)"
+
+
+class TestCalendarMonthWithoutAnswer:
+    """The picker's month check has to be answered even when no
+    availability is coming, or it says "Checking..." forever."""
+
+    def test_a_layout_without_cameras_says_so(self) -> None:
+        told: list[tuple[int, int, str]] = []
+        page = SimpleNamespace(
+            app=SimpleNamespace(api=object()),
+            timeline=SimpleNamespace(set_calendar_month_unknown=lambda *a: told.append(a)),
+            _active_timeline_cameras=lambda: ([], []),
+        )
+        LiveView._on_calendar_month_changed(page, 2026, 9)  # type: ignore[arg-type]
+        assert told == [(2026, 9, "No cameras in this layout")]
+
+    def test_a_failed_lookup_says_so_unless_superseded(self) -> None:
+        told: list[tuple[int, int, str]] = []
+        page = SimpleNamespace(
+            _calendar_generation=3,
+            timeline=SimpleNamespace(set_calendar_month_unknown=lambda *a: told.append(a)),
+        )
+        LiveView._on_calendar_availability_failed(page, 2, 2026, 8, OSError())  # type: ignore[arg-type]
+        assert told == []
+        LiveView._on_calendar_availability_failed(page, 3, 2026, 9, OSError())  # type: ignore[arg-type]
+        assert told == [(2026, 9, "Could not check recordings for this month")]

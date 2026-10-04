@@ -110,6 +110,9 @@ class DateTimePicker(Gtk.Box):
         # None on every month change until a fresh answer lands.
         self._available_days: set[int] | None = None
         self._available_intervals: list[tuple[int, int]] | None = None
+        # Why the current month has no answer coming, shown in place of
+        # "Checking..." (see set_month_unknown).
+        self._month_unknown_reason = ""
         gdt = self.calendar.get_date()
         self._last_valid_date = gdt
         self._last_valid_month = (gdt.get_year(), gdt.get_month())
@@ -152,6 +155,7 @@ class DateTimePicker(Gtk.Box):
         self._last_valid_month = (dt.year, dt.month)
         self._available_days = None
         self._available_intervals = None
+        self._month_unknown_reason = ""
         self._notify_month_changed(dt.year, dt.month)
         self._refresh_status_and_validity()
 
@@ -212,6 +216,17 @@ class DateTimePicker(Gtk.Box):
         self._available_intervals = intervals
         self._refresh_status_and_validity()
 
+    def set_month_unknown(self, year: int, month: int, reason: str) -> None:
+        """Say why no availability will arrive for (year, month), say
+        a failed lookup or a layout with no cameras. Without it the
+        status kept promising a check that was never coming. Jump stays
+        off, there being nothing to validate a time against."""
+        gdt = self.calendar.get_date()
+        if (gdt.get_year(), gdt.get_month()) != (year, month):
+            return
+        self._month_unknown_reason = reason
+        self._refresh_status_and_validity()
+
     def _day_unavailable_message(self) -> str:
         """Message for a day known to have no recording, shared between
         the refusal path (a click on a day already known to be
@@ -227,7 +242,9 @@ class DateTimePicker(Gtk.Box):
         self.selected_date_label.set_label(f"Selected: {self._last_valid_date.format('%Y-%m-%d')}")
         day = self._last_valid_date.get_day_of_month()
         if self._available_days is None:
-            self.status_label.set_label("Checking recordings for this month…")
+            self.status_label.set_label(
+                self._month_unknown_reason or "Checking recordings for this month…"
+            )
         elif day not in self._available_days:
             # Covers a day accepted while _available_days was still None
             # (nothing to check it against yet) whose month answer, once
@@ -262,6 +279,7 @@ class DateTimePicker(Gtk.Box):
             self._last_valid_date = gdt
             self._available_days = None
             self._available_intervals = None
+            self._month_unknown_reason = ""
             self._notify_month_changed(year, month)
             self._refresh_status_and_validity()
             return

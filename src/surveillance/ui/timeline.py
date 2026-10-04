@@ -1105,6 +1105,10 @@ class Timeline(Gtk.Box):
         """Forward to the picker -- see DateTimePicker.set_month_availability."""
         self._date_time_picker.set_month_availability(year, month, days, intervals)
 
+    def set_calendar_month_unknown(self, year: int, month: int, reason: str) -> None:
+        """Forward to the picker, see DateTimePicker.set_month_unknown."""
+        self._date_time_picker.set_month_unknown(year, month, reason)
+
     def _build_calendar_popover(self) -> Gtk.Popover:
         """DateTimePicker plus Cancel/Jump buttons -- same popover-on-a-
         MenuButton shape as _build_speed_popover, just for a single
