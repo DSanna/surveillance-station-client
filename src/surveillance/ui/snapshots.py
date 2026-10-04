@@ -571,11 +571,18 @@ class SnapshotsView(Gtk.Box):
 
     def _on_load_error(self, error: Exception) -> None:
         self._loading = False
-        self.prev_btn.set_sensitive(self._page > 0)
-        self.next_btn.set_sensitive(False)
         log.error("Failed to load snapshots: %s", error)
         if self._reload_pending:
             self._load_snapshots()
+            return
+        # The filter summary already describes the request that failed,
+        # so rows from the one before would be listed under it.
+        self._snapshots = []
+        while child := self.row_box.get_first_child():
+            self.row_box.remove(child)
+        self.prev_btn.set_sensitive(self._page > 0)
+        self.next_btn.set_sensitive(False)
+        self.page_label.set_text("Failed to load snapshots")
 
     def _on_snapshots_loaded(self, result: tuple[list[Snapshot], int]) -> None:
         """Server already filtered and paginated this page — just render it."""

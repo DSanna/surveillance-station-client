@@ -1146,3 +1146,78 @@ class TestQuickCameraPickIsSaved:
         cls.on_camera_selected(page, SimpleNamespace(id=3, name="cam3"))
 
         assert getattr(config, f"{prefix}_camera_ids") == []
+
+
+class TestFailedLoadClearsRows:
+    """A load that fails after a filter change must not leave the
+    previous filter's rows listed under the new filter summary."""
+
+    class _Box:
+        """A row container in both of the shapes the pages use."""
+
+        def __init__(self) -> None:
+            self.rows = ["old row", "old row"]
+
+        def get_first_child(self) -> object:
+            return self.rows[0] if self.rows else None
+
+        def get_row_at_index(self, index: int) -> object:
+            return self.rows[index] if index < len(self.rows) else None
+
+        def remove(self, row: object) -> None:
+            self.rows.remove(row)
+
+    class _Widget:
+        def __init__(self) -> None:
+            self.value: object = None
+
+        def set_sensitive(self, value: object) -> None:
+            self.value = value
+
+        def set_text(self, value: object) -> None:
+            self.value = value
+
+    def _page(self, **attrs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            _loading=True,
+            _reload_pending=False,
+            prev_btn=self._Widget(),
+            next_btn=self._Widget(),
+            page_label=self._Widget(),
+            **attrs,
+        )
+
+    def test_recordings(self) -> None:
+        from surveillance.ui.recordings import RecordingsView
+
+        page = self._page(
+            row_box=self._Box(), _thumb_futures=[], _thumb_generation=0, _offset=0, _total=120
+        )
+        page._clear_rows = lambda: RecordingsView._clear_rows(page)
+        RecordingsView._on_load_error(page, OSError("down"))
+        assert page.row_box.rows == []
+        assert page.page_label.value == "Failed to load recordings"
+
+    def test_snapshots(self) -> None:
+        from surveillance.ui.snapshots import SnapshotsView
+
+        page = self._page(row_box=self._Box(), _snapshots=["old"], _page=0)
+        SnapshotsView._on_load_error(page, OSError("down"))
+        assert page.row_box.rows == []
+        assert page.page_label.value == "Failed to load snapshots"
+
+    def test_events(self) -> None:
+        from surveillance.ui.events import EventsView
+
+        page = self._page(
+            listbox=self._Box(),
+            _events=["old"],
+            _page=0,
+            _search_event_types=None,
+            _event_type_filter=None,
+            _camera_vendor={},
+        )
+        page._render_events = lambda: EventsView._render_events(page)
+        EventsView._on_load_error(page, OSError("down"))
+        assert page.listbox.rows == []
+        assert page.page_label.value == "Failed to load events"

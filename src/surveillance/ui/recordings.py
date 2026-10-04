@@ -463,13 +463,29 @@ class RecordingsView(Gtk.Box):
             parts.append(f"To: {ts:%Y-%m-%d %H:%M}")
         return parts
 
+    def _clear_rows(self) -> None:
+        """Remove every row, and stop the thumbnails still on their way
+        to them."""
+        for f in self._thumb_futures:
+            f.cancel()
+        self._thumb_futures.clear()
+        self._thumb_generation += 1
+        while child := self.row_box.get_first_child():
+            self.row_box.remove(child)
+
     def _on_load_error(self, error: Exception) -> None:
         self._loading = False
-        self.prev_btn.set_sensitive(self._offset > 0)
-        self.next_btn.set_sensitive(self._offset + 50 < self._total)
         log.error("Failed to load recordings: %s", error)
         if self._reload_pending:
             self._load_recordings()
+            return
+        # The filter summary already describes the request that failed,
+        # so rows from the one before would be listed under it.
+        self._clear_rows()
+        self._total = 0
+        self.prev_btn.set_sensitive(self._offset > 0)
+        self.next_btn.set_sensitive(False)
+        self.page_label.set_text("Failed to load recordings")
 
     def _on_recordings_loaded(self, result: tuple[list[Recording], int]) -> None:
         self._loading = False
@@ -491,14 +507,7 @@ class RecordingsView(Gtk.Box):
             r = recordings[0]
             log.debug("First rec: id=%d cam='%s' cam_id=%d", r.id, r.camera_name, r.camera_id)
 
-        for f in self._thumb_futures:
-            f.cancel()
-        self._thumb_futures.clear()
-        self._thumb_generation += 1
-
-        while child := self.row_box.get_first_child():
-            self.row_box.remove(child)
-
+        self._clear_rows()
         generation = self._thumb_generation
         deferred: list[tuple[Gtk.Picture, Recording]] = []
         for i, rec in enumerate(recordings):

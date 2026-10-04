@@ -504,10 +504,15 @@ class EventsView(Gtk.Box):
 
     def _on_load_error(self, error: Exception) -> None:
         self._loading = False
-        self.page_label.set_text("Failed to load events")
         log.error("Failed to load events: %s", error)
         if self._reload_pending:
             self._load_events()
+            return
+        # The filter summary already describes the request that failed,
+        # so rows from the one before would be listed under it.
+        self._events = []
+        self._render_events()
+        self.page_label.set_text("Failed to load events")
 
     def _on_events_loaded(self, events: list[Event]) -> None:
         self._loading = False
