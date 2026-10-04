@@ -181,10 +181,16 @@ class CameraSidebar(Gtk.Box):
 
     def refresh(self, on_complete: Any = None) -> None:
         """Refresh the camera list."""
-        if not self.app.api:
+        api = self.app.api
+        if not api:
             return
 
         def _on_loaded(cameras: list[Camera]) -> None:
+            if self.app.api is not api:
+                # Logged out, or into another NAS, while this was out:
+                # the list would refill a cleared sidebar, and seed the
+                # pages with cameras from the wrong NAS.
+                return
             self._update_camera_list(cameras)
             if self.on_cameras_updated:
                 self.on_cameras_updated(cameras)
@@ -192,7 +198,7 @@ class CameraSidebar(Gtk.Box):
                 on_complete(cameras)
 
         run_async(
-            list_cameras(self.app.api),
+            list_cameras(api),
             callback=_on_loaded,
             error_callback=lambda e: log.error("Failed to refresh cameras: %s", e),
         )

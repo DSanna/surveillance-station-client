@@ -1060,3 +1060,32 @@ class TestLogoutShowsLoginOnce:
         coro, kwargs = pending[0]  # type: ignore[misc]
         assert "callback" not in kwargs, "nothing may show a dialog once the cleanup lands"
         coro.close()  # type: ignore[attr-defined]
+
+
+class TestSidebarRefreshAfterLogout:
+    """A camera list answered after logout, or after logging into another
+    NAS, must not land in the sidebar."""
+
+    def test_a_late_answer_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from surveillance.ui import sidebar as sidebar_module
+        from surveillance.ui.sidebar import CameraSidebar
+
+        pending: list[object] = []
+        monkeypatch.setattr(
+            sidebar_module,
+            "run_async",
+            lambda coro, callback, error_callback: pending.append((coro, callback)),
+        )
+        updated: list[object] = []
+        sidebar = SimpleNamespace(
+            app=SimpleNamespace(api=SimpleNamespace()),
+            _update_camera_list=updated.append,
+            on_cameras_updated=None,
+        )
+        CameraSidebar.refresh(sidebar)  # type: ignore[arg-type]
+        coro, callback = pending[0]  # type: ignore[misc]
+        coro.close()  # type: ignore[attr-defined]
+
+        sidebar.app.api = None  # logged out while the request was out
+        callback(["cam1"])  # type: ignore[operator]
+        assert updated == []
