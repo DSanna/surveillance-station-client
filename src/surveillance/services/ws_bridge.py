@@ -648,11 +648,6 @@ class WebSocketBridge:
         live via separate input pipes) into a Matroska stream on stdout,
         which becomes the pipe mpv actually plays.
 
-        -thread_queue_size raises ffmpeg's default per-input packet queue
-        (8), far too small for this bursty live-piped setup — once full,
-        ffmpeg stops draining that input's pipe, and once the pipe's own
-        OS buffer fills too, our write to it blocks forever.
-
         -use_wallclock_as_timestamps is set on both inputs, and has to
         be. Raw Annex B NALs carry no timing, so the host clock is the
         only timeline video can have; putting audio on that same clock
@@ -720,13 +715,12 @@ class WebSocketBridge:
             self._last_real_audio_at = self._last_audio_at
             self._silence_fill = asyncio.create_task(self._fill_silence())
 
-    async def _spawn_ffmpeg(
-        self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
-    ) -> None:
-        """Build ffmpeg's argument list around the caller's pipe fds,
-        start it, and confirm it is still running. Kept apart from
-        _start_muxed only so the fd cleanup there covers the pipes and the
-        spawn under one except OSError."""
+    @staticmethod
+    def _ffmpeg_args(
+        video_codec: str, audio_codec: str, video_r: int, audio_r: int, queue: list[str]
+    ) -> list[str]:
+        """ffmpeg's argument list around the caller's pipe fds, with
+        *queue* (see _spawn_ffmpeg) given to each input."""
         audio_args = [
             "-probesize",
             "16384",
@@ -734,13 +728,12 @@ class WebSocketBridge:
             "300000",
             "-use_wallclock_as_timestamps",
             "1",
-            "-thread_queue_size",
-            "4096",
+            *queue,
             *_FFMPEG_AUDIO_ARGS[audio_codec],
             "-i",
             f"pipe:{audio_r}",
         ]
-        args = [
+        return [
             "ffmpeg",
             "-loglevel",
             "warning",
@@ -768,8 +761,7 @@ class WebSocketBridge:
             "300000",
             "-use_wallclock_as_timestamps",
             "1",
-            "-thread_queue_size",
-            "4096",
+            *queue,
             "-f",
             _FFMPEG_VIDEO_FORMAT[video_codec],
             "-i",
@@ -807,6 +799,37 @@ class WebSocketBridge:
             "1",
             "pipe:1",
         ]
+
+    async def _spawn_ffmpeg(
+        self, video_codec: str, audio_codec: str, video_r: int, audio_r: int, out_w: int
+    ) -> None:
+        """Start ffmpeg on the caller's pipe fds and confirm it is still
+        running. Kept apart from _start_muxed only so the fd cleanup there
+        covers the pipes and the spawn under one except OSError.
+
+        -thread_queue_size raises each input's packet queue from 8, far
+        too small for this bursty live-piped setup. ffmpeg's development
+        branch rejects it as an input option (commit 8d8c3fd81383), and an
+        ffmpeg that rejects its arguments exits at once, so that case is
+        retried once without it rather than leaving every muxed camera
+        without audio. The pipes are untouched by then: nothing is written
+        to them until this returns.
+        """
+        for queue in (["-thread_queue_size", "4096"], []):
+            args = self._ffmpeg_args(video_codec, audio_codec, video_r, audio_r, queue)
+            if await self._start_ffmpeg(args, video_r, audio_r, out_w):
+                return
+            if queue:
+                log.debug(
+                    "WebSocket bridge for %s: ffmpeg exited at once, "
+                    "retrying without -thread_queue_size",
+                    self._label,
+                )
+        raise OSError("ffmpeg exited at once")
+
+    async def _start_ffmpeg(self, args: list[str], video_r: int, audio_r: int, out_w: int) -> bool:
+        """Run ffmpeg with *args*. False, with nothing left behind, if it
+        exits within the start grace."""
         # Let the muxer's own complaints through on a debug run. ffmpeg is
         # the prime suspect whenever a muxed slot stalls, and with its
         # stderr discarded it is the one component in the pipeline that
@@ -834,17 +857,22 @@ class WebSocketBridge:
         # already exited counts.
         await asyncio.sleep(_FFMPEG_START_GRACE)
         if self._ffmpeg_proc.returncode is not None:
-            code = self._ffmpeg_proc.returncode
+            log.debug(
+                "WebSocket bridge for %s: ffmpeg exited at once with code %d",
+                self._label,
+                self._ffmpeg_proc.returncode,
+            )
             # Dropped, not kept: the camera falls back to a raw pipe mpv
             # reads, and _stall_detail would describe that pipe as
             # ffmpeg's output.
             self._ffmpeg_proc = None
-            raise OSError(f"ffmpeg exited at once with code {code}")
+            return False
         self._ffmpeg_watch = asyncio.create_task(self._watch_ffmpeg(self._ffmpeg_proc))
         if self._ffmpeg_proc.stderr is not None:
             self._ffmpeg_stderr = asyncio.create_task(
                 self._drain_ffmpeg_stderr(self._ffmpeg_proc.stderr)
             )
+        return True
 
     async def _drain_ffmpeg_stderr(self, stream: asyncio.StreamReader) -> None:
         """Log what the muxer writes to stderr, and keep it unblocked.

@@ -1201,6 +1201,43 @@ class TestAudioMuxDecision:
         assert bridge._stall_detail() == ""
         await bridge.stop()
 
+    async def test_an_ffmpeg_rejecting_the_queue_option_gets_a_retry(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ffmpeg's development branch rejects -thread_queue_size as an
+        input option and exits at once. Retried without it, the camera
+        keeps its audio instead of falling back to video only."""
+        spawned: list[list[str]] = []
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+            spawned.append(list(args))
+            return _DeadFfmpegProc() if "-thread_queue_size" in args else _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert bridge.audio_active is True
+        assert ["-thread_queue_size" in args for args in spawned] == [True, False]
+        await bridge.stop()
+
+    async def test_an_ffmpeg_taking_the_queue_option_is_spawned_once(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spawned: list[list[str]] = []
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
+            spawned.append(list(args))
+            return _FakeFfmpegProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        assert len(spawned) == 1
+        assert spawned[0].count("-thread_queue_size") == 2, "one per input"
+        await bridge.stop()
+
     async def test_ffmpeg_dying_mid_session_ends_the_bridge_with_a_reason(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
