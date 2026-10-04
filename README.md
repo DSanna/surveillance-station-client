@@ -248,50 +248,11 @@ snapshot_dir = "/home/user/.local/share/surveillance-station/snapshots"  # folde
 grid_layout = "2x2"            # "1x1", "2x2", "3x3", or "4x4"
 last_page = "live"             # last active page
 
-[session.layout_cameras]
-# Camera IDs per layout (0 = empty slot).  Each layout remembers its
-# own assignment independently.
-"1x1" = [1]
-"2x2" = [1, 3, 0, 5]
-"3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
-
-# Recording search filters (persisted from last search)
-# search_camera_ids = [1, 3]
+# Recording search filters (persisted from last search); the cameras
+# picked for them are kept per profile, see below
 # search_from_time = "2026-02-01T00:00:00"
 # search_to_time = "2026-02-19T23:59:59"
 # search_time_preset = "today"  # "today", "yesterday", "last24h", "last7d", "last30d", or ""
-
-[camera_overrides]
-# Direct RTSP URLs keyed by camera ID.
-# Use when Synology's RTSP proxy corrupts a stream (e.g. Reolink Duo 3 PoE h265).
-# 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
-
-[camera_volume]
-# Live View volume per camera ID, 0-100. Set from the slot's hover toolbar.
-# 5 = 40
-
-[camera_muted]
-# Live View mute state per camera ID. Cameras start muted.
-# 5 = false
-
-[event_type_history]
-# Event types each camera has ever produced, discovered by the Live View
-# timeline's "Filter events" popover and kept so a later open only has to
-# scan forward from checked_until instead of the whole history again.
-# Written automatically; delete a camera's entry to force a full rescan.
-# [event_type_history.5]
-# types = [[3, 0], [33554435, 2]]  # (event type flag, reserved) pairs
-# checked_until = 1771200000       # unix time this camera was scanned up to
-
-[camera_protocols]
-# Stream protocol per camera ID:
-# auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
-# "auto" is the same as "websocket"; there is no fallback between
-# protocols, so pick one explicitly if WebSocket does not work.
-# "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe,
-# muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
-# "direct" uses the URL from [camera_overrides].
-# 5 = "direct"
 
 [setting_overrides]
 # Settings page tuning, numeric values (see the Settings page itself for
@@ -309,11 +270,59 @@ host = "192.168.1.100"
 port = 5001
 https = true
 verify_ssl = false
+# Everything keyed by camera ID lives under the profile it belongs to,
+# since every NAS numbers its cameras from 1.
+# search_camera_ids = [1, 3]   # cameras of the last recording search
+
+[profiles.home-nas.layout_cameras]
+# Camera IDs per layout (0 = empty slot).  Each layout remembers its
+# own assignment independently.
+"1x1" = [1]
+"2x2" = [1, 3, 0, 5]
+"3x3" = [1, 3, 7, 0, 5, 8, 2, 0, 0]
+
+[profiles.home-nas.camera_overrides]
+# Direct RTSP URLs keyed by camera ID.
+# Use when Synology's RTSP proxy corrupts a stream (e.g. Reolink Duo 3 PoE h265).
+# 5 = "rtsp://admin:password@192.168.1.50:554/h265Preview_01_main"
+
+[profiles.home-nas.camera_volume]
+# Live View volume per camera ID, 0-100. Set from the slot's hover toolbar.
+# 5 = 40
+
+[profiles.home-nas.camera_muted]
+# Live View mute state per camera ID. Cameras start muted.
+# 5 = false
+
+[profiles.home-nas.event_type_history]
+# Event types each camera has ever produced, discovered by the Live View
+# timeline's "Filter events" popover and kept so a later open only has to
+# scan forward from checked_until instead of the whole history again.
+# Written automatically; delete a camera's entry to force a full rescan.
+# [profiles.home-nas.event_type_history.5]
+# types = [[3, 0], [33554435, 2]]  # (event type flag, reserved) pairs
+# checked_until = 1771200000       # unix time this camera was scanned up to
+
+[profiles.home-nas.camera_protocols]
+# Stream protocol per camera ID:
+# auto, websocket, mjpeg, rtsp_over_http, rtsp, multicast, direct
+# "auto" is the same as "websocket"; there is no fallback between
+# protocols, so pick one explicitly if WebSocket does not work.
+# "websocket" uses a WebSocket stream bridged to mpv via an in-memory pipe,
+# muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
+# "direct" uses the URL from camera_overrides.
+# 5 = "direct"
 ```
 
-The `[session]` section is managed automatically &mdash; the application
-restores the grid layout, active page, and camera assignments from the previous
-session on restart.
+The `[session]` section and each profile's camera assignments are managed
+automatically &mdash; the application restores the grid layout, active page,
+and camera assignments from the previous session on restart.
+
+Settings keyed by camera ID (layouts, direct RTSP URLs, protocols, volume,
+mute, the event-type cache and the cameras picked for searches) are kept per
+profile, under its own `[profiles.<name>]` table, since every NAS numbers its
+cameras from 1. A config from an earlier version kept one shared set at the top
+level and in `[session]`; it is read as the default profile's.
 
 Stream protocols and direct RTSP overrides can also be configured from the UI:
 right-click a camera in the sidebar to choose the protocol.

@@ -190,10 +190,56 @@ class AppConfig:
     # overridden value); kept apart from setting_overrides since TOML
     # (and this dataclass) distinguishes bool from float.
     setting_overrides_bool: dict[str, bool] = field(default_factory=dict)
+    # The profile whose camera-keyed settings are the ones held in the
+    # fields above, and every other profile's, waiting their turn (see
+    # PROFILE_STATE_FIELDS and activate_profile).
+    active_profile: str = ""
+    profile_state: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.snapshot_dir:
             self.snapshot_dir = str(DATA_DIR / "snapshots")
+
+    def activate_profile(self, name: str) -> None:
+        """Make *name*'s camera-keyed settings the ones in the fields
+        PROFILE_STATE_FIELDS names, putting the current profile's away.
+
+        Copied in and out rather than shared: some of these fields are
+        reassigned rather than changed in place, which would cut a
+        shared reference loose from the profile it belongs to.
+        """
+        if name == self.active_profile:
+            return
+        if self.active_profile:
+            self.profile_state[self.active_profile] = {
+                f: getattr(self, f) for f in PROFILE_STATE_FIELDS
+            }
+        state = self.profile_state.pop(name, {})
+        for f in PROFILE_STATE_FIELDS:
+            setattr(self, f, state.get(f, _FIELD_DEFAULTS[f]()))
+        self.active_profile = name
+
+
+# Settings keyed by camera ID. Every NAS numbers its cameras from 1, so
+# shared between profiles one NAS's direct RTSP URL, protocol, volume
+# or layout landed on another's camera of the same number. Each profile
+# keeps its own, written under its [profiles.<name>] table.
+PROFILE_STATE_FIELDS = (
+    "layout_cameras",
+    "camera_overrides",
+    "camera_protocols",
+    "camera_volume",
+    "camera_muted",
+    "event_type_history",
+    "search_camera_ids",
+    "events_search_camera_ids",
+    "snapshots_search_camera_ids",
+)
+
+_FIELD_DEFAULTS: dict[str, Any] = {
+    f: AppConfig.__dataclass_fields__[f].default_factory  # type: ignore[misc]
+    for f in PROFILE_STATE_FIELDS
+}
 
 
 # Floor for the poll_interval_* settings. They are only reachable by hand
@@ -254,6 +300,65 @@ def load_config() -> AppConfig:
         return AppConfig()
 
 
+def _int_keyed(table: Any, convert: Any) -> dict[int, Any]:
+    """A TOML table keyed by camera ID, with *convert* applied to each
+    value, dropping any entry that does not convert."""
+    result: dict[int, Any] = {}
+    if isinstance(table, dict):
+        for key, value in table.items():
+            with contextlib.suppress(ValueError, TypeError, AttributeError):
+                result[int(key)] = convert(value)
+    return result
+
+
+def _event_type_history(entry: Any) -> EventTypeHistory:
+    types = [
+        (int(pair[0]), int(pair[1]))
+        for pair in entry.get("types", [])
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+    ]
+    return EventTypeHistory(types=types, checked_until=int(entry.get("checked_until", 0)))
+
+
+def _profile_state_from(data: dict[str, Any]) -> dict[str, Any]:
+    """One profile's PROFILE_STATE_FIELDS out of *data*, which holds
+    them under their own names."""
+    return {
+        "layout_cameras": data.get("layout_cameras", {}),
+        "camera_overrides": _int_keyed(data.get("camera_overrides"), str),
+        "camera_protocols": _int_keyed(data.get("camera_protocols"), str),
+        "camera_volume": _int_keyed(data.get("camera_volume"), int),
+        "camera_muted": _int_keyed(data.get("camera_muted"), bool),
+        "event_type_history": _int_keyed(data.get("event_type_history"), _event_type_history),
+        "search_camera_ids": data.get("search_camera_ids", []),
+        "events_search_camera_ids": data.get("events_search_camera_ids", []),
+        "snapshots_search_camera_ids": data.get("snapshots_search_camera_ids", []),
+    }
+
+
+def _profile_state_to(state: dict[str, Any]) -> dict[str, Any]:
+    """The TOML form of one profile's PROFILE_STATE_FIELDS, leaving out
+    what is empty so a profile never used keeps a short table."""
+    tables: dict[str, Any] = {
+        "layout_cameras": state["layout_cameras"],
+        "camera_overrides": {str(k): v for k, v in state["camera_overrides"].items()},
+        "camera_protocols": {str(k): v for k, v in state["camera_protocols"].items()},
+        "camera_volume": {str(k): v for k, v in state["camera_volume"].items()},
+        "camera_muted": {str(k): v for k, v in state["camera_muted"].items()},
+        "event_type_history": {
+            str(cam_id): {
+                "types": [list(pair) for pair in hist.types],
+                "checked_until": hist.checked_until,
+            }
+            for cam_id, hist in state["event_type_history"].items()
+        },
+        "search_camera_ids": state["search_camera_ids"],
+        "events_search_camera_ids": state["events_search_camera_ids"],
+        "snapshots_search_camera_ids": state["snapshots_search_camera_ids"],
+    }
+    return {key: value for key, value in tables.items() if value}
+
+
 def _config_from_data(data: dict[str, Any]) -> AppConfig:
     """Build an AppConfig from already-parsed TOML."""
 
@@ -264,43 +369,18 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
     general = data.get("general", {})
     session = data.get("session", {})
 
-    # camera_overrides: maps camera ID (int) -> direct RTSP URL
-    overrides: dict[int, str] = {}
-    for cam_id_str, url in data.get("camera_overrides", {}).items():
-        with contextlib.suppress(ValueError, TypeError):
-            overrides[int(cam_id_str)] = str(url)
-
-    # camera_protocols: maps camera ID (int) -> protocol name
-    protocols: dict[int, str] = {}
-    for cam_id_str, proto in data.get("camera_protocols", {}).items():
-        with contextlib.suppress(ValueError, TypeError):
-            protocols[int(cam_id_str)] = str(proto)
-
-    # camera_volume: maps camera ID (int) -> last-set volume (0-100)
-    volumes: dict[int, int] = {}
-    for cam_id_str, vol in data.get("camera_volume", {}).items():
-        with contextlib.suppress(ValueError, TypeError):
-            volumes[int(cam_id_str)] = int(vol)
-
-    # camera_muted: maps camera ID (int) -> last-set mute state
-    muted: dict[int, bool] = {}
-    for cam_id_str, val in data.get("camera_muted", {}).items():
-        with contextlib.suppress(ValueError, TypeError):
-            muted[int(cam_id_str)] = bool(val)
-
-    # event_type_history: maps camera ID (int) -> EventTypeHistory
-    event_type_history: dict[int, EventTypeHistory] = {}
-    for cam_id_str, entry in data.get("event_type_history", {}).items():
-        with contextlib.suppress(ValueError, TypeError):
-            cam_id = int(cam_id_str)
-            types = [
-                (int(pair[0]), int(pair[1]))
-                for pair in entry.get("types", [])
-                if isinstance(pair, (list, tuple)) and len(pair) == 2
-            ]
-            event_type_history[cam_id] = EventTypeHistory(
-                types=types, checked_until=int(entry.get("checked_until", 0))
-            )
+    # Each profile's camera-keyed settings. A config written before they
+    # went per profile kept one shared set, in top-level sections and in
+    # [session]: it goes to the default profile, the one logged into.
+    states = {name: _profile_state_from(pdata) for name, pdata in data.get("profiles", {}).items()}
+    active = general.get("default_profile", "")
+    legacy = {
+        **{key: data[key] for key in PROFILE_STATE_FIELDS if key in data},
+        **{key: session[key] for key in PROFILE_STATE_FIELDS if key in session},
+    }
+    if legacy and active and not any(states.get(active, {}).values()):
+        states[active] = _profile_state_from(legacy)
+    active_state = states.pop(active, None) or _profile_state_from({})
 
     # setting_overrides: maps Setting.key (str) -> overridden value
     setting_overrides: dict[str, float] = {}
@@ -315,7 +395,10 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
             setting_overrides_bool[str(key)] = bool(value)
 
     return AppConfig(
-        default_profile=general.get("default_profile", ""),
+        **active_state,
+        active_profile=active,
+        profile_state=states,
+        default_profile=active,
         profiles=profiles,
         theme=_load_theme(general),
         sidebar_visible=general.get("sidebar_visible", True),
@@ -323,21 +406,13 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         dismissed_update_version=general.get("dismissed_update_version", ""),
         grid_layout=session.get("grid_layout", general.get("grid_layout", "2x2")),
         last_page=session.get("last_page", "live"),
-        layout_cameras=session.get("layout_cameras", {}),
         poll_interval_cameras=_poll_interval(general, "poll_interval_cameras", 30),
         poll_interval_alerts=_poll_interval(general, "poll_interval_alerts", 30),
         poll_interval_homemode=_poll_interval(general, "poll_interval_homemode", 60),
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
-        camera_overrides=overrides,
-        camera_protocols=protocols,
-        camera_volume=volumes,
-        camera_muted=muted,
-        event_type_history=event_type_history,
-        search_camera_ids=session.get("search_camera_ids", []),
         search_from_time=session.get("search_from_time", ""),
         search_to_time=session.get("search_to_time", ""),
         search_time_preset=session.get("search_time_preset", ""),
-        events_search_camera_ids=session.get("events_search_camera_ids", []),
         events_search_from_time=session.get("events_search_from_time", ""),
         events_search_to_time=session.get("events_search_to_time", ""),
         events_search_time_preset=session.get("events_search_time_preset", "today"),
@@ -347,7 +422,6 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         events_search_event_types_match_all=session.get(
             "events_search_event_types_match_all", False
         ),
-        snapshots_search_camera_ids=session.get("snapshots_search_camera_ids", []),
         snapshots_search_from_time=session.get("snapshots_search_from_time", ""),
         snapshots_search_to_time=session.get("snapshots_search_to_time", ""),
         snapshots_search_time_preset=session.get("snapshots_search_time_preset", ""),
@@ -409,42 +483,29 @@ def _write_config(config: AppConfig) -> None:
         "session": {
             "grid_layout": config.grid_layout,
             "last_page": config.last_page,
-            "layout_cameras": config.layout_cameras,
-            "search_camera_ids": config.search_camera_ids,
             "search_from_time": config.search_from_time,
             "search_to_time": config.search_to_time,
             "search_time_preset": config.search_time_preset,
-            "events_search_camera_ids": config.events_search_camera_ids,
             "events_search_from_time": config.events_search_from_time,
             "events_search_to_time": config.events_search_to_time,
             "events_search_time_preset": config.events_search_time_preset,
             "events_search_event_types": config.events_search_event_types,
             "events_search_event_types_match_all": config.events_search_event_types_match_all,
-            "snapshots_search_camera_ids": config.snapshots_search_camera_ids,
             "snapshots_search_from_time": config.snapshots_search_from_time,
             "snapshots_search_to_time": config.snapshots_search_to_time,
             "snapshots_search_time_preset": config.snapshots_search_time_preset,
-        },
-        "camera_overrides": {str(cam_id): url for cam_id, url in config.camera_overrides.items()},
-        "camera_protocols": {
-            str(cam_id): proto for cam_id, proto in config.camera_protocols.items()
-        },
-        "camera_volume": {str(cam_id): vol for cam_id, vol in config.camera_volume.items()},
-        "camera_muted": {str(cam_id): val for cam_id, val in config.camera_muted.items()},
-        "event_type_history": {
-            str(cam_id): {
-                "types": [list(pair) for pair in hist.types],
-                "checked_until": hist.checked_until,
-            }
-            for cam_id, hist in config.event_type_history.items()
         },
         "setting_overrides": dict(config.setting_overrides),
         "setting_overrides_bool": dict(config.setting_overrides_bool),
         "profiles": {},
     }
 
+    states = dict(config.profile_state)
+    states[config.active_profile] = {f: getattr(config, f) for f in PROFILE_STATE_FIELDS}
     for name, profile in config.profiles.items():
         data["profiles"][name] = profile.to_dict()
+        if name in states:
+            data["profiles"][name].update(_profile_state_to(states[name]))
 
     # Write a sibling temp file and rename over the real one. os.replace()
     # is atomic within a filesystem, so an interrupted save leaves the

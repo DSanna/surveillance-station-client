@@ -28,8 +28,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from surveillance.config import AppConfig, _write_config, load_config
+from surveillance.config import AppConfig, ConnectionProfile, _write_config, load_config
+
+
+def _profiled(**kwargs: Any) -> AppConfig:
+    """An AppConfig logged into one profile, which is where camera-keyed
+    settings live (see PROFILE_STATE_FIELDS)."""
+    return AppConfig(
+        default_profile="nas",
+        active_profile="nas",
+        profiles={"nas": ConnectionProfile("nas", "192.168.1.10")},
+        **kwargs,
+    )
 
 
 class TestLayoutCamerasConfigRoundTrip:
@@ -41,7 +53,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig(grid_layout="2x2")
+        config = _profiled(grid_layout="2x2")
         config.layout_cameras["2x2"] = [1, 2, 0, 3]
 
         _write_config(config)
@@ -56,7 +68,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig(grid_layout="4x4")
+        config = _profiled(grid_layout="4x4")
         config.layout_cameras["1x1"] = [5]
         config.layout_cameras["2x2"] = [1, 2, 3, 4]
         config.layout_cameras["3x3"] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -76,7 +88,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig()
+        config = _profiled()
         _write_config(config)
         loaded = load_config()
 
@@ -89,7 +101,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig(grid_layout="2x2")
+        config = _profiled(grid_layout="2x2")
         config.layout_cameras["2x2"] = [7, 0, 0, 12]
 
         _write_config(config)
@@ -107,7 +119,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
         # Simulate state after switching: both layouts are present in config
-        config = AppConfig(grid_layout="1x1")
+        config = _profiled(grid_layout="1x1")
         config.layout_cameras["2x2"] = [1, 2, 3, 4]  # preserved from before switch
         config.layout_cameras["1x1"] = [5]  # new 1x1 selection
 
@@ -125,7 +137,7 @@ class TestLayoutCamerasConfigRoundTrip:
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
         for layout in ("1x1", "2x2", "3x3", "4x4"):
-            config = AppConfig(grid_layout=layout)
+            config = _profiled(grid_layout=layout)
             _write_config(config)
             loaded = load_config()
             assert loaded.grid_layout == layout
@@ -138,7 +150,7 @@ class TestCameraProtocolPersistence:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig()
+        config = _profiled()
         config.camera_protocols = {1: "rtsp", 2: "mjpeg", 3: "websocket"}
 
         _write_config(config)
@@ -154,7 +166,7 @@ class TestCameraProtocolPersistence:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig()
+        config = _profiled()
         config.camera_overrides = {42: "rtsp://10.0.0.1:554/stream1"}
 
         _write_config(config)

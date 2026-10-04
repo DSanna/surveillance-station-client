@@ -121,6 +121,15 @@ class TestPollIntervals:
         assert cfg.poll_interval_cameras == 120
 
 
+def _in_profile(state: dict[str, object]) -> dict[str, object]:
+    """Parsed TOML with *state* under the default profile's own table,
+    where camera-keyed settings are written."""
+    return {
+        "general": {"default_profile": "nas"},
+        "profiles": {"nas": {"host": "192.168.1.10", **state}},
+    }
+
+
 class TestEventTypeHistory:
     def test_defaults_to_empty(self) -> None:
         cfg = _config_from_data({})
@@ -128,11 +137,13 @@ class TestEventTypeHistory:
 
     def test_loads_types_and_checked_until(self) -> None:
         cfg = _config_from_data(
-            {
-                "event_type_history": {
-                    "63": {"types": [[513, 0], [257, 1]], "checked_until": 1700000000}
+            _in_profile(
+                {
+                    "event_type_history": {
+                        "63": {"types": [[513, 0], [257, 1]], "checked_until": 1700000000}
+                    }
                 }
-            }
+            )
         )
         assert cfg.event_type_history[63] == EventTypeHistory(
             types=[(513, 0), (257, 1)], checked_until=1700000000
@@ -140,12 +151,15 @@ class TestEventTypeHistory:
 
     def test_malformed_entry_is_dropped_not_fatal(self) -> None:
         cfg = _config_from_data(
-            {
-                "event_type_history": {
-                    "not-a-number": {"types": [], "checked_until": 0},
-                    "63": {"types": [[513, 0]], "checked_until": 5},
+            _in_profile(
+                {
+                    "event_type_history": {
+                        "not-a-number": {"types": [], "checked_until": 0},
+                        "63": {"types": [[513, 0]], "checked_until": 5},
+                        "64": ["not", "a", "table"],
+                    }
                 }
-            }
+            )
         )
         assert list(cfg.event_type_history.keys()) == [63]
 
@@ -156,7 +170,8 @@ class TestEventTypeHistory:
         monkeypatch.setattr(cfg, "CONFIG_FILE", config_file)  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig()
+        config = AppConfig(default_profile="nas", active_profile="nas")
+        config.profiles["nas"] = ConnectionProfile("nas", "192.168.1.10")
         config.event_type_history[63] = EventTypeHistory(
             types=[(513, 0), (257, 1)], checked_until=1700000000
         )
@@ -301,3 +316,84 @@ class TestAddRemoveProfile:
 
         assert config.default_profile == "nas1"
         assert "nas1" in config.profiles
+
+
+class TestPerProfileCameraSettings:
+    """Camera-keyed settings belong to one NAS: every NAS numbers its
+    cameras from 1, so shared between profiles one's direct RTSP URL,
+    protocol, volume or layout landed on another's camera of the same
+    number."""
+
+    @staticmethod
+    def _two_profiles() -> AppConfig:
+        config = AppConfig(default_profile="home", active_profile="home")
+        config.profiles["home"] = ConnectionProfile("home", "192.168.1.10")
+        config.profiles["office"] = ConnectionProfile("office", "office.example.com")
+        return config
+
+    def test_switching_profile_switches_the_settings(self) -> None:
+        config = self._two_profiles()
+        config.camera_overrides[1] = "rtsp://home-cam"
+        config.layout_cameras["2x2"] = [1, 2, 0, 0]
+        config.search_camera_ids = [1]
+
+        config.activate_profile("office")
+        assert config.camera_overrides == {}
+        assert config.layout_cameras == {}
+        assert config.search_camera_ids == []
+        config.camera_overrides[1] = "rtsp://office-cam"
+
+        config.activate_profile("home")
+        assert config.camera_overrides == {1: "rtsp://home-cam"}
+        assert config.layout_cameras == {"2x2": [1, 2, 0, 0]}
+        assert config.search_camera_ids == [1]
+
+    def test_every_profile_round_trips(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+        config = self._two_profiles()
+        config.camera_volume[1] = 40
+        config.activate_profile("office")
+        config.camera_volume[1] = 90
+        config.activate_profile("home")
+        _write_config(config)
+
+        loaded = load_config()
+        assert loaded.active_profile == "home"
+        assert loaded.camera_volume == {1: 40}
+        loaded.activate_profile("office")
+        assert loaded.camera_volume == {1: 90}
+
+    def test_written_under_each_profile_table(self, tmp_path: Path, monkeypatch: object) -> None:
+        import tomllib
+
+        import surveillance.config as cfg
+
+        monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+        config = self._two_profiles()
+        config.camera_protocols[5] = "direct"
+        _write_config(config)
+
+        data = tomllib.loads((tmp_path / "config.toml").read_text())
+        assert data["profiles"]["home"]["camera_protocols"] == {"5": "direct"}
+        assert "camera_protocols" not in data
+        assert "camera_protocols" not in data["profiles"]["office"]
+
+    def test_an_older_shared_config_goes_to_the_default_profile(self) -> None:
+        cfg = _config_from_data(
+            {
+                "general": {"default_profile": "home"},
+                "session": {"layout_cameras": {"2x2": [1, 2, 0, 0]}, "search_camera_ids": [1]},
+                "camera_overrides": {"5": "rtsp://cam"},
+                "profiles": {"home": {"host": "a"}, "office": {"host": "b"}},
+            }
+        )
+        assert cfg.active_profile == "home"
+        assert cfg.camera_overrides == {5: "rtsp://cam"}
+        assert cfg.layout_cameras == {"2x2": [1, 2, 0, 0]}
+        assert cfg.search_camera_ids == [1]
+        cfg.activate_profile("office")
+        assert cfg.camera_overrides == {}

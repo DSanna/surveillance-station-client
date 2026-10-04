@@ -48,7 +48,7 @@ _REDACT_PARAMS = re.compile(
 )
 
 # Credentials embedded in a stream URL, as in the rtsp://user:pass@host
-# overrides from [camera_overrides].
+# overrides a profile keeps in its camera_overrides table.
 _REDACT_USERINFO = re.compile(r"(\w+://)[^/\s@]+@")
 
 # GLib prints these from inside app.run() and returns without ever

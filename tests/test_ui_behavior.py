@@ -880,7 +880,9 @@ class TestRecordingFilterConfig:
         monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
 
-        config = AppConfig()
+        # Camera IDs are kept per profile (see PROFILE_STATE_FIELDS).
+        config = AppConfig(default_profile="nas", active_profile="nas")
+        config.profiles["nas"] = ConnectionProfile("nas", "192.168.1.10")
         config.search_camera_ids = [1, 5, 9]
         config.search_from_time = "2026-01-01T00:00:00"
         config.search_to_time = "2026-01-07T23:59:59"

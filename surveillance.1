@@ -285,13 +285,25 @@ next camera poll, so it is the interval between one attempt and the next.
 .PP
 The
 .B [session]
-section stores the grid layout, active page, camera assignments, and recording
-search filters (including time presets). It is updated automatically so the
-application restores the previous viewing session on restart. Critical changes
-are flushed to disk immediately for crash resilience.
+section stores the grid layout, active page and recording search filters
+(including time presets). It is updated automatically so the application
+restores the previous viewing session on restart. Critical changes are
+flushed to disk immediately for crash resilience.
+.PP
+Settings keyed by camera ID are kept per profile, under its own
+.B [profiles.\fIname\fB]
+table, since every NAS numbers its cameras from 1: the camera assignments
+per layout
+.RI ( layout_cameras ),
+the cameras picked for searches
+.RI ( search_camera_ids ", " events_search_camera_ids ", " snapshots_search_camera_ids ),
+and the sections below. A config from an earlier version kept one shared
+set at the top level and in
+.BR [session] ;
+it is read as the default profile's.
 .PP
 The
-.B [camera_protocols]
+.B camera_protocols
 section selects the stream protocol per camera (auto, websocket,
 mjpeg, rtsp_over_http, rtsp, multicast, direct).
 .B auto
@@ -305,19 +317,19 @@ real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 When set to
 .IR direct ,
 the URL from
-.B [camera_overrides]
+.B camera_overrides
 is used instead of Synology's RTSP proxy.
 These settings can be configured by right-clicking a camera in the sidebar.
 .PP
 The
-.B [camera_volume]
+.B camera_volume
 and
-.B [camera_muted]
+.B camera_muted
 sections hold the Live View volume (0-100) and mute state per camera, as set
 from the slot's hover toolbar. Cameras start muted.
 .PP
 The
-.B [event_type_history]
+.B event_type_history
 section caches which event types each camera has ever produced, as
 discovered by the Live View timeline's
 .B Filter events

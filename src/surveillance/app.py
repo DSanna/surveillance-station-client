@@ -155,7 +155,10 @@ class SurveillanceApp(Gtk.Application):
         self._window.present()
 
     def set_api(self, api: SurveillanceAPI) -> None:
-        """Set the active API connection."""
+        """Set the active API connection, and with it whose camera-keyed
+        settings are in effect. Before the pages are built: each reads
+        its cameras' settings as it starts."""
+        self.config.activate_profile(api.profile.name)
         self.api = api
 
     def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
