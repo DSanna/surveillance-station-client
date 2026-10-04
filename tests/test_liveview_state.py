@@ -670,3 +670,23 @@ class TestLostStreamRetryKeepsHistory:
         slot = self._slot(1_700_000_500.0, CameraStatus.ENABLED)
         restarted = self._restarts(slot, [self._camera(CameraStatus.DISCONNECTED)])
         assert restarted == [(0, 7, None)]
+
+
+class TestPushToTalkOnReassign:
+    """Assigning a camera turns the slot's mic indicator off, so it has
+    to end the session too: a layout switch can hand a still-visible
+    slot another camera while someone is talking through the first."""
+
+    def test_assign_ends_a_running_session(self) -> None:
+        session = _Calls()
+        slot = _slot()
+        slot._ptt_session = session
+        slot._header = _Calls()
+        slot._toolbar = _Calls()
+        slot.stop_ptt = lambda: CameraSlot.stop_ptt(slot)  # type: ignore[arg-type]
+
+        CameraSlot.assign(slot, SimpleNamespace(id=2, name="cam2"))  # type: ignore[arg-type]
+
+        assert session.called("stop") == [()]
+        assert slot._ptt_session is None
+        assert slot.camera.id == 2  # type: ignore[attr-defined]

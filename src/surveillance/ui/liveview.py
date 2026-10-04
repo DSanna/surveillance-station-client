@@ -534,6 +534,10 @@ class CameraSlot(Gtk.Box):
             self._header.set_label(self._camera_label())
 
     def assign(self, camera: Camera) -> None:
+        # The toolbar below turns the mic indicator off, so a session
+        # left running would go on talking through the previous camera
+        # with nothing on screen to say so.
+        self.stop_ptt()
         self.camera = camera
         self._status = ""
         self._header.set_label(camera.name)
