@@ -361,12 +361,15 @@ class EventsView(Gtk.Box):
         # A quick pick takes precedence over a prior Advanced Search
         # multi-camera selection, the same way picking a date preset
         # overwrites a prior custom range — otherwise this combo silently
-        # does nothing until Reset is used.
+        # does nothing until Reset is used. Saved too, or a restart
+        # brings the old selection back.
         self._search_camera_ids = None
+        self._save_search_to_config()
         self._load_events()
 
     def _on_reset_clicked(self, btn: Gtk.Button) -> None:
         self._search_camera_ids = None
+        self._save_search_to_config()
         self._search_from_time = None
         self._search_to_time = None
         self._search_time_preset = ""
@@ -855,6 +858,7 @@ class EventsView(Gtk.Box):
         self._ensure_camera_in_combo(camera.id, camera.name)
         self._camera_id = camera.id
         self._search_camera_ids = None
+        self._save_search_to_config()
         self.camera_combo.handler_block_by_func(self._on_filter_changed)
         self.camera_combo.set_active_id(str(camera.id))
         self.camera_combo.handler_unblock_by_func(self._on_filter_changed)

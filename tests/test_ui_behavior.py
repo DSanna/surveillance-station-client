@@ -1091,3 +1091,58 @@ class TestSidebarRefreshAfterLogout:
         sidebar.app.api = None  # logged out while the request was out
         callback(["cam1"])  # type: ignore[operator]
         assert updated == []
+
+
+class TestQuickCameraPickIsSaved:
+    """Picking one camera drops a prior Advanced Search camera selection.
+    Dropped only in memory, a restart brought the old selection back."""
+
+    class _Combo:
+        def handler_block_by_func(self, func: object) -> None:
+            pass
+
+        def handler_unblock_by_func(self, func: object) -> None:
+            pass
+
+        def set_active_id(self, active_id: str) -> None:
+            pass
+
+    @pytest.mark.parametrize(
+        ("module", "view", "prefix", "load"),
+        [
+            ("recordings", "RecordingsView", "search", "_load_recordings"),
+            ("snapshots", "SnapshotsView", "snapshots_search", "_load_snapshots"),
+            ("events", "EventsView", "events_search", "_load_events"),
+        ],
+    )
+    def test_a_sidebar_pick_clears_the_saved_cameras(
+        self, monkeypatch: pytest.MonkeyPatch, module: str, view: str, prefix: str, load: str
+    ) -> None:
+        import importlib
+
+        import surveillance.config as config_module
+
+        page_module = importlib.import_module(f"surveillance.ui.{module}")
+        monkeypatch.setattr(config_module, "save_config", lambda cfg: None)
+        monkeypatch.setattr(page_module, "save_config", lambda cfg: None, raising=False)
+        cls = getattr(page_module, view)
+        config = AppConfig()
+        setattr(config, f"{prefix}_camera_ids", [1, 2])
+        page = SimpleNamespace(
+            app=SimpleNamespace(config=config),
+            camera_combo=self._Combo(),
+            _search_camera_ids=[1, 2],
+            _search_from_time=None,
+            _search_to_time=None,
+            _search_time_preset="",
+            _search_event_types=None,
+            _search_event_types_match_all=False,
+            _ensure_camera_in_combo=lambda camera_id, name: None,
+            _on_filter_changed=None,
+            **{load: lambda: None},
+        )
+        page._save_search_to_config = lambda: cls._save_search_to_config(page)
+
+        cls.on_camera_selected(page, SimpleNamespace(id=3, name="cam3"))
+
+        assert getattr(config, f"{prefix}_camera_ids") == []
