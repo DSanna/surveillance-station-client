@@ -1001,16 +1001,40 @@ class TestPlayerSeekHold:
         def set_text(self, value: object) -> None:
             self.values.append(value)
 
+    class _Button:
+        def __init__(self) -> None:
+            self.icon = "media-playback-pause-symbolic"
+
+        def set_icon_name(self, name: str) -> None:
+            self.icon = name
+
     def _dialog(self) -> SimpleNamespace:
-        player = SimpleNamespace(time_pos=30.0, duration=120.0, seek_absolute=lambda pos: None)
-        return SimpleNamespace(
+        from surveillance.ui.player import PlayerDialog
+
+        player = SimpleNamespace(
+            time_pos=30.0, duration=120.0, is_playing=True, seek_absolute=lambda pos: None
+        )
+        dialog = SimpleNamespace(
             player=player,
+            play_btn=self._Button(),
             position_scale=self._Recorder(),
             time_label=self._Recorder(),
             _status_label=self._Recorder(),
             _loading=False,
             _seek_hold_until=0.0,
         )
+        dialog._sync_play_icon = lambda: PlayerDialog._sync_play_icon(dialog)  # type: ignore[arg-type]
+        return dialog
+
+    def test_the_icon_follows_mpv_pausing_at_the_end(self) -> None:
+        """keep-open has mpv pause by itself at the end of a recording,
+        which no click reports: the button went on offering Pause."""
+        from surveillance.ui.player import PlayerDialog
+
+        dialog = self._dialog()
+        dialog.player.is_playing = False
+        PlayerDialog._update_position(dialog)  # type: ignore[arg-type]
+        assert dialog.play_btn.icon == "media-playback-start-symbolic"
 
     def test_updates_hold_off_after_a_seek_then_resume(
         self, monkeypatch: pytest.MonkeyPatch

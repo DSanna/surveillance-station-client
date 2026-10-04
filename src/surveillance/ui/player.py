@@ -201,10 +201,16 @@ class PlayerDialog(Gtk.Window):
 
     def _on_play_pause(self, btn: Gtk.Button) -> None:
         self.player.pause()
-        if self.player.is_playing:
-            btn.set_icon_name("media-playback-pause-symbolic")
-        else:
-            btn.set_icon_name("media-playback-start-symbolic")
+        self._sync_play_icon()
+
+    def _sync_play_icon(self) -> None:
+        """Show Pause while playing and Play otherwise. Run on every
+        position tick too: mpv pauses by itself at the end of a recording
+        (keep-open), which no click reports."""
+        playing = self.player.is_playing
+        self.play_btn.set_icon_name(
+            "media-playback-pause-symbolic" if playing else "media-playback-start-symbolic"
+        )
 
     def _on_seek(self, scale: Gtk.Scale, scroll_type: Gtk.ScrollType, value: float) -> bool:
         # Emitted for every step of a drag, so this holds for its whole
@@ -228,6 +234,7 @@ class PlayerDialog(Gtk.Window):
         duration = self.player.duration
 
         if pos is not None:
+            self._sync_play_icon()
             if self._loading:
                 self._loading = False
                 self._status_label.set_text("")
