@@ -66,6 +66,7 @@ from surveillance.services.recording import (
     fetch_camera_thumbnail_at,
     find_covering_recording_at,
     find_recording_at,
+    find_recording_in_range,
 )
 from surveillance.services.snapshot import download_snapshot, take_and_save_snapshot
 from surveillance.services.ws_bridge import MIN_HISTORY_DELTA_SECONDS, WebSocketBridge
@@ -1561,7 +1562,9 @@ class LiveView(Gtk.Box):
                 return
 
             async def _do_download() -> Path:
-                rec = await find_recording_at(api, camera_id, int(start.timestamp()))
+                rec = await find_recording_in_range(
+                    api, camera_id, start.timestamp(), end.timestamp()
+                )
                 if rec is None:
                     raise ValueError("No recording found for that camera/time range")
                 return await download_recording_range(

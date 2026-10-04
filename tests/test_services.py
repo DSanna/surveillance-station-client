@@ -904,6 +904,27 @@ class TestRecordingService:
             assert rec.id == 100
 
     @pytest.mark.asyncio
+    async def test_find_recording_in_range_ignores_recordings_beside_it(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """A range in a gap gets None, not the nearest recording, whose
+        footage would be saved under the selected time."""
+        from surveillance.services.recording import find_recording_in_range
+
+        mock_data = {
+            "events": [
+                {"id": 100, "cameraId": 21, "startTime": 1700000000, "stopTime": 1700000100},
+                {"id": 101, "cameraId": 21, "startTime": 1700001200, "stopTime": 1700004800},
+            ],
+            "total": 2,
+        }
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=mock_data):
+            assert await find_recording_in_range(api, 21, 1700000600, 1700000900) is None
+            rec = await find_recording_in_range(api, 21, 1700000600, 1700001500)
+            assert rec is not None
+            assert rec.id == 101
+
+    @pytest.mark.asyncio
     async def test_find_recording_at_returns_none_when_nothing_recorded(
         self, api: SurveillanceAPI
     ) -> None:

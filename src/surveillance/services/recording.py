@@ -210,6 +210,28 @@ async def find_recording_at(
     )
 
 
+async def find_recording_in_range(
+    api: SurveillanceAPI, camera_id: int, start_unix: float, end_unix: float
+) -> Recording | None:
+    """The earliest recording of *camera_id* overlapping [start_unix,
+    end_unix), for downloading a slice of it, or None.
+
+    Never the nearest recording beside the range the way
+    find_recording_at falls back to: that one holds none of what was
+    asked for, and a download from it saved other footage under the
+    selected time.
+    """
+    recordings, _total = await list_recordings(
+        api,
+        camera_id=camera_id,
+        from_time=int(start_unix) - _HISTORY_SEEK_WINDOW,
+        to_time=int(end_unix),
+        limit=500,
+    )
+    overlapping = [r for r in recordings if r.start_time < end_unix and r.stop_time > start_unix]
+    return min(overlapping, key=lambda r: r.start_time, default=None)
+
+
 async def find_covering_recording_at(
     api: SurveillanceAPI, camera_id: int, target_unix: int
 ) -> Recording | None:
@@ -317,7 +339,7 @@ async def download_recording_range(
 
     Raises:
         ValueError: end_unix does not come after start_unix, or the range
-            starts past the end of *rec*.
+            lies wholly before or after *rec*.
         ApiError: Synology API error with numeric code.
         OSError: File-system write failure (partial file is cleaned up).
     """
@@ -325,6 +347,12 @@ async def download_recording_range(
     play_ms = round((end_unix - start_unix) * 1000)
     if play_ms <= 0:
         raise ValueError("end time must be after start time")
+    # A range that begins before the recording only has footage from the
+    # recording's start on. Counted from start_unix instead, the slice
+    # ran past end_unix by the difference.
+    play_ms = round((end_unix - max(start_unix, rec.start_time)) * 1000)
+    if play_ms <= 0:
+        raise ValueError("selected range ends before the recording starts")
     # The mirror of the offset clamp above, at the other end. A range
     # chosen close to "now" sits inside a recording DSM is still writing,
     # whose stop_time was already out of date when it was fetched, so the

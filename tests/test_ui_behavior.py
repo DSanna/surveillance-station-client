@@ -451,16 +451,34 @@ class TestRecordingDownloadRangeParams:
     async def test_offset_clamped_to_zero_before_recording_start(
         self, api: SurveillanceAPI, tmp_path: Path
     ) -> None:
-        """A requested start before the recording's own start_time (e.g. a
-        rounding/clock-skew edge case) must not send a negative offset."""
+        """A range starting before the recording does not send a negative
+        offset, and asks only for what the recording holds of it."""
         from surveillance.services.recording import download_recording_range
 
         output = tmp_path / "clip.mp4"
         rec = self._rec(start_time=1000)
 
         with patch.object(api, "stream_download", _stream_mock(b"x")) as mock:
+            await download_recording_range(api, rec, 990.0, 1005.0, output)
+            params = mock.call_args[1]["extra_params"]
+            assert params["offsetTimeMs"] == "0"
+            # 1000 to 1005, not 15s from the recording's start, which
+            # would run 10s past the end of the range.
+            assert params["playTimeMs"] == "5000"
+
+    @pytest.mark.asyncio
+    async def test_range_ending_before_recording_start_raises(
+        self, api: SurveillanceAPI, tmp_path: Path
+    ) -> None:
+        """Downloading from offset 0 would save footage from after the
+        range under the range's own time."""
+        from surveillance.services.recording import download_recording_range
+
+        output = tmp_path / "clip.mp4"
+        rec = self._rec(start_time=1000)
+
+        with pytest.raises(ValueError, match="ends before the recording starts"):
             await download_recording_range(api, rec, 990.0, 995.0, output)
-            assert mock.call_args[1]["extra_params"]["offsetTimeMs"] == "0"
 
     @pytest.mark.asyncio
     async def test_play_time_clamped_to_recording_end(
