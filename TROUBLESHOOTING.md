@@ -266,7 +266,8 @@ treated as fixed:
 Each setting has its own reset-to-default button, plus one that resets
 the whole page at once. Changes apply to the next stream that starts (the
 on-screen readout takes effect immediately, even on an already-playing
-stream) and persist across restarts, in
+stream, and the speed budget the next time the speed dropdown opens) and
+persist across restarts, in
 `~/.config/surveillance-station/config.toml`'s `[setting_overrides]`/
 `[setting_overrides_bool]` sections.
 

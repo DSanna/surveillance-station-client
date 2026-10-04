@@ -195,7 +195,8 @@ def set_max_speed_slot_product(value: float) -> None:
     """Update _MAX_SPEED_SLOT_PRODUCT at runtime, used by the Settings
     page's timeline-settings registry (surveillance.settings_registry).
     Read fresh by set_active_slot_count() on every layout/slot-count
-    change, so reassigning it here takes effect from the next one.
+    change and every time the speed dropdown opens, so reassigning it
+    here takes effect from the next of those.
     Clamped to 1.0, the least one slot at 1x needs; 1x itself stays on
     offer whatever the budget, see max_speed_for_slots."""
     global _MAX_SPEED_SLOT_PRODUCT
@@ -1027,6 +1028,7 @@ class Timeline(Gtk.Box):
         speed that silently vanished from the list on a layout switch
         would read as a bug rather than a limit.
         """
+        self._active_slot_count: int | None = count
         self._max_speed = max_speed_for_slots(count)
         available = [value for value in self._speed_radios if float(value) <= self._max_speed]
         for value, radio in self._speed_radios.items():
@@ -1467,7 +1469,15 @@ class Timeline(Gtk.Box):
             box.append(radio)
         popover = Gtk.Popover()
         popover.set_child(box)
+        popover.connect("show", self._on_speed_popover_show)
         return popover
+
+    def _on_speed_popover_show(self, _popover: Gtk.Popover) -> None:
+        """Apply the speed budget as it stands now. The Settings page
+        can change it at any time, and only a layout switch used to
+        reapply it, which nothing about the setting suggests."""
+        if self._active_slot_count is not None:
+            self.set_active_slot_count(self._active_slot_count)
 
     def _on_speed_radio_toggled(self, radio: Gtk.CheckButton, value: str) -> None:
         if not radio.get_active():
@@ -1578,6 +1588,7 @@ class Timeline(Gtk.Box):
         # Every speed, until LiveView says how many slots are active
         # (see set_active_slot_count).
         self._max_speed = _MAX_SPEED_SLOT_PRODUCT
+        self._active_slot_count = None
         self._speed_btn.set_popover(self._build_speed_popover())
         button_cluster.append(self._speed_btn)
 

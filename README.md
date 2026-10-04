@@ -68,7 +68,7 @@ View, add, and delete camera licenses. Online and offline activation.
 <details>
 <summary><b>Settings</b></summary>
 
-Tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately) and persist across restarts.
+Tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately, and the speed budget the next time the speed dropdown opens) and persist across restarts.
 </details>
 <details>
 <summary><b>Session Persistence</b></summary>

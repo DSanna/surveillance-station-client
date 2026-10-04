@@ -240,6 +240,40 @@ class TestMaxSpeedForSlots:
         budget(1.0)
         assert max_speed_for_slots(16) == 1.0
 
+    def test_a_changed_budget_applies_when_the_dropdown_opens(
+        self, budget: Callable[[float], None]
+    ) -> None:
+        """The Settings page can change the budget at any time; it used
+        to reach the dropdown only on the next layout switch."""
+        from types import SimpleNamespace
+
+        from surveillance.ui.timeline import Timeline
+
+        class _Radio:
+            def __init__(self) -> None:
+                self.sensitive = True
+
+            def set_sensitive(self, value: bool) -> None:
+                self.sensitive = value
+
+            def set_tooltip_text(self, text: str | None) -> None:
+                pass
+
+            def get_active(self) -> bool:
+                return False
+
+        radios = {v: _Radio() for v in ("1", "2", "4", "8", "16")}
+        bar = SimpleNamespace(_speed_radios=radios, _max_speed=100.0, _active_slot_count=None)
+        bar.set_active_slot_count = lambda count: Timeline.set_active_slot_count(bar, count)  # type: ignore[arg-type]
+        budget(64.0)
+        bar.set_active_slot_count(4)
+        assert radios["16"].sensitive
+
+        budget(16.0)
+        Timeline._on_speed_popover_show(bar, None)  # type: ignore[arg-type]
+        assert not radios["16"].sensitive
+        assert radios["4"].sensitive
+
     def test_no_slots_means_the_whole_budget(self, budget: Callable[[float], None]) -> None:
         budget(100.0)
         assert max_speed_for_slots(0) == 100.0
