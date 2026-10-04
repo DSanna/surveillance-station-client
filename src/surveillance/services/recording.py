@@ -32,6 +32,7 @@ import base64
 import collections
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -394,6 +395,10 @@ _MAX_THUMBNAIL_CACHE = 128
 # still returns its image to the row that asked, but does not put it in
 # the cache the next NAS will read.
 _cache_generation = 0
+# The clear runs on the GTK thread, the generation check and insert on
+# the asyncio thread: without this a clear landing between the two let
+# an old NAS's thumbnail back in.
+_cache_lock = threading.Lock()
 
 
 def _cache_put(
@@ -418,8 +423,9 @@ def clear_snapshot_cache() -> None:
     """
     global _cache_generation
 
-    _cache_generation += 1
-    _recording_thumbnail_cache.clear()
+    with _cache_lock:
+        _cache_generation += 1
+        _recording_thumbnail_cache.clear()
 
 
 async def _request_thumbnail(
@@ -468,20 +474,24 @@ async def fetch_recording_thumbnail(
     rec: Recording,
 ) -> bytes:
     """Fetch a thumbnail for a recording, cached by recording id."""
-    if rec.id in _recording_thumbnail_cache:
-        return _recording_thumbnail_cache[rec.id]
+    cached = _recording_thumbnail_cache.get(rec.id)
+    if cached is not None:
+        return cached
 
     generation = _cache_generation
 
     async with _thumbnail_semaphore:
-        if rec.id in _recording_thumbnail_cache:
-            return _recording_thumbnail_cache[rec.id]
+        cached = _recording_thumbnail_cache.get(rec.id)
+        if cached is not None:
+            return cached
 
         image_data = await _request_thumbnail(
             api, rec.camera_id, rec.arch_id, rec.mount_id, rec.start_time
         )
-        if image_data and generation == _cache_generation:
-            _cache_put(_recording_thumbnail_cache, rec.id, image_data, _MAX_THUMBNAIL_CACHE)
+        if image_data:
+            with _cache_lock:
+                if generation == _cache_generation:
+                    _cache_put(_recording_thumbnail_cache, rec.id, image_data, _MAX_THUMBNAIL_CACHE)
         return image_data
 
 

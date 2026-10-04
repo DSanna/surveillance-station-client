@@ -1053,6 +1053,41 @@ class TestRecordingService:
             assert await fetch_recording_thumbnail(api, rec) == b""
         clear_snapshot_cache()
 
+    @pytest.mark.asyncio
+    async def test_a_clear_from_another_thread_waits_for_an_insert(
+        self, api: SurveillanceAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The clear runs on the GTK thread, the generation check and the
+        insert on the asyncio thread. A clear landing between the two used
+        to let the old NAS's thumbnail back into the cache."""
+        import threading
+
+        from surveillance.services import recording
+        from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
+
+        clear_snapshot_cache()
+        real_put = recording._cache_put
+        clear_finished_inside_put: list[bool] = []
+
+        def _put_racing_a_clear(*args: object) -> None:
+            clearer = threading.Thread(target=clear_snapshot_cache)
+            clearer.start()
+            clearer.join(timeout=0.2)
+            clear_finished_inside_put.append(not clearer.is_alive())
+            real_put(*args)  # type: ignore[arg-type]
+            _put_racing_a_clear.clearer = clearer  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(recording, "_cache_put", _put_racing_a_clear)
+        rec = Recording(
+            id=44, camera_id=39, camera_name="CAM 58", start_time=1700000000, stop_time=1700000060
+        )
+        data = [{"thumbnail": base64.b64encode(b"old-nas").decode()}]
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=data):
+            await fetch_recording_thumbnail(api, rec)
+        _put_racing_a_clear.clearer.join(timeout=2.0)  # type: ignore[attr-defined]
+        assert clear_finished_inside_put == [False], "the clear must wait for the insert"
+        assert 44 not in recording._recording_thumbnail_cache
+
 
 class TestFetchCameraThumbnailAt:
     """Hover-preview image source for the Live View timeline — unlike
