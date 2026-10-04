@@ -3236,7 +3236,10 @@ class LiveView(Gtk.Box):
                 history_target = self._history_target(slot)
                 slot.stop_stream()
                 self._update_slot_audio(slot, slot.camera)
-                self._restart_slot_stream(slot.index, slot.camera, history_target)
+                # While another page is shown the streams are paused, and
+                # resume_streams restarts them on return.
+                if not self._streams_paused:
+                    self._restart_slot_stream(slot.index, slot.camera, history_target)
 
     def pause_streams(self) -> None:
         """Stop all mpv playback but keep camera assignments.

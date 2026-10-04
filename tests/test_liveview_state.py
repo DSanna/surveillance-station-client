@@ -736,7 +736,7 @@ class TestLostHistorySlot:
         slot = self._lost_slot()
         slot.get_visible = lambda: True  # type: ignore[method-assign]
         restarted: list[tuple[int, int, float | None]] = []
-        page = SimpleNamespace(_slots=[slot])
+        page = SimpleNamespace(_slots=[slot], _streams_paused=False)
         page._history_target = LiveView._history_target
         page._update_slot_audio = lambda slot, camera: None
         page._restart_slot_stream = lambda idx, camera, target: restarted.append(
@@ -744,6 +744,13 @@ class TestLostHistorySlot:
         )
         LiveView.restart_camera(page, 1)  # type: ignore[arg-type]
         assert restarted == [(0, 1, 1_700_000_500.0)]
+
+        # Not while another page is shown: nothing would see the stream,
+        # and resume_streams restarts every slot on return anyway.
+        restarted.clear()
+        page._streams_paused = True
+        LiveView.restart_camera(page, 1)  # type: ignore[arg-type]
+        assert restarted == []
 
     def test_starting_its_history_stream_ends_the_retry(
         self, monkeypatch: pytest.MonkeyPatch
