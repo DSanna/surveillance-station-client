@@ -1256,3 +1256,22 @@ class TestSnapshotViewerFiles:
 
         SnapshotViewerDialog._on_close(viewer, None)  # type: ignore[arg-type]
         assert list(viewer_dir.iterdir()) == []
+
+
+class TestEmptyLaterPage:
+    """A later page whose rows are all gone, say the last one deleted on
+    page 2, steps back to page one rather than showing "Page 2 of 1"."""
+
+    @pytest.mark.parametrize(
+        ("module", "view"),
+        [("recordings", "RecordingsView"), ("timelapse", "TimeLapseView")],
+    )
+    def test_steps_back_when_nothing_is_left(self, module: str, view: str) -> None:
+        import importlib
+
+        cls = getattr(importlib.import_module(f"surveillance.ui.{module}"), view)
+        reloaded: list[int] = []
+        page = SimpleNamespace(_loading=True, _reload_pending=False, _offset=50, _total=51)
+        page._load_recordings = lambda: reloaded.append(page._offset)
+        cls._on_recordings_loaded(page, ([], 0))
+        assert reloaded == [0]
