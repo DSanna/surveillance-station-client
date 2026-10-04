@@ -68,14 +68,12 @@ from surveillance.util.async_bridge import run_async
 _THUMB_WIDTH = 120
 _THUMB_HEIGHT = 68
 
-# Server-side filtering + pagination is used whenever at most one camera
-# is selected (see services.snapshot.list_snapshots — camId/from/to/start
-# are all real, working params, confirmed against a real NAS). camId only
-# accepts a single value though, so the one case that can't be done
-# server-side is a multi-camera Advanced Search selection: that falls back
-# to fetching everything in the time range (a large limit rather than
-# genuinely unbounded — snapshot counts are normally far smaller than
-# recordings or events) and filtering/paginating client-side instead. See
+# Server-side pagination is used only with no camera filter. Any camera
+# filter, one camera or several, fetches everything in the time range (a
+# large limit rather than genuinely unbounded: snapshot counts are
+# normally far smaller than recordings or events) and filters and pages
+# client-side, because the camIdList param was found to be ignored by at
+# least one real NAS (see services.snapshot.list_snapshots). See
 # _load_snapshots().
 _PAGE_SIZE = 50
 _FETCH_ALL_LIMIT = 5000
@@ -97,9 +95,8 @@ class SnapshotsView(Gtk.Box):
         self._snapshots: list[Snapshot] = []
         self._total = 0
         self._page = 0
-        # Set only while a multi-camera Advanced Search selection is
-        # active (see _load_snapshots) — the client-side-filtering
-        # fallback for the one thing SnapShot::List's camId can't do.
+        # The cameras a client-side filtered load keeps, set whenever a
+        # camera filter is active (see _load_snapshots).
         self._multi_camera_filter: set[int] | None = None
         self._camera_id: int | None = None
         self._loading = False
