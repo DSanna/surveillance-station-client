@@ -208,7 +208,14 @@ class TestExitPaths:
     window, and the signals, which used to skip it and lose a setting
     changed in the last second, SIGHUP having no handler at all."""
 
-    def test_exit_now_saves_before_exiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("loaded", [True, False])
+    def test_exit_now_saves_only_a_loaded_config(
+        self, monkeypatch: pytest.MonkeyPatch, loaded: bool
+    ) -> None:
+        """Before do_startup reads the real config, self.config is the empty
+        default, and saving it replaced every profile: Gio returns from run()
+        without starting up on an unknown option such as --version, or when
+        it hands a second launch over to the running instance."""
         import os
         from types import SimpleNamespace
 
@@ -224,9 +231,11 @@ class TestExitPaths:
             raise SystemExit(code)
 
         monkeypatch.setattr(os, "_exit", _exit)
+        app = SimpleNamespace(config=object(), _config_loaded=loaded)
         with pytest.raises(SystemExit):
-            SurveillanceApp.exit_now(SimpleNamespace(config=object()))  # type: ignore[arg-type]
-        assert order == ["save", "complete", "exit 0"]
+            SurveillanceApp.exit_now(app)  # type: ignore[arg-type]
+        expected = ["save", "complete", "exit 0"] if loaded else ["complete", "exit 0"]
+        assert order == expected
 
     @pytest.mark.parametrize("name", ["SIGHUP", "SIGTERM", "SIGINT"])
     def test_each_signal_reaches_the_app(self, tmp_path: Path, name: str) -> None:

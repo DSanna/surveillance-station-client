@@ -80,6 +80,12 @@ class SurveillanceApp(Gtk.Application):
             "PATH",
         )
         self.config: AppConfig = AppConfig()
+        # Set once do_startup has read the real config. Until then
+        # self.config is the empty default above, and saving it would
+        # replace the user's profiles: Gio returns from run() without
+        # starting up on an unknown option, or when it hands a second
+        # launch over to the instance already running.
+        self._config_loaded = False
         self.api: SurveillanceAPI | None = None
         self._window: Gtk.ApplicationWindow | None = None
         # (tag_name, html_url) of the latest GitHub release, once the
@@ -96,6 +102,7 @@ class SurveillanceApp(Gtk.Application):
         self._setup_actions()
         setup_async()
         self.config = load_config()
+        self._config_loaded = True
 
         # Before any window/stream exists, so a saved override is already
         # in effect the first time a camera plays.
@@ -172,10 +179,11 @@ class SurveillanceApp(Gtk.Application):
         import contextlib
         import os
 
-        with contextlib.suppress(Exception):
-            from surveillance.config import save_config_now
+        if self._config_loaded:
+            with contextlib.suppress(Exception):
+                from surveillance.config import save_config_now
 
-            save_config_now(self.config)
+                save_config_now(self.config)
         # Graceful shutdown, see surveillance.logfile.mark_complete.
         from surveillance.logfile import mark_complete
 
