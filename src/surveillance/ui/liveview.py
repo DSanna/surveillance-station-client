@@ -27,15 +27,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 import logging
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import gi
 
@@ -642,6 +643,9 @@ class LiveView(Gtk.Box):
         # exactly what _last_event_nav_key below exists to make
         # unnecessary) can't undo it -- see _on_event_nav_resolved.
         self._event_nav_generation: int = 0
+        # One per camera, so its PTZ commands reach the NAS in the order
+        # they were sent (see _ptz_in_order).
+        self._ptz_locks: dict[int, asyncio.Lock] = {}
         # (camera_id, start_time) of the event a Previous/Next click
         # last landed on -- excluded from the next search in either
         # direction so a seek's landed position sitting a little past
@@ -2657,12 +2661,24 @@ class LiveView(Gtk.Box):
         slot._ptt_session = None
         slot.set_mic_active(False)
 
+    async def _ptz_in_order(self, camera_id: int, command: Coroutine[Any, Any, Any]) -> Any:
+        """Run one PTZ *command* for *camera_id* after the ones sent
+        before it. Each used to be its own task, so a Start and its Stop
+        raced: after an expired session each logs in again on its own,
+        and the Stop could reach the NAS first and leave the motor
+        running. asyncio.Lock wakes its waiters in the order they came."""
+        lock = self._ptz_locks.setdefault(camera_id, asyncio.Lock())
+        async with lock:
+            return await command
+
     def _on_slot_ptz_move(self, slot_idx: int, direction: str, move_type: str) -> None:
         camera = self._slots[slot_idx].camera
         if not camera or not self.app.api:
             return
         run_async(
-            ptz.move(self.app.api, camera.id, f"{direction}{move_type}"),
+            self._ptz_in_order(
+                camera.id, ptz.move(self.app.api, camera.id, f"{direction}{move_type}")
+            ),
             error_callback=lambda e: log.error("PTZ move failed: %s", e),
         )
 
@@ -2671,7 +2687,9 @@ class LiveView(Gtk.Box):
         if not camera or not self.app.api:
             return
         run_async(
-            ptz.zoom(self.app.api, camera.id, f"{direction}{move_type}"),
+            self._ptz_in_order(
+                camera.id, ptz.zoom(self.app.api, camera.id, f"{direction}{move_type}")
+            ),
             error_callback=lambda e: log.error("PTZ zoom failed: %s", e),
         )
 
@@ -2680,7 +2698,7 @@ class LiveView(Gtk.Box):
         if not camera or not self.app.api:
             return
         run_async(
-            ptz.focus(self.app.api, camera.id, control, move_type),
+            self._ptz_in_order(camera.id, ptz.focus(self.app.api, camera.id, control, move_type)),
             error_callback=lambda e: log.error("PTZ focus failed: %s", e),
         )
 
@@ -2689,7 +2707,7 @@ class LiveView(Gtk.Box):
         if not camera or not self.app.api:
             return
         run_async(
-            ptz.go_preset(self.app.api, camera.id, preset_id),
+            self._ptz_in_order(camera.id, ptz.go_preset(self.app.api, camera.id, preset_id)),
             error_callback=lambda e: log.error("PTZ go_preset failed: %s", e),
         )
 
@@ -2698,7 +2716,7 @@ class LiveView(Gtk.Box):
         if not camera or not self.app.api:
             return
         run_async(
-            ptz.run_patrol(self.app.api, camera.id, patrol_id),
+            self._ptz_in_order(camera.id, ptz.run_patrol(self.app.api, camera.id, patrol_id)),
             error_callback=lambda e: log.error("PTZ run_patrol failed: %s", e),
         )
 

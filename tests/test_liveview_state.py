@@ -29,6 +29,7 @@ carries (the same technique as test_mpv_profiles' _applied)."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from types import SimpleNamespace
 
@@ -924,3 +925,41 @@ class TestLiveDropsLookupsInFlight:
         assert applied == [], "a superseded seek must not apply either"
         LiveView._on_bridge_seek_done(page, 5, slot, 0, bridge, 1_700_000_000)  # type: ignore[arg-type]
         assert applied == [1_700_000_000]
+
+
+class TestPtzCommandOrder:
+    """A PTZ Start and its Stop used to be independent tasks. After an
+    expired session each logs in again on its own, and a Stop whose login
+    came back first reached the NAS before its Start, leaving the motor
+    running."""
+
+    async def test_a_slow_start_still_reaches_the_nas_before_its_stop(self) -> None:
+        reached: list[str] = []
+
+        async def command(name: str, delay: float) -> None:
+            await asyncio.sleep(delay)  # the re-login this one waits on
+            reached.append(name)
+
+        page = SimpleNamespace(_ptz_locks={})
+        start = asyncio.ensure_future(
+            LiveView._ptz_in_order(page, 1, command("upStart", 0.2))  # type: ignore[arg-type]
+        )
+        stop = asyncio.ensure_future(
+            LiveView._ptz_in_order(page, 1, command("upStop", 0.0))  # type: ignore[arg-type]
+        )
+        await asyncio.gather(start, stop)
+        assert reached == ["upStart", "upStop"]
+
+    async def test_other_cameras_are_not_held_up(self) -> None:
+        reached: list[str] = []
+
+        async def command(name: str, delay: float) -> None:
+            await asyncio.sleep(delay)
+            reached.append(name)
+
+        page = SimpleNamespace(_ptz_locks={})
+        await asyncio.gather(
+            LiveView._ptz_in_order(page, 1, command("cam1", 0.2)),  # type: ignore[arg-type]
+            LiveView._ptz_in_order(page, 2, command("cam2", 0.0)),  # type: ignore[arg-type]
+        )
+        assert reached == ["cam2", "cam1"]
