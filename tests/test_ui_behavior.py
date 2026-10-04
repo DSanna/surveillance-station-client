@@ -912,13 +912,18 @@ class TestRecordingFilterConfig:
 
 
 class _Visible:
-    """Stand-in for the visibility half of a Gtk.Widget."""
+    """Stand-in for the visibility half of a Gtk.Widget, and the active
+    state of a nav toggle button."""
 
     def __init__(self) -> None:
         self.visible = True
+        self.active = False
 
     def set_visible(self, visible: bool) -> None:
         self.visible = visible
+
+    def set_active(self, active: bool) -> None:
+        self.active = active
 
 
 class TestSidebarLoggedOut:
@@ -954,6 +959,17 @@ class TestSidebarLoggedOut:
         assert sidebar._list_header.visible is False  # type: ignore[attr-defined]
         shown = [p for p, b in sidebar._nav_buttons.items() if b.visible]  # type: ignore[attr-defined]
         assert shown == ["settings"]
+
+    def test_logout_leaves_no_row_highlighted(self) -> None:
+        """GTK ignores a click on the active button of a toggle group,
+        so logging out from Settings left it impossible to reopen."""
+        from surveillance.ui.sidebar import CameraSidebar
+
+        sidebar = self._sidebar()
+        sidebar._nav_buttons["settings"].active = True  # type: ignore[attr-defined]
+        CameraSidebar.set_logged_out(sidebar, True)  # type: ignore[arg-type]
+
+        assert not any(b.active for b in sidebar._nav_buttons.values())  # type: ignore[attr-defined]
 
     def test_login_brings_every_row_back(self) -> None:
         from surveillance.ui.sidebar import CameraSidebar

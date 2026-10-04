@@ -166,6 +166,14 @@ class CameraSidebar(Gtk.Box):
         self._list_header.set_visible(not logged_out)
         for page_name, btn in self._nav_buttons.items():
             btn.set_visible(not logged_out or page_name == "settings")
+            if logged_out:
+                # The stack now shows the login prompt, not the page the
+                # highlight is on. Left active, Settings could not be
+                # opened from here: GTK ignores a click on the active
+                # button of a toggle group, so nothing would toggle.
+                # Turning it off emits a toggled that _on_nav_toggled
+                # ignores.
+                btn.set_active(False)
 
     def set_update_available(self, available: bool) -> None:
         """Show/hide the update dot on the About nav row."""
