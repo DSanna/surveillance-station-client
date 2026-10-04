@@ -378,6 +378,12 @@ Application configuration file.
 .TP
 .I ~/.local/share/surveillance-station/snapshots/
 Default snapshot download directory.
+.TP
+.I ~/.cache/surveillance-station/viewer/
+The image a snapshot viewer is showing
+.RI ( $XDG_CACHE_HOME
+when set). A viewer still open when the application exits leaves its
+file behind, and the next run's first viewer removes it.
 .SH ENVIRONMENT
 .TP
 .B SURVEILLANCE_AO

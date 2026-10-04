@@ -45,7 +45,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf, Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera, Snapshot
-from surveillance.config import load_search_filters, save_search_filters
+from surveillance.config import CACHE_DIR, load_search_filters, save_search_filters
 from surveillance.services.recording import (
     PRESET_LABELS,
     PRESET_LAST7D,
@@ -830,6 +830,29 @@ class SnapshotsView(Gtk.Box):
         )
 
 
+# Where a viewer writes the image mpv plays, removed on close. Quitting
+# goes through os._exit, which skips that, so a viewer still open then
+# leaves its file behind; kept in the app's own cache rather than the
+# shared temp directory, the next run's first viewer clears those out.
+# One running instance per session (see SurveillanceApp), so nothing
+# there is in use by anyone else at that point.
+_VIEWER_DIR = CACHE_DIR / "viewer"
+_viewer_dir_ready = False
+
+
+def _prepare_viewer_dir() -> None:
+    """Create _VIEWER_DIR, emptied of what an earlier run left, once per
+    run. Raises OSError if it cannot be created."""
+    global _viewer_dir_ready
+    if _viewer_dir_ready:
+        return
+    _VIEWER_DIR.mkdir(parents=True, exist_ok=True)
+    for leftover in _VIEWER_DIR.iterdir():
+        with contextlib.suppress(OSError):
+            leftover.unlink()
+    _viewer_dir_ready = True
+
+
 class SnapshotViewerDialog(Gtk.Window):
     """Full-size picture viewer for a single snapshot.
 
@@ -871,7 +894,8 @@ class SnapshotViewerDialog(Gtk.Window):
         # source path for this one caller. Cleaned up in _on_close.
         tmp_path: Path | None = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            _prepare_viewer_dir()
+            with tempfile.NamedTemporaryFile(suffix=".jpg", dir=_VIEWER_DIR, delete=False) as f:
                 tmp_path = Path(f.name)
                 f.write(data)
         except OSError as exc:

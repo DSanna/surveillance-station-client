@@ -41,30 +41,22 @@ import tomli_w
 log = logging.getLogger(__name__)
 
 
-def _config_dir() -> Path:
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "surveillance-station"
+def _xdg_dir(variable: str, default: Path) -> Path:
+    """This app's directory under the XDG base directory *variable*
+    names, or under *default* where it is unset."""
+    xdg = os.environ.get(variable, "")
+    return (Path(xdg) if xdg else default) / "surveillance-station"
 
 
-def _data_dir() -> Path:
-    xdg = os.environ.get("XDG_DATA_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "surveillance-station"
-
-
-def _state_dir() -> Path:
-    # Logs specifically. XDG_STATE_HOME is where the spec puts state
-    # that should persist but isn't precious enough for XDG_DATA_HOME
-    # (which holds actual user content here, e.g. snapshots).
-    xdg = os.environ.get("XDG_STATE_HOME", "")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
-    return base / "surveillance-station"
-
-
-CONFIG_DIR = _config_dir()
-DATA_DIR = _data_dir()
-STATE_DIR = _state_dir()
+CONFIG_DIR = _xdg_dir("XDG_CONFIG_HOME", Path.home() / ".config")
+# Actual user content, e.g. snapshots.
+DATA_DIR = _xdg_dir("XDG_DATA_HOME", Path.home() / ".local" / "share")
+# Logs specifically. XDG_STATE_HOME is where the spec puts state that
+# should persist but isn't precious enough for XDG_DATA_HOME.
+STATE_DIR = _xdg_dir("XDG_STATE_HOME", Path.home() / ".local" / "state")
+# Files only needed while the app runs, e.g. the image a snapshot viewer
+# plays.
+CACHE_DIR = _xdg_dir("XDG_CACHE_HOME", Path.home() / ".cache")
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 

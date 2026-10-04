@@ -1221,3 +1221,38 @@ class TestFailedLoadClearsRows:
         EventsView._on_load_error(page, OSError("down"))
         assert page.listbox.rows == []
         assert page.page_label.value == "Failed to load events"
+
+
+class TestSnapshotViewerFiles:
+    """Quitting goes through os._exit, which skips the viewer's close
+    handler, so a viewer open at exit left its image in the shared temp
+    directory for good. It is now written to the app's own cache, which
+    the next run's first viewer clears out."""
+
+    def test_the_next_run_clears_what_an_exit_left(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.ui import snapshots
+        from surveillance.ui.snapshots import SnapshotViewerDialog
+
+        viewer_dir = tmp_path / "viewer"
+        viewer_dir.mkdir()
+        leftover = viewer_dir / "tmpold.jpg"
+        leftover.write_bytes(b"from a run that exited")
+        monkeypatch.setattr(snapshots, "_VIEWER_DIR", viewer_dir)
+        monkeypatch.setattr(snapshots, "_viewer_dir_ready", False)
+
+        played: list[str] = []
+        viewer = SimpleNamespace(
+            _closed=False,
+            _tmp_path=None,
+            player=SimpleNamespace(play=played.append, stop=lambda: None),
+        )
+        SnapshotViewerDialog._on_image_loaded(viewer, b"\xff\xd8 jpeg")  # type: ignore[arg-type]
+
+        assert not leftover.exists()
+        assert [Path(p).parent for p in played] == [viewer_dir]
+        assert Path(played[0]).read_bytes() == b"\xff\xd8 jpeg"
+
+        SnapshotViewerDialog._on_close(viewer, None)  # type: ignore[arg-type]
+        assert list(viewer_dir.iterdir()) == []
