@@ -626,8 +626,10 @@ surveillance-station-client/
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py
     ├── test_logging.py
+    ├── test_login_dialog.py
     ├── test_models.py
     ├── test_mpv_env_options.py
+    ├── test_mpv_fence_workaround.py
     ├── test_mpv_profiles.py
     ├── test_resource_log.py
     ├── test_rtsp_health.py
