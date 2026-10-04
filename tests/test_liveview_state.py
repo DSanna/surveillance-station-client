@@ -151,6 +151,7 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _history_target=LiveView._history_target,
     )
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
+    page._reset_playback_speed = lambda: LiveView._reset_playback_speed(page)  # type: ignore[arg-type]
     page._resume_all_slots = lambda **kw: LiveView._resume_all_slots(page, **kw)  # type: ignore[arg-type]
     return page
 
@@ -865,3 +866,24 @@ class TestCalendarMonthWithoutAnswer:
         assert told == []
         LiveView._on_calendar_availability_failed(page, 3, 2026, 9, OSError())  # type: ignore[arg-type]
         assert told == [(2026, 9, "Could not check recordings for this month")]
+
+
+class TestReturningToThePageResetsSpeed:
+    """Coming back to Live View restarts every slot on Live, and a return
+    to Live resets the History speed and direction to 1x forward."""
+
+    def test_speed_and_direction_reset(self) -> None:
+        page = SimpleNamespace(
+            _streams_paused=True,
+            _active=[],
+            _slots=[],
+            _timeline_speed="16",
+            _timeline_reverse=True,
+            timeline=_Calls(),
+            _sync_history_active=lambda: None,
+        )
+        page._reset_playback_speed = lambda: LiveView._reset_playback_speed(page)  # type: ignore[arg-type]
+        LiveView.resume_streams(page)  # type: ignore[arg-type]
+        assert (page._timeline_speed, page._timeline_reverse) == ("1", False)
+        assert page.timeline.called("set_speed") == [("1",)]
+        assert page.timeline.called("set_reverse") == [(False,)]

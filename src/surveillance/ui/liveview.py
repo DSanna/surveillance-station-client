@@ -2231,16 +2231,21 @@ class LiveView(Gtk.Box):
         self._run_staggered(actions)
         if hasattr(self, "timeline"):
             self.timeline.set_history_active(False)
-            self._timeline_speed = "1"
-            self.timeline.set_speed("1")
-            self._timeline_reverse = False
-            self.timeline.set_reverse(False)
+            self._reset_playback_speed()
             if actions:
                 # Only when something actually left History -- a layout
                 # switch while every slot was already Live shouldn't
                 # clobber a view the user may have deliberately panned/
                 # zoomed while still watching live.
                 self.timeline.canvas.reset_view()
+
+    def _reset_playback_speed(self) -> None:
+        """Back to 1x forward, what every return to Live resets the
+        History speed and direction to."""
+        self._timeline_speed = "1"
+        self.timeline.set_speed("1")
+        self._timeline_reverse = False
+        self.timeline.set_reverse(False)
 
     def _show_timeline_thumbnail(
         self, generation: int, overlay_x: float, overlay_y: float, timestamp: float, data: bytes
@@ -3285,6 +3290,10 @@ class LiveView(Gtk.Box):
                 self._set_history_position(slot, None)
                 self._start_stream(i, slot.camera)
         self._sync_history_active()
+        # Kept, the next History entry ran at whatever speed was in use
+        # before leaving, and a lowered Settings budget then changed it
+        # the moment the speed dropdown opened.
+        self._reset_playback_speed()
 
     def stop_all(self) -> None:
         """Stop all streams."""

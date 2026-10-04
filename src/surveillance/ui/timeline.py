@@ -1042,9 +1042,10 @@ class Timeline(Gtk.Box):
             # Not suppressed, unlike set_speed's own display sync: the
             # speed genuinely changes here, so LiveView has to hear
             # about it and push it to every bridge. Unreachable as
-            # things stand -- a layout switch resets the speed to 1x
-            # before this runs -- but the clamp is what makes that an
-            # ordering detail rather than a correctness one.
+            # things stand: a layout switch and a return to the page
+            # (the budget only changes on the Settings page) both reset
+            # the speed to 1x before this runs, but the clamp is what
+            # makes that an ordering detail rather than a correctness one.
             self._speed_radios[max(available, key=float)].set_active(True)
 
     def set_reverse_callback(self, callback: Callable[[bool], None]) -> None:
