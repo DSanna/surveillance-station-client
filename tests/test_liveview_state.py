@@ -148,6 +148,7 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _slots=slots,
         _active=active,
         _set_history_position=lambda slot, pos: None,
+        _history_target=LiveView._history_target,
     )
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
     page._resume_all_slots = lambda **kw: LiveView._resume_all_slots(page, **kw)  # type: ignore[arg-type]
@@ -511,6 +512,7 @@ class TestSlotReload:
             _ws_bridge=bridge,
             _rtsp_monitor=None,
             _history_position=1_700_000_000.0,
+            _stream_lost=False,
             stop_stream=lambda: events.append(("stop",)),
         )
         page = SimpleNamespace(
@@ -545,6 +547,16 @@ class TestSlotReload:
         page = self._page(events, bridge=SimpleNamespace(is_history=False))
         LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
         assert events == [("stop",), ("start", 0, 7)]
+
+    def test_a_lost_history_slot_reloads_where_it_was(self) -> None:
+        """_on_stream_gave_up has already torn the bridge down, but the
+        slot is still in History: the camera poll's retry treats it so,
+        and Reload has to agree."""
+        events: list[object] = []
+        page = self._page(events)
+        page._slots[0]._stream_lost = True
+        LiveView._on_slot_reload(page, 0)  # type: ignore[arg-type]
+        assert events == [("stop",), ("seek", 1_700_000_000, 5)]
 
     def test_an_empty_slot_reloads_nothing(self) -> None:
         events: list[object] = []
@@ -690,3 +702,70 @@ class TestPushToTalkOnReassign:
         assert session.called("stop") == [()]
         assert slot._ptt_session is None
         assert slot.camera.id == 2  # type: ignore[attr-defined]
+
+
+class TestLostHistorySlot:
+    """A History slot whose stream gave up has no bridge, only its saved
+    position. Every path that decides between History and Live has to
+    read it the same way the camera poll's retry does."""
+
+    @staticmethod
+    def _lost_slot() -> _Calls:
+        slot = _slot()
+        slot._stream_lost = True
+        slot._history_position = 1_700_000_500.0
+        return slot
+
+    def test_the_live_button_drops_its_position(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(liveview, "run_async", lambda *args, **kwargs: None)
+        slot = self._lost_slot()
+        page = _page(False, [slot], active=[0])
+        page._leaving_history_slots = set()
+        page._set_history_position = lambda slot, pos: setattr(slot, "_history_position", pos)
+        page._run_staggered = lambda actions: [action() for action in actions]
+        page._start_stream = lambda *args: None
+        page._timeline_speed = "1"
+        page._timeline_reverse = False
+        LiveView._return_all_to_live(page)  # type: ignore[arg-type]
+        assert slot._history_position is None
+        assert LiveView._history_target(slot) is None  # type: ignore[arg-type]
+
+    def test_a_protocol_change_keeps_it_in_history(self) -> None:
+        slot = self._lost_slot()
+        slot.get_visible = lambda: True  # type: ignore[method-assign]
+        restarted: list[tuple[int, int, float | None]] = []
+        page = SimpleNamespace(_slots=[slot])
+        page._history_target = LiveView._history_target
+        page._update_slot_audio = lambda slot, camera: None
+        page._restart_slot_stream = lambda idx, camera, target: restarted.append(
+            (idx, camera.id, target)
+        )
+        LiveView.restart_camera(page, 1)  # type: ignore[arg-type]
+        assert restarted == [(0, 1, 1_700_000_500.0)]
+
+    def test_starting_its_history_stream_ends_the_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Left marked lost, every camera poll retried it again and
+        re-seeked a bridge that was playing fine."""
+
+        class _Bridge:
+            current_history_position = 1_700_000_500
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+        monkeypatch.setattr(liveview, "WebSocketBridge", _Bridge)
+        monkeypatch.setattr(liveview, "get_history_view_path", lambda api: "wss://nas/history")
+        slot = self._lost_slot()
+        page = SimpleNamespace(
+            app=SimpleNamespace(
+                api=SimpleNamespace(profile=SimpleNamespace(verify_ssl=False), sid="sid")
+            ),
+            _timeline_speed="1",
+            _timeline_reverse=False,
+            _start_bridge=lambda slot, bridge: None,
+        )
+        recording = SimpleNamespace(camera_id=1)
+        LiveView._enter_history_mode(page, slot, recording, 1_700_000_500)  # type: ignore[arg-type]
+        assert slot._stream_lost is False

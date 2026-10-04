@@ -2200,6 +2200,11 @@ class LiveView(Gtk.Box):
                 self._set_history_position(slot, None)
                 self._leaving_history_slots.add(slot_idx)
                 actions.append(partial(self._start_stream, slot_idx, slot.camera))
+            elif self._history_target(slot) is not None:
+                # Lost while in History: no bridge to replace, but the
+                # position its retry would return to has to go, or the
+                # next camera poll puts it straight back in History.
+                self._set_history_position(slot, None)
         self._run_staggered(actions)
         if hasattr(self, "timeline"):
             self.timeline.set_history_active(False)
@@ -2738,9 +2743,13 @@ class LiveView(Gtk.Box):
 
         Read before whatever tears the slot's stream down: clear() drops
         the position outright, and a fresh bridge starts reporting its
-        own.
+        own. A slot whose stream gave up has no bridge left, but is still
+        in History until something returns it to live, the same as the
+        camera poll's retry treats it.
         """
-        if slot._ws_bridge is None or not slot._ws_bridge.is_history:
+        if slot._ws_bridge is None:
+            return slot._history_position if slot._stream_lost else None
+        if not slot._ws_bridge.is_history:
             return None
         return slot._history_position
 
@@ -2881,6 +2890,10 @@ class LiveView(Gtk.Box):
         if not self.app.api:
             return target_unix
         slot.stop_stream()
+        # A stream really starts here, as in _on_stream_url, so a slot
+        # retried after a give-up stops being one. Left set, every camera
+        # poll retried it again, re-seeking a healthy bridge.
+        slot._stream_lost = False
         verify_ssl = self.app.api.profile.verify_ssl
         sid = self.app.api.sid
         label = slot.camera.name if slot.camera else ""
@@ -3195,9 +3208,12 @@ class LiveView(Gtk.Box):
         """
         for slot in self._slots:
             if slot.get_visible() and slot.camera and slot.camera.id == camera_id:
+                # Only the Live button ends History, so a slot showing
+                # recorded video comes back on the same moment.
+                history_target = self._history_target(slot)
                 slot.stop_stream()
                 self._update_slot_audio(slot, slot.camera)
-                self._start_stream(slot.index, slot.camera)
+                self._restart_slot_stream(slot.index, slot.camera, history_target)
 
     def pause_streams(self) -> None:
         """Stop all mpv playback but keep camera assignments.
