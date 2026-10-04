@@ -770,6 +770,33 @@ class TestAudioGapWatchdog:
         os.close(audio_r)
         os.close(audio_w)
 
+    async def test_streams_stopping_a_packet_apart_keep_their_audio(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pause or a silent drop stops both streams at once, but the
+        last audio frame can still land a packet before the last video
+        one. That sliver read as video outlasting the audio."""
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_TIMEOUT", 0.05)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_CHECK_INTERVAL", 0.001)
+        monkeypatch.setattr(ws_bridge, "_AUDIO_GAP_VIDEO_LEAD", 0.02)
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        audio_r, audio_w = os.pipe()
+        bridge._audio_write_fd = audio_w
+        stopped_at = time.monotonic()
+        bridge._last_audio_at = stopped_at - 0.01
+        bridge._last_video_at = stopped_at
+
+        watch = asyncio.create_task(bridge._watch_audio_gap())
+        await asyncio.sleep(0.3)
+
+        assert not watch.done(), "both streams stopped together, nothing is wedged"
+        assert bridge._audio_write_fd == audio_w
+        watch.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watch
+        os.close(audio_r)
+        os.close(audio_w)
+
 
 def _filling_bridge(audio_codec: str = "PCMU") -> tuple[WebSocketBridge, int]:
     """A History bridge on a real audio pipe, with real audio long

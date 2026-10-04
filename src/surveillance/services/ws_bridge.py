@@ -178,6 +178,13 @@ _HISTORY_TAIL_MARGIN = MIN_HISTORY_DELTA_SECONDS
 # any real inter-frame gap: audio arrives every 20-125ms.
 _AUDIO_GAP_TIMEOUT = 3.0  # seconds
 _AUDIO_GAP_CHECK_INTERVAL = 0.5  # seconds
+# How much longer than the audio the video has to have kept arriving
+# for the gap to be a wedge. When a pause or a silently dropped session
+# stops both at once, the last audio frame can still land up to one
+# audio packet (20-128ms) before the last video one, and without this
+# that sliver read as "no audio, video still arriving". A real wedge
+# keeps video coming for at least the 0.7s ffmpeg takes to hold it.
+_AUDIO_GAP_VIDEO_LEAD = 0.5  # seconds
 
 # How long a History camera may deliver no audio, while its video keeps
 # arriving, before the bridge fills the gap with silence (see
@@ -2165,7 +2172,8 @@ class WebSocketBridge:
         silently would trip this every time, since recv() waits out
         _IDLE_TIMEOUT before reconnecting and neither stream arrives
         meanwhile, and a camera that recovers perfectly would come back
-        mute.
+        mute. The video also has to have outlasted the audio (see
+        _AUDIO_GAP_VIDEO_LEAD), not merely stopped a packet after it.
 
         A History bridge fills its gaps with silence instead (see
         _fill_silence), so this only fires there once the fill itself
@@ -2178,8 +2186,9 @@ class WebSocketBridge:
                 return  # torn down, or already closed by an earlier gap
             now = time.monotonic()
             gap = now - self._last_audio_at
-            video_arriving = (
-                self._video_write_in_flight or now - self._last_video_at < _AUDIO_GAP_TIMEOUT
+            video_arriving = self._video_write_in_flight or (
+                now - self._last_video_at < _AUDIO_GAP_TIMEOUT
+                and self._last_video_at - self._last_audio_at > _AUDIO_GAP_VIDEO_LEAD
             )
             if gap < _AUDIO_GAP_TIMEOUT or not video_arriving:
                 continue
