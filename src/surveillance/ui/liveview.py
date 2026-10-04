@@ -1904,14 +1904,34 @@ class LiveView(Gtk.Box):
             # whether this is a same-recording reseek (reuses the
             # connection) or a jump to a different one (reconnects) — see
             # WebSocketBridge.seek()'s own docstring.
+            bridge = slot._ws_bridge
             run_async(
-                slot._ws_bridge.seek(recording, target_unix),
-                callback=lambda pos, s=slot, i=slot_idx: self._on_history_seek_applied(s, i, pos),
+                bridge.seek(recording, target_unix),
+                callback=lambda pos, s=slot, i=slot_idx, b=bridge: self._on_bridge_seek_done(
+                    generation, s, i, b, pos
+                ),
                 error_callback=lambda exc, i=slot_idx: self._on_history_seek_failed(slot, i, exc),
             )
         else:
             position = self._enter_history_mode(slot, recording, target_unix)
             self._on_history_seek_applied(slot, slot_idx, position)
+
+    def _on_bridge_seek_done(
+        self,
+        generation: int,
+        slot: CameraSlot,
+        slot_idx: int,
+        bridge: WebSocketBridge,
+        position: int,
+    ) -> None:
+        """A History bridge's seek() answer. Applied only while that seek
+        is still current and the bridge is still the slot's: the Live
+        button or a layout switch may have replaced it meanwhile, and its
+        position would leave a live slot looking like History."""
+        if generation != self._slot_seek_generation.get(slot_idx) or slot._ws_bridge is not bridge:
+            self._finish_timeline_seek(slot_idx)
+            return
+        self._on_history_seek_applied(slot, slot_idx, position)
 
     def _on_history_seek_applied(self, slot: CameraSlot, slot_idx: int, position: int) -> None:
         """Common tail for _on_recording_resolved's two seek-performing
@@ -2216,6 +2236,11 @@ class LiveView(Gtk.Box):
         # a restarted slot would feed a paused player, which the bridge
         # reads as a stalled pipe and gives up on.
         self._resume_all_slots()
+        # A seek or event lookup still out would land after this and put
+        # the slots straight back into History. As when leaving the page,
+        # forgetting the generations makes each of those stale on arrival.
+        self._slot_seek_generation.clear()
+        self._event_nav_generation += 1
         actions: list[Callable[[], None]] = []
         for slot_idx in self._active:
             slot = self._slots[slot_idx]

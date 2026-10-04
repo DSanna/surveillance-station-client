@@ -149,6 +149,8 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _active=active,
         _set_history_position=lambda slot, pos: None,
         _history_target=LiveView._history_target,
+        _slot_seek_generation={},
+        _event_nav_generation=0,
     )
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
     page._reset_playback_speed = lambda: LiveView._reset_playback_speed(page)  # type: ignore[arg-type]
@@ -887,3 +889,38 @@ class TestReturningToThePageResetsSpeed:
         assert (page._timeline_speed, page._timeline_reverse) == ("1", False)
         assert page.timeline.called("set_speed") == [("1",)]
         assert page.timeline.called("set_reverse") == [(False,)]
+
+
+class TestLiveDropsLookupsInFlight:
+    """A seek or event lookup sent before the Live button, or a layout
+    switch, used to land after it and put the slots back into History."""
+
+    def test_live_makes_them_stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(liveview, "run_async", lambda *args, **kwargs: None)
+        page = _page(False, [], active=[])
+        page._slot_seek_generation = {0: 7}
+        page._event_nav_generation = 3
+        page._leaving_history_slots = set()
+        page._run_staggered = lambda actions: None
+        page._timeline_speed = "1"
+        page._timeline_reverse = False
+        LiveView._return_all_to_live(page)  # type: ignore[arg-type]
+        assert page._slot_seek_generation == {}
+        assert page._event_nav_generation == 4
+
+    def test_a_late_bridge_seek_answer_is_dropped(self) -> None:
+        bridge = object()
+        slot = _slot(bridge=object())  # Live replaced the bridge meanwhile
+        finished: list[int] = []
+        applied: list[int] = []
+        page = SimpleNamespace(_slot_seek_generation={0: 5})
+        page._finish_timeline_seek = finished.append
+        page._on_history_seek_applied = lambda s, i, pos: applied.append(pos)
+        LiveView._on_bridge_seek_done(page, 5, slot, 0, bridge, 1_700_000_000)  # type: ignore[arg-type]
+        assert applied == [] and finished == [0]
+
+        slot._ws_bridge = bridge
+        LiveView._on_bridge_seek_done(page, 4, slot, 0, bridge, 1_700_000_000)  # type: ignore[arg-type]
+        assert applied == [], "a superseded seek must not apply either"
+        LiveView._on_bridge_seek_done(page, 5, slot, 0, bridge, 1_700_000_000)  # type: ignore[arg-type]
+        assert applied == [1_700_000_000]
