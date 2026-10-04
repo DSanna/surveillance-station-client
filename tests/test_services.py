@@ -1242,6 +1242,27 @@ class TestStreamToFile:
         assert not out.exists()
 
     @pytest.mark.asyncio
+    async def test_the_chosen_name_only_ever_holds_a_whole_file(self, tmp_path: Path) -> None:
+        """Quitting goes through os._exit, which skips the cleanup. Written
+        in place, a download cut short that way stayed truncated under the
+        chosen name, over the file the user had picked to replace."""
+        from surveillance.services.download import stream_to_file
+
+        out = tmp_path / "rec.mp4"
+        out.write_bytes(b"the file being replaced")
+        seen_mid_download: list[bytes] = []
+
+        async def _gen() -> AsyncIterator[bytes]:
+            yield b"\x00\x00\x00\x18ftypisom" + b"x" * 2000
+            seen_mid_download.append(out.read_bytes())
+            yield b"tail"
+
+        await stream_to_file(_gen(), out, "Recording 1")
+        assert seen_mid_download == [b"the file being replaced"]
+        assert out.read_bytes().endswith(b"tail")
+        assert list(tmp_path.iterdir()) == [out], "no .part file left behind"
+
+    @pytest.mark.asyncio
     async def test_rejects_an_error_page_before_writing(self, tmp_path: Path) -> None:
         from surveillance.services.download import stream_to_file
 

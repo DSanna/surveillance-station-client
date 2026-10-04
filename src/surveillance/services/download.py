@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -90,6 +91,14 @@ def check_download_content(data: bytes, label: str) -> None:
             )
 
 
+def _part_path(output_path: Path) -> Path:
+    """Where a download is written until it is complete, then renamed to
+    *output_path*. Quitting goes through os._exit, which skips the
+    cleanup below, and a file written in place would be left truncated
+    under the name the user picked, over whatever it replaced."""
+    return output_path.with_name(output_path.name + ".part")
+
+
 async def stream_to_file(chunks: AsyncIterator[bytes], output_path: Path, label: str) -> Path:
     """Write a streamed download to disk as it arrives.
 
@@ -106,7 +115,8 @@ async def stream_to_file(chunks: AsyncIterator[bytes], output_path: Path, label:
     head = bytearray()
     checked = False
     total = 0
-    handle = await asyncio.to_thread(output_path.open, "wb")
+    part_path = _part_path(output_path)
+    handle = await asyncio.to_thread(part_path.open, "wb")
     try:
         async for chunk in chunks:
             if not checked:
@@ -130,10 +140,16 @@ async def stream_to_file(chunks: AsyncIterator[bytes], output_path: Path, label:
     except BaseException:
         await asyncio.to_thread(handle.close)
         with contextlib.suppress(OSError):
-            output_path.unlink()
+            part_path.unlink()
         raise
 
     await asyncio.to_thread(handle.close)
+    try:
+        await asyncio.to_thread(os.replace, part_path, output_path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            part_path.unlink()
+        raise
     log.info("%s downloaded: %s (%d bytes)", label, output_path, total)
     return output_path
 
@@ -149,11 +165,13 @@ async def write_download(data: bytes, output_path: Path, label: str) -> Path:
     check_download_content(data, label)
 
     await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
+    part_path = _part_path(output_path)
     try:
-        await asyncio.to_thread(output_path.write_bytes, data)
+        await asyncio.to_thread(part_path.write_bytes, data)
+        await asyncio.to_thread(os.replace, part_path, output_path)
     except Exception:
         with contextlib.suppress(OSError):
-            output_path.unlink()
+            part_path.unlink()
         raise
 
     log.info("%s downloaded: %s (%d bytes)", label, output_path, len(data))
