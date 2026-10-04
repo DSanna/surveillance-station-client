@@ -1424,6 +1424,44 @@ class TestAudioMuxDecision:
         assert bridge._ffmpeg_proc is not None
         await bridge.stop()
 
+    async def test_a_stop_during_aac_validation_kills_the_check(
+        self, connect: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """communicate() closes ffmpeg's stdin only once its write has
+        drained, not on cancellation, so a stream stopped mid-check left
+        that ffmpeg reading a pipe nothing would ever close."""
+        asked = asyncio.Event()
+        killed: list[bool] = []
+
+        class _HangingProc(_FakeValidationProc):
+            async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+                asked.set()
+                await asyncio.Event().wait()
+                return b"", b""
+
+            def kill(self) -> None:
+                killed.append(True)
+
+        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+            if "null" in args:
+                return _HangingProc()
+            return await _spawn_fake_mux_holder(**kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
+        frames = [_frame(b"vdoCodec=H264&adoCodec=MPEG4-GENERIC", b"")]
+        frames += [_aac_audio_frame() for _ in range(6)]
+        frames += _AAC_DETECTION_PADDING
+        connect(_FakeWS(frames, hang=True))
+
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        starting = asyncio.create_task(bridge.start())
+        await asyncio.wait_for(asked.wait(), timeout=5.0)
+        await bridge.stop()
+        starting.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await starting
+        assert killed == [True]
+
     async def test_aac_validation_still_rejects_a_real_error_amid_dlopen_codec_noise(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

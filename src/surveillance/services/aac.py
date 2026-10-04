@@ -517,6 +517,13 @@ class AacDetector:
             _, stderr = await asyncio.wait_for(
                 proc.communicate(bytes(buf)), timeout=_AAC_PROBE_TIMEOUT
             )
+        except asyncio.CancelledError:
+            # The stream was stopped meanwhile. communicate() closes stdin
+            # only once its write has drained, not on cancellation, so an
+            # ffmpeg left behind would read a pipe nothing ever closes.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
