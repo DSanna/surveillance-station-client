@@ -287,6 +287,52 @@ class _StreamStalled(Exception):
     """
 
 
+# -thread_queue_size raises each muxer input's packet queue from 8, far
+# too small for this bursty live-piped setup. ffmpeg's development branch
+# rejects it as an input option (commit 8d8c3fd81383), and an ffmpeg that
+# rejects its arguments cannot be told apart from a slow start by waiting:
+# on a Raspberry Pi 4 it takes ffmpeg longer than _FFMPEG_START_GRACE to
+# get that far. So ask the ffmpeg on PATH once, with a run that cannot
+# fail for any other reason, and leave the option out if it is refused.
+_INPUT_QUEUE_OPTION = ["-thread_queue_size", "4096"]
+_input_queue_lock = threading.Lock()
+_input_queue: list[str] | None = None
+
+
+def _ffmpeg_takes(queue: list[str]) -> bool:
+    """Whether ffmpeg runs a minimal mux of an empty input with *queue*
+    before that input."""
+    args = ["ffmpeg", "-loglevel", "error", *queue, "-f", "mulaw", "-ar", "8000", "-ac", "1"]
+    args += ["-i", "pipe:0", "-c:a", "pcm_s16le", "-f", "matroska", "pipe:1"]
+    result = subprocess.run(  # noqa: S603 (fixed argv, nothing user supplied)
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _input_queue_args() -> list[str]:
+    """_INPUT_QUEUE_OPTION, or nothing if this ffmpeg refuses it on an
+    input. Asked once per process; runs ffmpeg, so call it off the loop.
+    Kept whenever the answer is unclear: an ffmpeg that fails even
+    without it fails the same way with it."""
+    global _input_queue
+    with _input_queue_lock:
+        if _input_queue is None:
+            try:
+                refused = not _ffmpeg_takes(_INPUT_QUEUE_OPTION) and _ffmpeg_takes([])
+            except (OSError, subprocess.SubprocessError):
+                refused = False
+            if refused:
+                log.info("ffmpeg does not take -thread_queue_size on an input, leaving it out")
+            _input_queue = [] if refused else _INPUT_QUEUE_OPTION
+        return _input_queue
+
+
 class _PipeWriteStalled(Exception):
     """Raised when a pipe write can't complete because the downstream
     reader (ffmpeg, or mpv on the raw-video-only pipe) has stopped
@@ -720,7 +766,7 @@ class WebSocketBridge:
         video_codec: str, audio_codec: str, video_r: int, audio_r: int, queue: list[str]
     ) -> list[str]:
         """ffmpeg's argument list around the caller's pipe fds, with
-        *queue* (see _spawn_ffmpeg) given to each input."""
+        *queue* (see _input_queue_args) given to each input."""
         audio_args = [
             "-probesize",
             "16384",
@@ -805,31 +851,9 @@ class WebSocketBridge:
     ) -> None:
         """Start ffmpeg on the caller's pipe fds and confirm it is still
         running. Kept apart from _start_muxed only so the fd cleanup there
-        covers the pipes and the spawn under one except OSError.
-
-        -thread_queue_size raises each input's packet queue from 8, far
-        too small for this bursty live-piped setup. ffmpeg's development
-        branch rejects it as an input option (commit 8d8c3fd81383), and an
-        ffmpeg that rejects its arguments exits at once, so that case is
-        retried once without it rather than leaving every muxed camera
-        without audio. The pipes are untouched by then: nothing is written
-        to them until this returns.
-        """
-        for queue in (["-thread_queue_size", "4096"], []):
-            args = self._ffmpeg_args(video_codec, audio_codec, video_r, audio_r, queue)
-            if await self._start_ffmpeg(args, video_r, audio_r, out_w):
-                return
-            if queue:
-                log.debug(
-                    "WebSocket bridge for %s: ffmpeg exited at once, "
-                    "retrying without -thread_queue_size",
-                    self._label,
-                )
-        raise OSError("ffmpeg exited at once")
-
-    async def _start_ffmpeg(self, args: list[str], video_r: int, audio_r: int, out_w: int) -> bool:
-        """Run ffmpeg with *args*. False, with nothing left behind, if it
-        exits within the start grace."""
+        covers the pipes and the spawn under one except OSError."""
+        queue = await asyncio.to_thread(_input_queue_args)
+        args = self._ffmpeg_args(video_codec, audio_codec, video_r, audio_r, queue)
         # Let the muxer's own complaints through on a debug run. ffmpeg is
         # the prime suspect whenever a muxed slot stalls, and with its
         # stderr discarded it is the one component in the pipeline that
@@ -857,22 +881,17 @@ class WebSocketBridge:
         # already exited counts.
         await asyncio.sleep(_FFMPEG_START_GRACE)
         if self._ffmpeg_proc.returncode is not None:
-            log.debug(
-                "WebSocket bridge for %s: ffmpeg exited at once with code %d",
-                self._label,
-                self._ffmpeg_proc.returncode,
-            )
+            code = self._ffmpeg_proc.returncode
             # Dropped, not kept: the camera falls back to a raw pipe mpv
             # reads, and _stall_detail would describe that pipe as
             # ffmpeg's output.
             self._ffmpeg_proc = None
-            return False
+            raise OSError(f"ffmpeg exited at once with code {code}")
         self._ffmpeg_watch = asyncio.create_task(self._watch_ffmpeg(self._ffmpeg_proc))
         if self._ffmpeg_proc.stderr is not None:
             self._ffmpeg_stderr = asyncio.create_task(
                 self._drain_ffmpeg_stderr(self._ffmpeg_proc.stderr)
             )
-        return True
 
     async def _drain_ffmpeg_stderr(self, stream: asyncio.StreamReader) -> None:
         """Log what the muxer writes to stderr, and keep it unblocked.

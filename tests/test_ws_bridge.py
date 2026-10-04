@@ -85,6 +85,13 @@ from surveillance.services.ws_bridge import WebSocketBridge
 _REAL_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
 
 
+@pytest.fixture(autouse=True)
+def _ffmpeg_takes_the_queue_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the once-per-process -thread_queue_size probe up front, so
+    no test runs the ffmpeg on PATH just to ask (see _input_queue_args)."""
+    monkeypatch.setattr(ws_bridge, "_input_queue", ws_bridge._INPUT_QUEUE_OPTION)
+
+
 class _FakeWS:
     """Stand-in for a websockets client connection.
 
@@ -1201,27 +1208,7 @@ class TestAudioMuxDecision:
         assert bridge._stall_detail() == ""
         await bridge.stop()
 
-    async def test_an_ffmpeg_rejecting_the_queue_option_gets_a_retry(
-        self, connect: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """ffmpeg's development branch rejects -thread_queue_size as an
-        input option and exits at once. Retried without it, the camera
-        keeps its audio instead of falling back to video only."""
-        spawned: list[list[str]] = []
-
-        async def _fake_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeFfmpegProc:
-            spawned.append(list(args))
-            return _DeadFfmpegProc() if "-thread_queue_size" in args else _FakeFfmpegProc()
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
-        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
-        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
-        assert bridge.audio_active is True
-        assert ["-thread_queue_size" in args for args in spawned] == [True, False]
-        await bridge.stop()
-
-    async def test_an_ffmpeg_taking_the_queue_option_is_spawned_once(
+    async def test_each_input_gets_the_queue_option_the_probe_settled_on(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         spawned: list[list[str]] = []
@@ -1231,12 +1218,14 @@ class TestAudioMuxDecision:
             return _FakeFfmpegProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_subprocess_exec)
-        connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
-        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
-        await bridge.start()
-        assert len(spawned) == 1
-        assert spawned[0].count("-thread_queue_size") == 2, "one per input"
-        await bridge.stop()
+        for queue, count in ((ws_bridge._INPUT_QUEUE_OPTION, 2), ([], 0)):
+            monkeypatch.setattr(ws_bridge, "_input_queue", queue)
+            connect(_FakeWS([_frame(b"vdoCodec=H265&adoCodec=PCMU", b"")], hang=True))
+            bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+            await bridge.start()
+            assert bridge.audio_active is True
+            assert spawned[-1].count("-thread_queue_size") == count
+            await bridge.stop()
 
     async def test_ffmpeg_dying_mid_session_ends_the_bridge_with_a_reason(
         self, connect: Any, monkeypatch: pytest.MonkeyPatch
@@ -3264,3 +3253,61 @@ class TestStallDetail:
             bridge._read_fd = -1
             bridge._ffmpeg_proc = None
         assert "ffmpeg output holding 0 bytes" in detail
+
+
+class TestInputQueueProbe:
+    """ffmpeg's development branch refuses -thread_queue_size on an input
+    and exits, slower on a Raspberry Pi 4 than any start grace short
+    enough not to delay every camera. So it is asked once, up front."""
+
+    @pytest.fixture
+    def answers(self, monkeypatch: pytest.MonkeyPatch) -> Callable[[bool, bool], list[list[str]]]:
+        monkeypatch.setattr(ws_bridge, "_input_queue", None)
+        asked: list[list[str]] = []
+
+        def _set(with_option: bool, without: bool) -> list[list[str]]:
+            def _takes(queue: list[str]) -> bool:
+                asked.append(queue)
+                return with_option if queue else without
+
+            monkeypatch.setattr(ws_bridge, "_ffmpeg_takes", _takes)
+            return asked
+
+        return _set
+
+    def test_an_ffmpeg_taking_it_keeps_it(self, answers: Any) -> None:
+        asked = answers(True, True)
+        assert ws_bridge._input_queue_args() == ws_bridge._INPUT_QUEUE_OPTION
+        assert ws_bridge._input_queue_args() == ws_bridge._INPUT_QUEUE_OPTION
+        assert asked == [ws_bridge._INPUT_QUEUE_OPTION], "asked once per process"
+
+    def test_an_ffmpeg_refusing_only_it_goes_without(self, answers: Any) -> None:
+        answers(False, True)
+        assert ws_bridge._input_queue_args() == []
+
+    def test_an_ffmpeg_failing_either_way_keeps_it(self, answers: Any) -> None:
+        answers(False, False)
+        assert ws_bridge._input_queue_args() == ws_bridge._INPUT_QUEUE_OPTION
+
+    def test_no_ffmpeg_at_all_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ws_bridge, "_input_queue", None)
+
+        def _missing(queue: list[str]) -> bool:
+            raise FileNotFoundError("ffmpeg")
+
+        monkeypatch.setattr(ws_bridge, "_ffmpeg_takes", _missing)
+        assert ws_bridge._input_queue_args() == ws_bridge._INPUT_QUEUE_OPTION
+
+    def test_the_real_probe_tells_a_refusing_ffmpeg_apart(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Against real processes: an ffmpeg stand-in that refuses the
+        option the way the option parser does, and accepts the rest."""
+        fake = tmp_path / "ffmpeg"
+        fake.write_text(
+            '#!/bin/sh\nfor a in "$@"; do [ "$a" = "-thread_queue_size" ] && exit 8; done\nexit 0\n'
+        )
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+        assert ws_bridge._ffmpeg_takes(ws_bridge._INPUT_QUEUE_OPTION) is False
+        assert ws_bridge._ffmpeg_takes([]) is True
