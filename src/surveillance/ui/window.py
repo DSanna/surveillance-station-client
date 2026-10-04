@@ -172,21 +172,8 @@ class MainWindow(Gtk.ApplicationWindow):
         return True
 
     def _force_exit(self, source: str) -> bool:
-        import os
-
         log.warning("exit requested via %s", source)
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            from surveillance.config import save_config_now
-
-            save_config_now(self.app.config)
-        # Graceful shutdown, see surveillance.logfile.mark_complete.
-        from surveillance.logfile import mark_complete
-
-        mark_complete()
-        os._exit(0)
-        return True
+        self.app.exit_now()
 
     def _schedule_login(self) -> None:
         """Show login dialog after window is shown."""

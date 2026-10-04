@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import NoReturn
 
 import gi
 
@@ -161,7 +162,13 @@ class SurveillanceApp(Gtk.Application):
         self.config.activate_profile(api.profile.name)
         self.api = api
 
-    def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
+    def exit_now(self) -> NoReturn:
+        """Save the config, mark the log complete and exit at once.
+
+        Every way out ends here: the Quit action, closing the window and
+        the signals. Without the save, a setting changed in the last
+        second was still waiting on save_config's debounce and was lost.
+        """
         import contextlib
         import os
 
@@ -174,6 +181,9 @@ class SurveillanceApp(Gtk.Application):
 
         mark_complete()
         os._exit(0)
+
+    def _on_quit(self, action: Gio.SimpleAction, param: None) -> None:
+        self.exit_now()
 
     def _on_logout(self, action: Gio.SimpleAction, param: None) -> None:
         if self._window:

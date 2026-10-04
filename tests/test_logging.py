@@ -201,3 +201,55 @@ class TestNoStateInDunderMain:
                 if "surveillance.__main__" in imported:
                     offenders.append(f"{path.relative_to(src).as_posix()}:{node.lineno}")
         assert offenders == []
+
+
+class TestExitPaths:
+    """Every way out saves the config: the Quit action, closing the
+    window, and the signals, which used to skip it and lose a setting
+    changed in the last second, SIGHUP having no handler at all."""
+
+    def test_exit_now_saves_before_exiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+        from types import SimpleNamespace
+
+        import surveillance.config
+        from surveillance.app import SurveillanceApp
+
+        order: list[str] = []
+        monkeypatch.setattr(surveillance.config, "save_config_now", lambda c: order.append("save"))
+        monkeypatch.setattr(logfile, "mark_complete", lambda: order.append("complete"))
+
+        def _exit(code: int) -> None:
+            order.append(f"exit {code}")
+            raise SystemExit(code)
+
+        monkeypatch.setattr(os, "_exit", _exit)
+        with pytest.raises(SystemExit):
+            SurveillanceApp.exit_now(SimpleNamespace(config=object()))  # type: ignore[arg-type]
+        assert order == ["save", "complete", "exit 0"]
+
+    @pytest.mark.parametrize("name", ["SIGHUP", "SIGTERM", "SIGINT"])
+    def test_each_signal_reaches_the_app(self, tmp_path: Path, name: str) -> None:
+        import os
+        import subprocess
+        import sys
+
+        marker = tmp_path / "exited"
+        child = (
+            "import os, signal, time\n"
+            "from surveillance.__main__ import _install_exit_signals\n"
+            "class App:\n"
+            "    def exit_now(self):\n"
+            f"        open({str(marker)!r}, 'w').write('saved')\n"
+            "        os._exit(0)\n"
+            "_install_exit_signals([App()])\n"
+            f"os.kill(os.getpid(), signal.{name})\n"
+            "time.sleep(5)\n"
+            "os._exit(3)\n"
+        )
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+        result = subprocess.run(  # noqa: S603 (this interpreter, a fixed script)
+            [sys.executable, "-c", child], env=env, timeout=30, check=False
+        )
+        assert result.returncode == 0
+        assert marker.read_text() == "saved"

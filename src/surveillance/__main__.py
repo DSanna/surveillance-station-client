@@ -32,8 +32,12 @@ import re
 import sys
 import threading
 from types import TracebackType
+from typing import TYPE_CHECKING
 
 from surveillance import logfile
+
+if TYPE_CHECKING:
+    from surveillance.app import SurveillanceApp
 
 # Timestamped so a bug report can be lined up against the timestamps the
 # libraries this app drives print on the same stderr (mpv, ffmpeg,
@@ -66,6 +70,24 @@ class _RedactFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         text = _REDACT_PARAMS.sub(r"\1=***", super().format(record))
         return _REDACT_USERINFO.sub(r"\1***@", text)
+
+
+def _install_exit_signals(running: list[SurveillanceApp]) -> None:
+    """Exit cleanly on SIGINT, SIGTERM and SIGHUP (closing the terminal
+    the app was started from), through the running app's exit_now once
+    there is one, so the config is saved too."""
+    import os
+    import signal
+
+    def _graceful_exit(*_args: object) -> None:
+        if running:
+            running[0].exit_now()
+        logfile.mark_complete()
+        os._exit(0)
+
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _graceful_exit)
 
 
 def main() -> None:
@@ -178,14 +200,11 @@ def main() -> None:
     resource_log.start_if_debugging()
 
     import os
-    import signal
 
-    def _graceful_exit(*_args: object) -> None:
-        logfile.mark_complete()
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, _graceful_exit)
-    signal.signal(signal.SIGTERM, _graceful_exit)
+    # Filled in once the app exists, so a signal before then still exits
+    # cleanly, with no config yet to save.
+    running: list[SurveillanceApp] = []
+    _install_exit_signals(running)
 
     from surveillance.app import SurveillanceApp
 
@@ -194,9 +213,9 @@ def main() -> None:
     __import__("atexit").register(os._exit, 0)
 
     app = SurveillanceApp()
+    running.append(app)
     app.run(sys.argv)
-    logfile.mark_complete()
-    os._exit(0)
+    app.exit_now()
 
 
 if __name__ == "__main__":
