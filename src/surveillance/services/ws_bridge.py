@@ -2054,6 +2054,10 @@ class WebSocketBridge:
             if rec.stop_time - target > _HISTORY_TAIL_MARGIN:
                 continue  # still well inside the recording, nothing to ask
             fresh = await resolver(target)
+            if self._history_recording is not rec:
+                # A seek moved playback to another recording while the
+                # lookup was out; this answer is about the old one.
+                continue
             if fresh is not None and fresh.id == rec.id and fresh.stop_time > rec.stop_time:
                 log.debug(
                     "WebSocket bridge for %s: recording %d now runs %ds further",

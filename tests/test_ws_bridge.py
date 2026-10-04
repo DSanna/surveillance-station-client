@@ -2809,6 +2809,37 @@ class TestHistoryTailRefresh:
             await watch
         assert asked == []
 
+    async def test_a_seek_during_the_lookup_is_not_undone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """seek() can move playback to another recording while the
+        lookup is out. Swapping the grown old one back in then had the
+        bridge describe a recording DSM was no longer playing."""
+        monkeypatch.setattr(ws_bridge, "_HISTORY_TAIL_REFRESH_INTERVAL", 0.01)
+        rec = _recording()
+        grown = _recording(stop_time=rec.stop_time + 600)
+        other = _recording(id=2, start_time=rec.start_time - 7200, stop_time=rec.start_time - 3600)
+        asked = asyncio.Event()
+        answer = asyncio.Event()
+
+        async def resolver(target: int) -> Recording:
+            asked.set()
+            await answer.wait()
+            return grown
+
+        bridge = self._bridge(rec, rec.stop_time - 5, resolver)
+        watch = asyncio.create_task(bridge._watch_history_tail())
+        try:
+            await asyncio.wait_for(asked.wait(), timeout=2.0)
+            bridge._history_recording = other  # what seek() does
+            answer.set()
+            await asyncio.sleep(0.05)
+            assert bridge._history_recording is other
+        finally:
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
+
     async def test_leaves_a_different_recording_to_the_reconnect_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
