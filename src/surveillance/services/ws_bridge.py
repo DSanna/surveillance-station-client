@@ -1469,6 +1469,12 @@ class WebSocketBridge:
         if not self._paused:
             return self._history_paused_position
         self._paused = False
+        # Nothing arrived while paused, so the audio stamp is as old as
+        # the pause. A History resume keeps its connection, and the
+        # first video frame back would otherwise have the gap watchdog
+        # end the audio before any could arrive. A reconnect resets it
+        # the same way.
+        self._last_audio_at = time.monotonic()
         if not self.is_history:
             if self._current_ws is not None:
                 self._closing_on_purpose = True
@@ -1802,6 +1808,8 @@ class WebSocketBridge:
         """
         was_paused = self._paused
         self._paused = False
+        if was_paused:
+            self._last_audio_at = time.monotonic()  # as in resume()
         self._history_paused_position = None
         # A seek moves the position outright, same or different
         # recording alike -- self._last_video_msec belongs to wherever

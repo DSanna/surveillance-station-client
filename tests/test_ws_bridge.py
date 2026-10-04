@@ -2305,6 +2305,26 @@ class TestPauseResume:
         assert resumed == frozen, "a long enough pause must resume exactly where it froze"
         await bridge.stop()
 
+    @pytest.mark.parametrize("unpause", ["resume", "seek"])
+    async def test_unpausing_restarts_the_audio_clock(self, connect: Any, unpause: str) -> None:
+        """Both keep the connection, so nothing resets the stamp the gap
+        watchdog reads: left as old as the pause, the first video frame
+        back had it end the audio for the rest of the session."""
+        rec = _recording()
+        connect(_FakeWS([_codec_frame()], hang=True))
+        bridge = WebSocketBridge(
+            "wss://nas/stream", False, "sid", history_recording=rec, history_target=rec.start_time
+        )
+        await bridge.start()
+        await bridge.pause()
+        bridge._last_audio_at = time.monotonic() - 10.0
+        if unpause == "resume":
+            await bridge.resume()
+        else:
+            await bridge.seek(rec, rec.start_time + 30)
+        assert time.monotonic() - bridge._last_audio_at < 1.0
+        await bridge.stop()
+
     async def test_pause_suspends_the_idle_timeout_in_history_mode(
         self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
     ) -> None:
