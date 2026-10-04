@@ -1164,15 +1164,18 @@ class WebSocketBridge:
         a stall is exactly what was asked for.
         """
         while True:
-            timeout: float | None = _IDLE_TIMEOUT
+            # Never an unbounded wait, even paused: one begun during a
+            # pause would otherwise run on after resume() with no limit,
+            # and a connection that went silent meanwhile would never be
+            # noticed. A wait that spans a pause just starts over below.
+            paused_at_start = self._paused and self.is_history
+            timeout = _IDLE_TIMEOUT
             if self._aac.detecting:
                 # Waiting the full idle timeout on a camera whose detection
                 # deadline lands sooner would let the stall fire first, and
                 # a stall only reconnects: detection would start over, and
                 # over, with start() still waiting on it.
                 timeout = min(_IDLE_TIMEOUT, max(0.0, self._aac.deadline - time.monotonic()))
-            elif self._paused and self.is_history:
-                timeout = None
             try:
                 message = await asyncio.wait_for(ws.recv(), timeout=timeout)
             except TimeoutError:
@@ -1182,10 +1185,11 @@ class WebSocketBridge:
                     # video rather than another reconnect it can't use.
                     await self._expire_aac_detection()
                     continue
-                if self._paused and self.is_history:
-                    # pause() landed while this recv() was already waiting
-                    # under the idle timeout: the silence is what it asked
-                    # DSM for, and the next pass waits without a limit.
+                if paused_at_start or (self._paused and self.is_history):
+                    # Paused for some of the wait: the silence is what
+                    # pause() asked DSM for. Starting over gives a resumed
+                    # session a full idle timeout before it counts as a
+                    # stall, measured from after the resume.
                     continue
                 self._error = f"stalled: no data for {_IDLE_TIMEOUT:.0f}s"
                 raise _StreamStalled(self._error) from None

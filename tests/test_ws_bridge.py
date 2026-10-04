@@ -2376,6 +2376,28 @@ class TestPauseResume:
         assert bridge._error == ""
         await bridge.stop()
 
+    async def test_a_resumed_session_that_stays_silent_is_a_stall(
+        self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wait begun while paused used to have no limit, and ran on
+        after resume(): a connection that went silent during the pause
+        then left the slot frozen for good."""
+        monkeypatch.setattr(ws_bridge, "_IDLE_TIMEOUT", 0.05)
+        rec = _recording()
+        bridge = WebSocketBridge(
+            "wss://nas/stream",
+            False,
+            "sid",
+            history_recording=rec,
+            history_target=rec.start_time + 100,
+        )
+        await bridge.start()
+        await bridge.pause()
+        await asyncio.sleep(0.2)
+        await bridge.resume()
+        await _wait_until(lambda: len(fresh_connections) > 1)
+        await bridge.stop()
+
     async def test_pause_landing_on_a_pending_recv_does_not_reconnect(
         self, fresh_connections: list[_FakeWS], monkeypatch: pytest.MonkeyPatch
     ) -> None:
