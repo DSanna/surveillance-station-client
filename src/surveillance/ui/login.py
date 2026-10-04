@@ -203,9 +203,15 @@ class LoginDialog(Gtk.Window):
 
                 run_async(get_credentials_async(profile.name), callback=_fill)
         else:
+            # A new profile's defaults, the two checkboxes included: left
+            # as the previous profile had them, an HTTP one paired its
+            # unchecked HTTPS with the HTTPS port 5001.
+            defaults = ConnectionProfile("", "")
             self.name_entry.set_text("")
             self.host_entry.set_text("")
-            self.port_entry.set_text("5001")
+            self.port_entry.set_text(str(defaults.port))
+            self.https_check.set_active(defaults.https)
+            self.verify_ssl_check.set_active(defaults.verify_ssl)
             self.user_entry.set_text("")
             self.pass_entry.set_text("")
 

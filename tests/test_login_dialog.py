@@ -123,3 +123,19 @@ class TestProfileSwitch:
         LoginDialog._on_profile_changed(dialog, dialog.profile_combo)
         self._flush(pending)
         assert (dialog.user_entry.value, dialog.pass_entry.value) == ("alice", "alice-secret")
+
+    def test_a_new_profile_starts_from_the_defaults(
+        self, pending: list[tuple[Any, Callable[..., Any]]]
+    ) -> None:
+        dialog = _dialog("home")
+        dialog.app.config.profiles["home"] = ConnectionProfile(
+            "home", "192.168.1.10", port=5000, https=False, verify_ssl=True
+        )
+        LoginDialog._on_profile_changed(dialog, dialog.profile_combo)
+        self._flush(pending)
+        assert (dialog.https_check.value, dialog.verify_ssl_check.value) == (False, True)
+
+        dialog.profile_combo.active = "__new__"
+        LoginDialog._on_profile_changed(dialog, dialog.profile_combo)
+        assert dialog.port_entry.value == "5001"
+        assert (dialog.https_check.value, dialog.verify_ssl_check.value) == (True, False)
