@@ -751,7 +751,7 @@ class WebSocketBridge:
             # origin, and the issue's reproducer runs clean with it. That
             # leaves epoch-based timestamps in the muxed output, which is
             # harmless since nothing downstream of this pipe reads
-            # absolute PTS. Do not add -start_at_zero alongside this -- it
+            # absolute PTS. Do not add -start_at_zero alongside this: it
             # re-subtracts each input's own start time, undoing the shared
             # origin.
             "-copyts",
