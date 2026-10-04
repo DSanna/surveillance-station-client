@@ -357,6 +357,9 @@ class CameraSlot(Gtk.Box):
         self._stream_lost = False
         self._click_callback: object = None
         self._status = ""  # stream state shown after the camera name
+        # While selected the header asks for a camera, and the status and
+        # camera updates below must not write over that prompt.
+        self._selected = False
         self._snapshot_callback: object = None
         self._open_1x1_callback: object = None
         self._reload_callback: object = None
@@ -506,6 +509,7 @@ class CameraSlot(Gtk.Box):
         return f"{name} ({self._status})" if self._status else name
 
     def set_selected(self, selected: bool) -> None:
+        self._selected = selected
         if selected:
             self._header.remove_css_class("dim-label")
             self._header.add_css_class("slot-selected-label")
@@ -531,7 +535,7 @@ class CameraSlot(Gtk.Box):
     def set_status(self, status: str) -> None:
         """Show the stream state next to the camera name, "" once playing."""
         self._status = status
-        if self.camera:
+        if self.camera and not self._selected:
             self._header.set_label(self._camera_label())
 
     def assign(self, camera: Camera) -> None:
@@ -541,6 +545,7 @@ class CameraSlot(Gtk.Box):
         self.stop_ptt()
         self.camera = camera
         self._status = ""
+        self._selected = False
         self._header.set_label(camera.name)
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")
@@ -550,7 +555,8 @@ class CameraSlot(Gtk.Box):
         """Refresh this slot's camera data (e.g. a status change) without
         resetting stream state or selection UI, unlike assign()."""
         self.camera = camera
-        self._header.set_label(self._camera_label())
+        if not self._selected:
+            self._header.set_label(self._camera_label())
 
     def stop_stream(self) -> None:
         """Stop playback, then tear down the WebSocket bridge / RTSP monitor.
@@ -594,6 +600,7 @@ class CameraSlot(Gtk.Box):
         self.camera = None
         self._status = ""
         self._stream_lost = False
+        self._selected = False
         self._header.set_label(f"Slot {self._display_index + 1}")
         self._header.remove_css_class("slot-selected-label")
         self._header.add_css_class("dim-label")

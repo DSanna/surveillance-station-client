@@ -791,3 +791,44 @@ class TestLeavingThePageDropsLookups:
         page._finish_timeline_seek = finished.append
         LiveView._on_recording_resolved(page, 7, 0, 1, 1_700_000_000, object())  # type: ignore[arg-type]
         assert finished == [0], "the lookup must be dropped, not applied"
+
+
+class TestSelectedSlotPrompt:
+    """A selected slot's header asks for a camera. A status change, such
+    as a lost stream's retry saying "attempting reconnect", or a camera
+    update used to write over that prompt while it was still selected."""
+
+    class _Header:
+        def __init__(self) -> None:
+            self.label = ""
+
+        def set_label(self, text: str) -> None:
+            self.label = text
+
+        def add_css_class(self, name: str) -> None:
+            pass
+
+        def remove_css_class(self, name: str) -> None:
+            pass
+
+    def _slot(self) -> SimpleNamespace:
+        slot = SimpleNamespace(
+            camera=SimpleNamespace(id=1, name="cam"),
+            _header=self._Header(),
+            _display_index=2,
+            _status="",
+            _selected=False,
+        )
+        slot._camera_label = lambda: CameraSlot._camera_label(slot)  # type: ignore[arg-type]
+        return slot
+
+    def test_status_and_camera_updates_keep_the_prompt(self) -> None:
+        slot = self._slot()
+        CameraSlot.set_selected(slot, True)  # type: ignore[arg-type]
+        prompt = slot._header.label
+        CameraSlot.set_status(slot, "attempting reconnect")  # type: ignore[arg-type]
+        CameraSlot.update_camera(slot, SimpleNamespace(id=1, name="cam renamed"))  # type: ignore[arg-type]
+        assert slot._header.label == prompt
+
+        CameraSlot.set_selected(slot, False)  # type: ignore[arg-type]
+        assert slot._header.label == "cam renamed (attempting reconnect)"
