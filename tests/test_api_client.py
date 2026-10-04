@@ -163,6 +163,31 @@ class TestLogout:
         assert not api.password
 
 
+class TestLoginRequest:
+    """The password and OTP code travel in a POST body, as the official
+    client sends them. In the URL they landed in every proxy's and DSM's
+    access log."""
+
+    @respx.mock
+    async def test_credentials_are_not_in_the_url(self, profile: ConnectionProfile) -> None:
+        from surveillance.api.auth import login
+
+        route = respx.post(url__regex=r".*").mock(
+            return_value=Response(200, json={"success": True, "data": {"sid": "new-sid"}})
+        )
+        api = SurveillanceAPI(profile)
+        sid = await login(api, "alice", "s3cret!", otp_code="123456")
+        await api.close()
+
+        assert sid == "new-sid"
+        request = route.calls.last.request
+        assert request.method == "POST"
+        assert "s3cret" not in str(request.url) and "123456" not in str(request.url)
+        body = request.content.decode()
+        assert "passwd=s3cret%21" in body and "otp_code=123456" in body
+        assert "api=SYNO.API.Auth" in body and "method=Login" in body
+
+
 class TestHttpStatusError:
     def test_message_has_no_credentials(self) -> None:
         import httpx

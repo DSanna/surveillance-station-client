@@ -107,10 +107,10 @@ class ApiError(Exception):
 class HttpStatusError(Exception):
     """The server answered with a non-2xx HTTP status.
 
-    Deliberately not an ApiError and deliberately carrying no URL: the
-    login and download requests put the password, the OTP code and the
-    session id in the query string, and httpx's own HTTPStatusError quotes
-    the whole URL in its message, which then reaches the user's screen.
+    Deliberately not an ApiError and deliberately carrying no URL: every
+    request but the login puts the session id in the query string, and
+    httpx's own HTTPStatusError quotes the whole URL in its message, which
+    then reaches the user's screen.
     HTTP status numbers also collide with Synology's own codes (403 and
     404 mean two-factor prompts there), so this cannot share ApiError.
     """
@@ -128,9 +128,9 @@ class OtpRequiredError(ApiError):
 def _raise_for_status(resp: httpx.Response) -> None:
     """httpx's raise_for_status() puts the full request URL in the message.
 
-    These URLs carry passwd, otp_code and _sid in their query string and
-    the message ends up in user-facing dialogs, so raise our own error
-    with just the status instead.
+    These URLs carry _sid in their query string and the message ends up
+    in user-facing dialogs, so raise our own error with just the status
+    instead.
     """
     if resp.is_success:
         return
@@ -251,6 +251,7 @@ class SurveillanceAPI:
         version: int = 1,
         extra_params: dict[str, Any] | None = None,
         timeout: float | None = None,
+        post: bool = False,
     ) -> Any:
         """Make a raw API request without session error handling.
 
@@ -258,6 +259,10 @@ class SurveillanceAPI:
         for endpoints that can legitimately take longer, e.g. RecordingPicker
         ::EnumInterval over a wide time range with many cameras. Left unset,
         the client default applies.
+
+        *post* sends the parameters as a form body rather than in the URL,
+        for the ones that must not end up in a proxy's or DSM's access log
+        (see auth.login).
 
         Returns the 'data' field from the response (dict or list).
         """
@@ -274,10 +279,13 @@ class SurveillanceAPI:
         if extra_params:
             params.update(extra_params)
 
-        get_kwargs: dict[str, Any] = {"params": params}
+        kwargs: dict[str, Any] = {}
         if timeout is not None:
-            get_kwargs["timeout"] = timeout
-        resp = await self.client.get(path, **get_kwargs)
+            kwargs["timeout"] = timeout
+        if post:
+            resp = await self.client.post(path, data=params, **kwargs)
+        else:
+            resp = await self.client.get(path, params=params, **kwargs)
         _raise_for_status(resp)
         result = _json_or_raise(resp)
 

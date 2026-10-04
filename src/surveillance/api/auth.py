@@ -70,11 +70,14 @@ async def login(
     if device_name:
         params["device_name"] = device_name
 
+    # In the body, as the official client sends it: in the URL, the
+    # password and OTP code land in every proxy's and DSM's access log.
     data = await api.raw_request(
         api="SYNO.API.Auth",
         method="Login",
         version=6,
         extra_params=params,
+        post=True,
     )
 
     sid = data.get("sid", "")
