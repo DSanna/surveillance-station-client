@@ -263,10 +263,10 @@ def _get_gl_proc_address(_ctx: ctypes.c_void_p, name: bytes) -> int:
 # fence stops the leak: mpv checks for a null fence before keeping one.
 # Its only other user guards texture uploads from a host-mapped buffer, and
 # reads a null fence as already signaled, so the buffer could be reused
-# while the GPU still reads it. That path stays unused here: gpu-pbo is off
-# unless SURVEILLANCE_MPV_OPTS turns it on, and direct rendering needs the
-# render context's advanced_control, which _on_realize does not set.
-# Turning either on for these versions would need the fences back.
+# while the GPU still reads it. Only direct rendering allocates those
+# (gpu-pbo uploads use host-mutable ones, which get no fence), and it needs
+# the render context's advanced_control, which _on_realize does not set.
+# Turning that on for these versions would need the fences back.
 _NO_FENCE_SYNC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint)(
     lambda _condition, _flags: None
 )
