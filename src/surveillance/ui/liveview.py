@@ -3227,6 +3227,12 @@ class LiveView(Gtk.Box):
         camera's actual mute/volume choice, not just leaving it muted.
         """
         self._streams_paused = True
+        # A seek or event lookup still out would otherwise open History
+        # streams in slots nobody can see, muted until the page comes
+        # back and replaces them. As on a layout switch, forgetting the
+        # generations makes each of those results stale on arrival.
+        self._slot_seek_generation.clear()
+        self._event_nav_generation += 1
         # Leaving the page ends a Pause, like a layout switch does:
         # resume_streams starts every stream afresh, and mpv keeps its
         # pause across play(), so the new stream would otherwise feed a

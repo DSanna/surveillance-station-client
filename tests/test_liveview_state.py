@@ -206,6 +206,8 @@ class TestTimelinePause:
         slot = _slot(bridge=_bridge())
         page = _page(True, [slot], active=[0])
         page._streams_paused = False
+        page._slot_seek_generation = {}
+        page._event_nav_generation = 0
         LiveView.pause_streams(page)  # type: ignore[arg-type]
         assert page._timeline_paused is False
         assert page.timeline.called("set_paused") == [(False,)]
@@ -769,3 +771,23 @@ class TestLostHistorySlot:
         recording = SimpleNamespace(camera_id=1)
         LiveView._enter_history_mode(page, slot, recording, 1_700_000_500)  # type: ignore[arg-type]
         assert slot._stream_lost is False
+
+
+class TestLeavingThePageDropsLookups:
+    """A seek or event lookup that lands after leaving Live View must
+    not open History streams on the hidden page."""
+
+    def test_in_flight_results_go_stale(self) -> None:
+        slot = _slot(bridge=_bridge())
+        page = _page(False, [slot], active=[0])
+        page._streams_paused = False
+        page._slot_seek_generation = {0: 7}
+        page._event_nav_generation = 3
+        LiveView.pause_streams(page)  # type: ignore[arg-type]
+        assert page._slot_seek_generation == {}
+        assert page._event_nav_generation == 4
+
+        finished: list[int] = []
+        page._finish_timeline_seek = finished.append
+        LiveView._on_recording_resolved(page, 7, 0, 1, 1_700_000_000, object())  # type: ignore[arg-type]
+        assert finished == [0], "the lookup must be dropped, not applied"
