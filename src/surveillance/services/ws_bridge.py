@@ -287,13 +287,17 @@ class _StreamStalled(Exception):
     """
 
 
-# -thread_queue_size raises each muxer input's packet queue from 8, far
-# too small for this bursty live-piped setup. ffmpeg's development branch
-# rejects it as an input option (commit 8d8c3fd81383), and an ffmpeg that
-# rejects its arguments cannot be told apart from a slow start by waiting:
-# on a Raspberry Pi 4 it takes ffmpeg longer than _FFMPEG_START_GRACE to
-# get that far. So ask the ffmpeg on PATH once, with a run that cannot
-# fail for any other reason, and leave the option out if it is refused.
+# -thread_queue_size raised each muxer input's packet queue from 8 up to
+# ffmpeg 6.1, far too small for this bursty live-piped setup. From 7.0 the
+# source no longer reads it on an input, yet on a Raspberry Pi build of
+# 7.1.5 the issue 24053 reproducer stalled in 5 of 13 runs without it and
+# in none of 15 with it, so it stays where accepted. ffmpeg's development
+# branch rejects it as an input option (commit 8d8c3fd81383), and an
+# ffmpeg that rejects its arguments cannot be told apart from a slow start
+# by waiting: on a Raspberry Pi 4 it takes ffmpeg longer than
+# _FFMPEG_START_GRACE to get that far. So ask the ffmpeg on PATH once,
+# with a run that cannot fail for any other reason, and leave the option
+# out if it is refused.
 _INPUT_QUEUE_OPTION = ["-thread_queue_size", "4096"]
 _input_queue_lock = threading.Lock()
 _input_queue: list[str] | None = None
