@@ -83,6 +83,17 @@ class TestRedaction:
         assert "letmein" not in out
         assert "rtsp://***@192.168.1.50:554/h265" in out
 
+    def test_a_password_containing_at_signs(self) -> None:
+        """The pattern used to stop at the first "@", logging the rest of
+        a password that has one. ffmpeg and mpv accept it unescaped."""
+        out = _emit("Starting stream: %s", "rtsp://admin:S3c@ret@2024@192.168.1.50:554/main")
+        assert "S3c" not in out and "ret" not in out and "2024" not in out
+        assert "rtsp://***@192.168.1.50:554/main" in out
+
+    def test_an_at_sign_in_the_path_is_not_userinfo(self) -> None:
+        out = _emit("Opening %s", "rtsp://192.168.1.50/live@main")
+        assert "rtsp://192.168.1.50/live@main" in out
+
     def test_traceback_is_redacted(self) -> None:
         out = _emit("stream failed", exc=ValueError("GET https://nas/x.cgi?_sid=LEAKED failed"))
         assert "LEAKED" not in out

@@ -52,8 +52,10 @@ _REDACT_PARAMS = re.compile(
 )
 
 # Credentials embedded in a stream URL, as in the rtsp://user:pass@host
-# overrides a profile keeps in its camera_overrides table.
-_REDACT_USERINFO = re.compile(r"(\w+://)[^/\s@]+@")
+# overrides a profile keeps in its camera_overrides table. Up to the last
+# "@" before the path, not the first: a password can contain one, which
+# ffmpeg and mpv accept unescaped.
+_REDACT_USERINFO = re.compile(r"(\w+://)[^/\s]*@")
 
 # GLib prints these from inside app.run() and returns without ever
 # starting the application, so a log file opened for one is litter.
