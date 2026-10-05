@@ -37,13 +37,24 @@ it possible) just never call it.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, time
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore[import-untyped]
+
+
+def parse_time_of_day(text: str) -> time:
+    """A time typed as H:MM or H:MM:SS. Raises ValueError for anything
+    else, or a field out of range, rather than guessing: the parsers this
+    replaced read "12:30" as midnight."""
+    parts = text.split(":")
+    if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts):
+        raise ValueError(f"not a time of day: {text!r}")
+    hour, minute, second = (int(p) for p in (*parts, "0")[:3])
+    return time(hour, minute, second)
 
 
 class DateTimePicker(Gtk.Box):
@@ -129,13 +140,10 @@ class DateTimePicker(Gtk.Box):
 
     def get_datetime(self) -> datetime:
         gdt = self.calendar.get_date()
-        time_str = self.time_entry.get_text().strip() or "00:00:00"
-        try:
-            hour, minute, second = map(int, time_str.split(":"))
-        except ValueError:
-            hour, minute, second = 0, 0, 0
-        return datetime(
-            gdt.get_year(), gdt.get_month(), gdt.get_day_of_month(), hour, minute, second
+        text = self.time_entry.get_text().strip()
+        clock = parse_time_of_day(text) if text else time()
+        return datetime.combine(
+            datetime(gdt.get_year(), gdt.get_month(), gdt.get_day_of_month()), clock
         )
 
     def set_datetime(self, dt: datetime) -> None:
@@ -193,7 +201,7 @@ class DateTimePicker(Gtk.Box):
         try:
             return self.get_datetime().timestamp()
         except ValueError:
-            return None  # an out-of-range time typed into time_entry, e.g. "99:99:99"
+            return None  # a time typed into time_entry that is not one, e.g. "12.30"
 
     def set_month_availability(
         self, year: int, month: int, days: set[int], intervals: list[tuple[int, int]]
@@ -252,6 +260,8 @@ class DateTimePicker(Gtk.Box):
             # exact-time check below would otherwise report a wrong time
             # rather than a wrong day, since neither is available.
             self.status_label.set_label(self._day_unavailable_message())
+        elif self._current_timestamp() is None:
+            self.status_label.set_label("Enter the time as HH:MM or HH:MM:SS")
         elif not self.is_current_selection_valid():
             self.status_label.set_label("No recording at that exact time — pick another")
         else:

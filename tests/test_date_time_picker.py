@@ -30,6 +30,9 @@ widgets) with stand-ins for calendar/status_label/selected_date_label."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+
+import pytest
 
 from surveillance.ui.date_time_picker import DateTimePicker
 
@@ -178,6 +181,38 @@ class TestMonthUnknown:
         picker = _make_picker(date=FakeDateTime(2026, 9, 6))
         picker.set_month_unknown(2026, 8, "Could not check recordings for this month")
         assert picker.status_label.get_label() == ""
+
+
+class TestTypedTime:
+    """A time typed without seconds used to be read as midnight, with
+    Jump enabled whenever midnight had footage."""
+
+    def _picker(self, text: str) -> DateTimePicker:
+        noon = datetime(2026, 9, 6, 12, 30).timestamp()
+        return _make_picker(
+            date=FakeDateTime(2026, 9, 6),
+            available_days={6},
+            available_intervals=[(int(noon) - 60, int(noon) + 60)],
+            time_text=text,
+        )
+
+    @pytest.mark.parametrize("text", ["12:30", "12:30:00", "12:30:30"])
+    def test_hours_and_minutes_are_enough(self, text: str) -> None:
+        picker = self._picker(text)
+        assert picker.get_datetime() == datetime(
+            2026, 9, 6, *map(int, (text + ":00").split(":")[:3])
+        )
+        assert picker.is_current_selection_valid()
+
+    @pytest.mark.parametrize("text", ["1230", "12.30", "12h30"])
+    def test_anything_else_is_refused_not_midnight(self, text: str) -> None:
+        picker = self._picker(text)
+        assert not picker.is_current_selection_valid()
+        picker._refresh_status_and_validity()
+        assert picker.status_label.get_label() == "Enter the time as HH:MM or HH:MM:SS"
+
+    def test_an_empty_field_still_means_midnight(self) -> None:
+        assert self._picker("").get_datetime() == datetime(2026, 9, 6)
 
 
 class TestOnDateNotify:
