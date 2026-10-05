@@ -313,6 +313,13 @@ def _event_type_history(entry: Any) -> EventTypeHistory:
     return EventTypeHistory(types=types, checked_until=int(entry.get("checked_until", 0)))
 
 
+def _volume(value: Any) -> int:
+    """A saved slot volume, held to the 0-100 the slider offers. Edited by
+    hand past it, mpv played up to ten times louder than the slider then
+    showed, and refused values below zero outright."""
+    return max(0, min(100, int(value)))
+
+
 def _profile_state_from(data: dict[str, Any]) -> dict[str, Any]:
     """One profile's PROFILE_STATE_FIELDS out of *data*, which holds
     them under their own names."""
@@ -320,7 +327,7 @@ def _profile_state_from(data: dict[str, Any]) -> dict[str, Any]:
         "layout_cameras": data.get("layout_cameras", {}),
         "camera_overrides": _int_keyed(data.get("camera_overrides"), str),
         "camera_protocols": _int_keyed(data.get("camera_protocols"), str),
-        "camera_volume": _int_keyed(data.get("camera_volume"), int),
+        "camera_volume": _int_keyed(data.get("camera_volume"), _volume),
         "camera_muted": _int_keyed(data.get("camera_muted"), bool),
         "event_type_history": _int_keyed(data.get("event_type_history"), _event_type_history),
         "search_camera_ids": data.get("search_camera_ids", []),

@@ -441,3 +441,11 @@ class TestSearchPresetValidation:
 
         cfg = AppConfig(snapshots_search_time_preset="last7d")
         assert load_search_filters(cfg, "snapshots_search")[3] == "last7d"
+
+
+class TestCameraVolumeRange:
+    def test_a_hand_edited_volume_is_held_to_the_slider_range(self) -> None:
+        cfg = _config_from_data(
+            _in_profile({"camera_volume": {"1": 250, "2": -20, "3": 40, "4": "loud"}})
+        )
+        assert cfg.camera_volume == {1: 100, 2: 0, 3: 40}
