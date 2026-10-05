@@ -47,6 +47,7 @@ from surveillance.services.recording import (
     PRESET_YESTERDAY,
     preset_range,
 )
+from surveillance.ui.date_time_picker import parse_time_of_day
 
 if TYPE_CHECKING:
     from surveillance.api.models import Camera
@@ -427,14 +428,14 @@ class AdvancedSearchDialog(Gtk.Window):
         year = gdt.get_year()
         month = gdt.get_month()
         day = gdt.get_day_of_month()
-        time_str = time_entry.get_text().strip() or default_time
         try:
-            hour, minute, second = map(int, time_str.split(":"))
-            return datetime(year, month, day, hour, minute, second)
+            clock = parse_time_of_day(time_entry.get_text().strip())
         except ValueError:
-            # Not three numbers, or a field out of range ("24:00:00"):
-            # midnight, the same as an unparseable entry has always meant.
-            return datetime(year, month, day)
+            # Empty, or not a time at all: the field's own default, the end
+            # of the day for "To". Midnight there, as it used to be, dropped
+            # the whole day from the search, and "18:30" fell into it too.
+            clock = parse_time_of_day(default_time)
+        return datetime.combine(datetime(year, month, day), clock)
 
     def _get_selected_camera_ids(self) -> list[int] | None:
         """Return selected camera IDs, or None for all cameras.

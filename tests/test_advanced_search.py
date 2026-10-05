@@ -53,11 +53,18 @@ class TestTimeEntry:
     def test_an_empty_entry_takes_the_default(self) -> None:
         assert _parse("", "23:59:59") == datetime(2026, 9, 10, 23, 59, 59)
 
-    @pytest.mark.parametrize("text", ["24:00:00", "23:60:00", "12:00:99", "abc", "9:5"])
-    def test_garbage_and_out_of_range_fields_mean_midnight(self, text: str) -> None:
+    @pytest.mark.parametrize("text", ["24:00:00", "23:60:00", "12:00:99", "abc", "1830"])
+    def test_garbage_and_out_of_range_fields_take_the_default(self, text: str) -> None:
         """A field outside its range used to raise out of the Search
-        button; it means midnight now, the same as garbage always has."""
+        button. Anything that is not a time takes the field's default:
+        the start of the day for "From", the end of it for "To"."""
         assert _parse(text) == datetime(2026, 9, 10)
+        assert _parse(text, "23:59:59") == datetime(2026, 9, 10, 23, 59, 59)
+
+    def test_hours_and_minutes_are_enough(self) -> None:
+        """Read as midnight before, which for "To" dropped the day."""
+        assert _parse("18:30", "23:59:59") == datetime(2026, 9, 10, 18, 30)
+        assert _parse("9:5") == datetime(2026, 9, 10, 9, 5)
 
 
 def _calendar(year: int, month: int, day: int) -> SimpleNamespace:
