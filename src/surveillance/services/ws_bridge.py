@@ -343,6 +343,13 @@ class _PipeWriteStalled(Exception):
     draining it."""
 
 
+class _CodecChanged(Exception):
+    """Raised when DSM announces a different codec than the pipes were
+    set up for, as when the camera's stream settings change while it is
+    watched. The pipe format is fixed when the stream starts, so the new
+    data would only freeze the player; the pipeline has to be rebuilt."""
+
+
 def _ws_connect(url: str, **kwargs: Any) -> Any:
     """Open a WebSocket connection.
 
@@ -963,6 +970,16 @@ class WebSocketBridge:
                 fields.get("adoExtra", ""),
                 payload,
             )
+        elif self._read_fd >= 0:
+            # DSM repeats this on every reconnect. Same codecs: nothing to
+            # do. Different ones would be fed into a pipe already opened
+            # for the old ones, freezing the slot with nothing logged.
+            video = _FFMPEG_VIDEO_FORMAT.get(fields.get("vdoCodec", ""), "")
+            audio = fields.get("adoCodec", "")
+            if video != self._video_format or (self._audio_active and audio != self._audio_codec):
+                raise _CodecChanged(
+                    f"camera changed codec to {fields.get('vdoCodec', '?')}/{audio or 'none'}"
+                )
 
     async def _handle_pcmu_audio_frame(self, payload: bytes) -> None:
         """Write a real PCMU audio payload to ffmpeg's audio input."""
@@ -1987,15 +2004,15 @@ class WebSocketBridge:
                             await self._refresh_history_recording_if_stale()
                             await ws.send(self._build_history_play_message())
                         await self._read_messages_with_keepalive(ws)
-                except _PipeWriteStalled as exc:
+                except (_PipeWriteStalled, _CodecChanged) as exc:
                     # Unlike a WS-level drop, reconnecting on the same pipe
                     # can't help here -- the downstream reader (ffmpeg, or
-                    # mpv on the raw-video pipe) is what's stuck, not the
-                    # socket. Give up on this bridge immediately so the
-                    # caller tears down and rebuilds the whole pipeline
-                    # (fresh ffmpeg, fresh pipes, fresh mpv play()) instead
-                    # of endlessly refeeding a pipe that will only stall
-                    # again.
+                    # mpv on the raw-video pipe) is what's stuck, or was set
+                    # up for another codec, not the socket. Give up on this
+                    # bridge immediately so the caller tears down and
+                    # rebuilds the whole pipeline (fresh ffmpeg, fresh pipes,
+                    # fresh mpv play()) instead of endlessly refeeding a pipe
+                    # that will only stall again.
                     self._error = str(exc)
                     give_up_now = True
                 except ConnectionClosedOK:

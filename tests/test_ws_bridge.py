@@ -199,6 +199,37 @@ def fresh_connections(monkeypatch: pytest.MonkeyPatch) -> list[_FakeWS]:
     return connections
 
 
+class TestCodecChange:
+    """DSM repeats the codec-info frame on every reconnect. A different
+    codec there used to be fed into the pipe opened for the old one,
+    freezing the slot with nothing logged."""
+
+    async def test_a_new_codec_ends_the_bridge_with_a_reason(self, connect: Any) -> None:
+        nal = b"\x00\x00\x00\x01" + b"\x65" * 32
+        connect(
+            [
+                _FakeWS([_codec_frame("H264"), _frame(b"mediaType=1", nal)]),
+                _FakeWS([_codec_frame("H265"), _frame(b"mediaType=1", nal)], hang=True),
+            ]
+        )
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        reason = await asyncio.wait_for(bridge.wait_closed(), timeout=5.0)
+        assert "camera changed codec to H265" in reason
+        await bridge.stop()
+
+    async def test_the_same_codec_on_a_reconnect_carries_on(
+        self, fresh_connections: list[_FakeWS]
+    ) -> None:
+        bridge = WebSocketBridge("wss://nas/stream", False, "sid")
+        await bridge.start()
+        fresh_connections[0].closed = True  # the NAS drops the session
+        await _wait_until(lambda: len(fresh_connections) > 1)
+        await asyncio.sleep(0.1)
+        assert bridge._error == ""
+        await bridge.stop()
+
+
 class TestWaitClosed:
     async def test_reports_connection_failure(self, connect: Any) -> None:
         connect(ConnectionRefusedError("connection refused"))
