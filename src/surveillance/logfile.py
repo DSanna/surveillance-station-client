@@ -50,19 +50,33 @@ _complete_path: Path | None = None
 
 
 def parse_arg(argv: list[str]) -> tuple[str | None, list[str]]:
-    """Extract --log-file/--log-file=PATH from *argv*, if present.
+    """Extract --log-file, --log-file=PATH or --log-file PATH from *argv*.
 
     Returns (value, remaining_argv). value is None if the flag was not
     given at all, "" if given bare (the auto-named case), or the path if
     given with one. Every matching entry is removed from remaining_argv,
     because what is left goes on to Gio.Application, which rejects a flag
     it does not know. The last occurrence wins.
+
+    The app takes no other arguments, so a word right after a bare
+    --log-file can only be meant as its path. Left in, Gio read it as a
+    file to open and exited with an error that never named the flag.
     """
     log_file_arg: str | None = None
-    remaining_argv: list[str] = []
-    for arg in argv:
-        if arg == "--log-file" or arg.startswith("--log-file="):
-            log_file_arg = arg.split("=", 1)[1] if "=" in arg else ""
+    remaining_argv: list[str] = [argv[0]] if argv else []
+    args = iter(argv[1:])
+    for arg in args:
+        if arg.startswith("--log-file="):
+            log_file_arg = arg.split("=", 1)[1]
+        elif arg == "--log-file":
+            log_file_arg = ""
+            following = next(args, None)
+            if following is None:
+                break
+            if following.startswith("-"):
+                remaining_argv.append(following)
+            else:
+                log_file_arg = following
         else:
             remaining_argv.append(arg)
     return log_file_arg, remaining_argv

@@ -238,7 +238,11 @@ things that reach stderr without going through the log at all: the
 traceback of an uncaught exception, on the main thread or a worker one,
 and the messages GTK and GLib print themselves. With
 .I PATH
-given, writes there, truncated on every run. Without it, writes to an
+given, as
+.BI \-\-log\-file= PATH
+or
+.BI "\-\-log\-file " PATH\fR,
+writes there, truncated on every run. Without it, writes to an
 automatically named file under
 .IR $XDG_STATE_HOME/surveillance-station/logs/ ,
 or

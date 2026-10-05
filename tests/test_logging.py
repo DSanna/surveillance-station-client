@@ -133,9 +133,22 @@ class TestParseLogFileArg:
         assert argv == ["surveillance"]
 
     def test_other_args_untouched_and_ordered(self) -> None:
-        value, argv = parse_arg(["surveillance", "--debug", "--log-file", "extra"])
+        value, argv = parse_arg(["surveillance", "--debug", "--log-file", "--help-all"])
         assert value == ""
-        assert argv == ["surveillance", "--debug", "extra"]
+        assert argv == ["surveillance", "--debug", "--help-all"]
+
+    def test_a_path_after_a_space(self) -> None:
+        """The app takes no other arguments, so the word after a bare
+        --log-file is its path. Left in, Gio read it as a file to open
+        and exited with an error that never named the flag."""
+        value, argv = parse_arg(["surveillance", "--log-file", "run.log", "--debug"])
+        assert value == "run.log"
+        assert argv == ["surveillance", "--debug"]
+
+    def test_bare_at_the_end(self) -> None:
+        value, argv = parse_arg(["surveillance", "--debug", "--log-file"])
+        assert value == ""
+        assert argv == ["surveillance", "--debug"]
 
 
 class TestCleanCompletedLogs:

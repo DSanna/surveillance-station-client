@@ -146,7 +146,7 @@ Debug logs automatically redact passwords, session tokens, and usernames. A debu
 `--log-file` writes at the same level as stderr (WARNING, or DEBUG with
 `--debug`), and additionally captures the traceback of an uncaught exception
 and the messages GTK and GLib print themselves, neither of which reaches
-stderr through the log. Given a path, it writes there. Without one, it
+stderr through the log. Given a path, as `--log-file=PATH` or `--log-file PATH`, it writes there. Without one, it
 writes to a fresh, timestamped file under
 `$XDG_STATE_HOME/surveillance-station/logs/` (or
 `~/.local/state/surveillance-station/logs/` if `$XDG_STATE_HOME` isn't
