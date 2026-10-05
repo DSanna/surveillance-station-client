@@ -124,10 +124,10 @@ WARNING surveillance.services.ws_bridge: WebSocket bridge for entree: no
 ```
 
 The picture pauses for those three seconds and then catches up. That
-camera plays without sound for the rest of the session; to get it back,
-restart its stream by switching page and back, or by right-clicking it in
-the sidebar, opening Stream Protocol and clicking Apply. Nothing else is
-wrong with it, and cameras with silence suppression or an intermittent
+camera plays without sound until its stream is restarted; to get it back,
+right-click its slot and choose **Reload**, or use the reload button in
+the header bar to restart every slot in the layout. Nothing else is wrong
+with it, and cameras with silence suppression or an intermittent
 microphone will do this routinely.
 
 Both conditions matter. A session the NAS drops silently delivers neither
