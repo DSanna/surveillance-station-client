@@ -563,6 +563,13 @@ def load_search_filters(
         with contextlib.suppress(ValueError):
             to_time = int(datetime.fromisoformat(to_str).timestamp())
     time_preset: str = getattr(cfg, f"{prefix}_time_preset")
+    # Hand-edited and mistyped, a preset made every load of the page raise
+    # in preset_range, and Recordings and Snapshots stayed marked loading
+    # for the rest of the session.
+    from surveillance.services.recording import PRESET_LABELS
+
+    if time_preset not in PRESET_LABELS:
+        time_preset = ""
     return camera_ids, from_time, to_time, time_preset
 
 

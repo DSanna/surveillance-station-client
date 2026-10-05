@@ -424,3 +424,20 @@ class TestSearchTimesAsText:
     def test_the_text_form_is_kept(self) -> None:
         cfg = _config_from_data({"session": {"search_to_time": "2026-02-19T23:59:59"}})
         assert cfg.search_to_time == "2026-02-19T23:59:59"
+
+
+class TestSearchPresetValidation:
+    """A hand-edited preset the pages do not know made every load raise,
+    and Recordings and Snapshots stayed marked loading for the session."""
+
+    def test_an_unknown_preset_is_dropped(self) -> None:
+        from surveillance.config import load_search_filters
+
+        cfg = AppConfig(search_time_preset="last7days")
+        assert load_search_filters(cfg, "search")[3] == ""
+
+    def test_a_known_preset_is_kept(self) -> None:
+        from surveillance.config import load_search_filters
+
+        cfg = AppConfig(snapshots_search_time_preset="last7d")
+        assert load_search_filters(cfg, "snapshots_search")[3] == "last7d"
