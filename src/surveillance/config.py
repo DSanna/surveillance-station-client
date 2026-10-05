@@ -32,7 +32,8 @@ import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 
@@ -351,6 +352,17 @@ def _profile_state_to(state: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in tables.items() if value}
 
 
+def _time_text(value: Any) -> str:
+    """A saved search time as the ISO text the pages parse. Written
+    without quotes, as when the README's commented example is enabled by
+    hand, TOML reads it as a datetime rather than text; passed on as one,
+    every page raised building itself and login never completed. Anything
+    else that is not text means no time."""
+    if isinstance(value, (date, dt_time)):
+        return value.isoformat()
+    return value if isinstance(value, str) else ""
+
+
 def _config_from_data(data: dict[str, Any]) -> AppConfig:
     """Build an AppConfig from already-parsed TOML."""
 
@@ -402,11 +414,11 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         poll_interval_alerts=_poll_interval(general, "poll_interval_alerts", 30),
         poll_interval_homemode=_poll_interval(general, "poll_interval_homemode", 60),
         snapshot_dir=general.get("snapshot_dir", str(DATA_DIR / "snapshots")),
-        search_from_time=session.get("search_from_time", ""),
-        search_to_time=session.get("search_to_time", ""),
+        search_from_time=_time_text(session.get("search_from_time")),
+        search_to_time=_time_text(session.get("search_to_time")),
         search_time_preset=session.get("search_time_preset", ""),
-        events_search_from_time=session.get("events_search_from_time", ""),
-        events_search_to_time=session.get("events_search_to_time", ""),
+        events_search_from_time=_time_text(session.get("events_search_from_time")),
+        events_search_to_time=_time_text(session.get("events_search_to_time")),
         events_search_time_preset=session.get("events_search_time_preset", "today"),
         events_search_event_types=[
             v for v in session.get("events_search_event_types", []) if isinstance(v, str)
@@ -414,8 +426,8 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         events_search_event_types_match_all=session.get(
             "events_search_event_types_match_all", False
         ),
-        snapshots_search_from_time=session.get("snapshots_search_from_time", ""),
-        snapshots_search_to_time=session.get("snapshots_search_to_time", ""),
+        snapshots_search_from_time=_time_text(session.get("snapshots_search_from_time")),
+        snapshots_search_to_time=_time_text(session.get("snapshots_search_to_time")),
         snapshots_search_time_preset=session.get("snapshots_search_time_preset", ""),
         setting_overrides=setting_overrides,
         setting_overrides_bool=setting_overrides_bool,

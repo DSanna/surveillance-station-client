@@ -397,3 +397,30 @@ class TestPerProfileCameraSettings:
         assert cfg.search_camera_ids == [1]
         cfg.activate_profile("office")
         assert cfg.camera_overrides == {}
+
+
+class TestSearchTimesAsText:
+    """The README's commented example search time, enabled without its
+    quotes, is a TOML datetime rather than text. Passed on as one, every
+    browser page raised building itself and login never completed, and
+    the next save wrote it back."""
+
+    def test_an_unquoted_datetime_becomes_its_text(self) -> None:
+        from datetime import date, datetime
+
+        cfg = _config_from_data(
+            {
+                "session": {
+                    "search_from_time": datetime(2026, 2, 1, 0, 0),
+                    "events_search_to_time": date(2026, 2, 19),
+                    "snapshots_search_from_time": 5,
+                }
+            }
+        )
+        assert cfg.search_from_time == "2026-02-01T00:00:00"
+        assert cfg.events_search_to_time == "2026-02-19"
+        assert cfg.snapshots_search_from_time == ""
+
+    def test_the_text_form_is_kept(self) -> None:
+        cfg = _config_from_data({"session": {"search_to_time": "2026-02-19T23:59:59"}})
+        assert cfg.search_to_time == "2026-02-19T23:59:59"
