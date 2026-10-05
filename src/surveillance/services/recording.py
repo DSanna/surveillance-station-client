@@ -34,9 +34,10 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Coroutine
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from surveillance.api.models import Recording
 from surveillance.services.download import stream_to_file
@@ -469,16 +470,26 @@ async def _request_thumbnail(
     return b""
 
 
-async def fetch_recording_thumbnail(
+def fetch_recording_thumbnail(
     api: SurveillanceAPI,
     rec: Recording,
+) -> Coroutine[Any, Any, bytes]:
+    """Fetch a thumbnail for a recording, cached by recording id.
+
+    Not a coroutine function itself: the cache generation is read here,
+    when the fetch is asked for, rather than once the loop gets round to
+    running it. A clear_snapshot_cache() landing in between would
+    otherwise go unseen, and the old NAS's image would be cached.
+    """
+    return _fetch_recording_thumbnail(api, rec, _cache_generation)
+
+
+async def _fetch_recording_thumbnail(
+    api: SurveillanceAPI, rec: Recording, generation: int
 ) -> bytes:
-    """Fetch a thumbnail for a recording, cached by recording id."""
     cached = _recording_thumbnail_cache.get(rec.id)
     if cached is not None:
         return cached
-
-    generation = _cache_generation
 
     async with _thumbnail_semaphore:
         cached = _recording_thumbnail_cache.get(rec.id)

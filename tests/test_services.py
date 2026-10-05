@@ -1088,6 +1088,28 @@ class TestRecordingService:
         assert clear_finished_inside_put == [False], "the clear must wait for the insert"
         assert 44 not in recording._recording_thumbnail_cache
 
+    @pytest.mark.asyncio
+    async def test_a_fetch_asked_for_before_the_clear_is_not_cached(
+        self, api: SurveillanceAPI
+    ) -> None:
+        """A row can ask for its thumbnail just before logout clears the
+        cache, and the loop start the fetch just after. Read when it
+        started, the generation looked current and the old NAS's image
+        was cached."""
+        from surveillance.services import recording
+        from surveillance.services.recording import clear_snapshot_cache, fetch_recording_thumbnail
+
+        clear_snapshot_cache()
+        rec = Recording(
+            id=45, camera_id=39, camera_name="CAM 58", start_time=1700000000, stop_time=1700000060
+        )
+        data = [{"thumbnail": base64.b64encode(b"old-nas").decode()}]
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=data):
+            fetch = fetch_recording_thumbnail(api, rec)
+            clear_snapshot_cache()  # logout, before the loop runs the fetch
+            assert await fetch == b"old-nas"
+        assert 45 not in recording._recording_thumbnail_cache
+
 
 class TestFetchCameraThumbnailAt:
     """Hover-preview image source for the Live View timeline — unlike
