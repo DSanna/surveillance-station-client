@@ -262,3 +262,31 @@ class TestExitPaths:
         )
         assert result.returncode == 0
         assert marker.read_text() == "saved"
+
+    def test_a_signal_started_ignored_stays_ignored(self, tmp_path: Path) -> None:
+        """nohup starts the app with SIGHUP ignored so it outlives the
+        terminal; installing a handler over that made it exit anyway."""
+        import os
+        import subprocess
+        import sys
+
+        marker = tmp_path / "exited"
+        child = (
+            "import os, signal, time\n"
+            "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+            "from surveillance.__main__ import _install_exit_signals\n"
+            "class App:\n"
+            "    def exit_now(self):\n"
+            f"        open({str(marker)!r}, 'w').write('exited')\n"
+            "        os._exit(0)\n"
+            "_install_exit_signals([App()])\n"
+            "os.kill(os.getpid(), signal.SIGHUP)\n"
+            "time.sleep(0.5)\n"
+            "os._exit(3)\n"
+        )
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+        result = subprocess.run(  # noqa: S603 (this interpreter, a fixed script)
+            [sys.executable, "-c", child], env=env, timeout=30, check=False
+        )
+        assert result.returncode == 3, "still running after the hangup"
+        assert not marker.exists()

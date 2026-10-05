@@ -75,7 +75,10 @@ class _RedactFormatter(logging.Formatter):
 def _install_exit_signals(running: list[SurveillanceApp]) -> None:
     """Exit cleanly on SIGINT, SIGTERM and SIGHUP (closing the terminal
     the app was started from), through the running app's exit_now once
-    there is one, so the config is saved too."""
+    there is one, so the config is saved too. A signal the app was started
+    with ignored stays ignored: that is how nohup keeps it running after
+    the terminal closes, and how a shell shields a background job from
+    Ctrl-C."""
     import os
     import signal
 
@@ -86,8 +89,11 @@ def _install_exit_signals(running: list[SurveillanceApp]) -> None:
         os._exit(0)
 
     for name in ("SIGINT", "SIGTERM", "SIGHUP"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), _graceful_exit)
+        if not hasattr(signal, name):
+            continue
+        signum = getattr(signal, name)
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, _graceful_exit)
 
 
 def main() -> None:

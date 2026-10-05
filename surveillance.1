@@ -246,7 +246,8 @@ or
 if
 .I $XDG_STATE_HOME
 is not set, and marks it complete on a clean exit (window close,
-Ctrl-C, or SIGTERM) by creating a same-named
+Ctrl-C, SIGTERM, or SIGHUP when not started under nohup) by creating a
+same-named
 .I .complete
 sentinel file alongside it \(em an abnormal exit (a crash, or the
 process being killed) leaves the log without one. The next run that
