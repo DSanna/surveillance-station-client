@@ -2240,11 +2240,9 @@ class LiveView(Gtk.Box):
         # a restarted slot would feed a paused player, which the bridge
         # reads as a stalled pipe and gives up on.
         self._resume_all_slots()
-        # A seek or event lookup still out would land after this and put
-        # the slots straight back into History. As when leaving the page,
-        # forgetting the generations makes each of those stale on arrival.
-        self._slot_seek_generation.clear()
-        self._event_nav_generation += 1
+        # A seek, event lookup or queued Back/Forward 10s still out would
+        # land after this and put the slots straight back into History.
+        self._forget_pending_lookups()
         actions: list[Callable[[], None]] = []
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
@@ -2267,6 +2265,15 @@ class LiveView(Gtk.Box):
                 # clobber a view the user may have deliberately panned/
                 # zoomed while still watching live.
                 self.timeline.canvas.reset_view()
+
+    def _forget_pending_lookups(self) -> None:
+        """Make every seek and event lookup still out stale on arrival,
+        and drop Back/Forward 10s clicks still queued behind them. Left,
+        the queue was flushed by the next stale arrival or by
+        _on_nudge_resolve_timeout and took every slot back into History."""
+        self._slot_seek_generation.clear()
+        self._event_nav_generation += 1
+        self._pending_nudge_seconds = 0.0
 
     def _reset_playback_speed(self) -> None:
         """Back to 1x forward, what every return to Live resets the
@@ -3298,12 +3305,10 @@ class LiveView(Gtk.Box):
         camera's actual mute/volume choice, not just leaving it muted.
         """
         self._streams_paused = True
-        # A seek or event lookup still out would otherwise open History
-        # streams in slots nobody can see, muted until the page comes
-        # back and replaces them. As on a layout switch, forgetting the
-        # generations makes each of those results stale on arrival.
-        self._slot_seek_generation.clear()
-        self._event_nav_generation += 1
+        # A seek, event lookup or queued Back/Forward 10s still out would
+        # otherwise open History streams in slots nobody can see, muted
+        # until the page comes back and replaces them.
+        self._forget_pending_lookups()
         # Leaving the page ends a Pause, like a layout switch does:
         # resume_streams starts every stream afresh, and mpv keeps its
         # pause across play(), so the new stream would otherwise feed a

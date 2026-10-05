@@ -152,7 +152,9 @@ def _page(paused: bool, slots: list[_Calls], active: list[int]) -> SimpleNamespa
         _history_target=LiveView._history_target,
         _slot_seek_generation={},
         _event_nav_generation=0,
+        _pending_nudge_seconds=0.0,
     )
+    page._forget_pending_lookups = lambda: LiveView._forget_pending_lookups(page)  # type: ignore[arg-type]
     page._end_timeline_pause = lambda: LiveView._end_timeline_pause(page)  # type: ignore[arg-type]
     page._reset_playback_speed = lambda: LiveView._reset_playback_speed(page)  # type: ignore[arg-type]
     page._resume_all_slots = lambda **kw: LiveView._resume_all_slots(page, **kw)  # type: ignore[arg-type]
@@ -794,9 +796,11 @@ class TestLeavingThePageDropsLookups:
         page._streams_paused = False
         page._slot_seek_generation = {0: 7}
         page._event_nav_generation = 3
+        page._pending_nudge_seconds = 10.0
         LiveView.pause_streams(page)  # type: ignore[arg-type]
         assert page._slot_seek_generation == {}
         assert page._event_nav_generation == 4
+        assert page._pending_nudge_seconds == 0.0
 
         finished: list[int] = []
         page._finish_timeline_seek = finished.append
@@ -905,9 +909,11 @@ class TestLiveDropsLookupsInFlight:
         page._run_staggered = lambda actions: None
         page._timeline_speed = "1"
         page._timeline_reverse = False
+        page._pending_nudge_seconds = -20.0  # two Back 10s clicks queued
         LiveView._return_all_to_live(page)  # type: ignore[arg-type]
         assert page._slot_seek_generation == {}
         assert page._event_nav_generation == 4
+        assert page._pending_nudge_seconds == 0.0
 
     def test_a_late_bridge_seek_answer_is_dropped(self) -> None:
         bridge = object()
