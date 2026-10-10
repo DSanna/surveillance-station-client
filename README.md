@@ -264,6 +264,7 @@ last_page = "live"             # last active page
 [setting_overrides_bool]
 # Same, for the Settings page's on/off toggles.
 # osd_enabled = true
+# force_legacy_events = true  # pre-9.3 event decoding, from the next login
 
 [setting_overrides_choice]
 # Same, for the Settings page's dropdowns.

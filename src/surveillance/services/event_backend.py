@@ -54,6 +54,17 @@ log = logging.getLogger(__name__)
 # A small, hashable summary of an event's classification -- see EventBackend.
 TypeSignature = tuple[int, int]
 
+# Use LegacyEventBackend even where the NAS offers the Event Center API,
+# to try the pre-9.3 path on a newer NAS. Read when a backend is picked,
+# at login, so a change takes effect at the next login (see
+# settings_registry).
+_FORCE_LEGACY_EVENTS = False
+
+
+def set_force_legacy_events(value: bool) -> None:
+    global _FORCE_LEGACY_EVENTS
+    _FORCE_LEGACY_EVENTS = value
+
 
 class EventBackend(Protocol):
     """Where events come from, and how they're classified and filtered.
@@ -146,12 +157,13 @@ async def select_event_backend(api: SurveillanceAPI) -> EventBackend:
     """The EventBackend for the NAS *api* is connected to, ready to use.
 
     Picked by whether the NAS offers the Event Center API at all, not by
-    its Surveillance Station version number. *api* must be logged in.
+    its Surveillance Station version number, unless the Settings page
+    forces the legacy one. *api* must be logged in.
     Async so that a backend can ask the NAS what it needs before the
     pages are built.
     """
     backend: EventBackend
-    if api.has_api(EVENT_CENTER_API):
+    if api.has_api(EVENT_CENTER_API) and not _FORCE_LEGACY_EVENTS:
         backend = await EventCenterBackend.connect(api)
     else:
         backend = LegacyEventBackend()

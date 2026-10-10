@@ -1615,6 +1615,19 @@ class TestEventBackend:
         assert LegacyEventBackend().type_history(config) is config.legacy_event_type_history
 
     @pytest.mark.asyncio
+    async def test_settings_can_force_the_legacy_backend(
+        self, api: SurveillanceAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.api.models import ApiInfo
+        from surveillance.services import event_backend
+        from surveillance.services.event_center import EVENT_CENTER_API
+        from surveillance.services.legacy_event import LegacyEventBackend
+
+        api._api_info[EVENT_CENTER_API] = ApiInfo(path="entry.cgi", max_version=1)
+        monkeypatch.setattr(event_backend, "_FORCE_LEGACY_EVENTS", True)
+        assert isinstance(await event_backend.select_event_backend(api), LegacyEventBackend)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("has_event_center", [False, True])
     async def test_select_by_event_center_api(
         self, api: SurveillanceAPI, has_event_center: bool

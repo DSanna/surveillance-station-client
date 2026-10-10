@@ -93,6 +93,10 @@ class TestRegistryShape:
         section = next(s for s in SECTIONS if s.title == "Media player settings")
         assert {setting.key for setting in section.bool_settings} == {"osd_enabled"}
 
+    def test_event_section_has_the_legacy_switch(self) -> None:
+        section = next(s for s in SECTIONS if s.title == "Event settings")
+        assert [s.key for s in section.bool_settings] == ["force_legacy_events"]
+
     def test_live_view_section_has_the_stream_profile(self) -> None:
         section = next(s for s in SECTIONS if s.title == "Live View settings")
         assert [s.key for s in section.choice_settings] == ["live_view_stream_profile"]

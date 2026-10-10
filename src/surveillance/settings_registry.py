@@ -40,7 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from surveillance.services import live
+from surveillance.services import event_backend, live
 from surveillance.ui import mpv_widget, timeline
 
 if TYPE_CHECKING:
@@ -246,6 +246,25 @@ def _player_bool_settings() -> list[BoolSetting]:
     ]
 
 
+def _event_bool_settings() -> list[BoolSetting]:
+    return [
+        BoolSetting(
+            key="force_legacy_events",
+            label="Decode events as before Surveillance Station 9.3 (testing)",
+            tooltip=(
+                "Reads events from the recording-interval bitmask the way "
+                "Surveillance Station before 9.3 requires, even where the "
+                "Event Center is available. For testing that path on a "
+                "newer NAS: on 9.3 and later some event types come out "
+                "wrong this way. Takes effect at the next login."
+            ),
+            default=event_backend._FORCE_LEGACY_EVENTS,
+            get=lambda: event_backend._FORCE_LEGACY_EVENTS,
+            set=event_backend.set_force_legacy_events,
+        ),
+    ]
+
+
 def _timeline_settings() -> list[Setting]:
     return [
         Setting(
@@ -278,6 +297,7 @@ SECTIONS: list[SettingSection] = [
         bool_settings=_player_bool_settings(),
     ),
     SettingSection(title="Timeline settings", settings=_timeline_settings()),
+    SettingSection(title="Event settings", bool_settings=_event_bool_settings()),
 ]
 
 
