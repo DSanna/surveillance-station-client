@@ -46,6 +46,10 @@ log = logging.getLogger(__name__)
 
 APP_ID = "org.surveillance.app"
 CSS_PATH = Path(__file__).parent / "data" / "style.css"
+# The app's own symbolic icons (surveillance-*-symbolic), for glyphs no
+# icon theme ships under one name on every desktop. GTK recolours them
+# to the theme like any stock symbolic icon.
+ICONS_PATH = Path(__file__).parent / "data" / "icons"
 
 
 class SurveillanceApp(Gtk.Application):
@@ -121,6 +125,12 @@ class SurveillanceApp(Gtk.Application):
             # "light" and "auto": False lets the OS color-scheme preference take effect
             settings.set_property("gtk-application-prefer-dark-theme", False)
 
+    def _add_icon_path(self) -> None:
+        """Let icon lookups find the app's own icons in ICONS_PATH."""
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.IconTheme.get_for_display(display).add_search_path(str(ICONS_PATH))
+
     def _load_css(self) -> None:
         """Load application CSS."""
         if not CSS_PATH.exists():
@@ -153,6 +163,8 @@ class SurveillanceApp(Gtk.Application):
         if self._window is None:
             from surveillance.ui.window import MainWindow
 
+            # Before the window, whose widgets look the icons up.
+            self._add_icon_path()
             self._window = MainWindow(application=self)
             # Once per process, alongside the window. A second launch of a
             # single-instance app activates the running one again, and

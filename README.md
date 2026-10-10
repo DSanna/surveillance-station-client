@@ -596,7 +596,8 @@ surveillance-station-client/
 │   ├── settings_registry.py             tunable constants behind the Settings page
 │   ├── data/
 │   │   ├── style.css
-│   │   └── event_bits.json              event_map bit -> label table (see EVENT_BITMASK.md)
+│   │   ├── event_bits.json              event_map bit -> label table (see EVENT_BITMASK.md)
+│   │   └── icons/                       the app's own symbolic icons (surveillance-*-symbolic)
 │   ├── api/
 │   │   ├── client.py                    SurveillanceAPI (httpx)
 │   │   ├── auth.py                      login / logout / SID
@@ -642,7 +643,6 @@ surveillance-station-client/
 │   │   ├── timelapse.py                 time lapse browser
 │   │   ├── notifications.py             alert popover
 │   │   ├── settings.py                  Settings page
-│   │   ├── icons.py                     icon loading helpers
 │   │   └── labels.py                    combo label helpers shared by the browser pages
 │   └── util/
 │       ├── async_bridge.py              GLib + asyncio bridge
@@ -656,6 +656,7 @@ surveillance-station-client/
     ├── test_config.py
     ├── test_date_time_picker.py
     ├── test_event_bits.py
+    ├── test_icons.py
     ├── test_liveview_persistence.py
     ├── test_liveview_state.py
     ├── test_logging.py
