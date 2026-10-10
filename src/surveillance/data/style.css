@@ -193,6 +193,13 @@
     font-weight: bold;
 }
 
+/* Filter events button while a filter is active: the same warning color
+   the event markers it narrows are drawn in (TimelineCanvas._draw). The
+   inner button, since it sets its own color over the MenuButton's. */
+.timeline-filter-active > button {
+    color: @warning_color;
+}
+
 .timeline-clock {
     font-family: monospace;
     font-size: 1.1em;

@@ -1206,6 +1206,16 @@ class Timeline(Gtk.Box):
         """Forward to the view -- see EventTypeFilterView.show_options."""
         self._event_type_filter.show_options(options, selected_keys, match_all, show_match_all)
 
+    def set_filter_active(self, active: bool) -> None:
+        """Mark the Filter events button while a filter narrows the event
+        markers and Previous/Next, so the narrowing isn't forgotten."""
+        if active:
+            self._filter_btn.add_css_class("timeline-filter-active")
+            self._filter_btn.set_tooltip_text("Filter events (filter active)")
+        else:
+            self._filter_btn.remove_css_class("timeline-filter-active")
+            self._filter_btn.set_tooltip_text("Filter events")
+
     def _build_filter_popover(self) -> Gtk.Popover:
         """EventTypeFilterView in a popover-on-a-MenuButton, same shape
         as the calendar's own -- see EventTypeFilterView's own module

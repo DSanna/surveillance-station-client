@@ -1386,3 +1386,26 @@ class TestFilterPopoverOptions:
         LiveView._on_filter_popover_show(page)
         assert page.timeline.scanning == [["1", "2"]]
         assert page.scanned == [(1, [1, 2], 0)]
+
+
+class TestFilterButtonShowsActiveFilter:
+    """The timeline's Filter events button is marked while a filter
+    narrows the event markers, and unmarked once it's cleared."""
+
+    def _apply(self, selected_keys: set[str] | None) -> list[bool]:
+        from surveillance.ui.liveview import LiveView
+
+        marked: list[bool] = []
+        page = SimpleNamespace(
+            timeline=SimpleNamespace(set_filter_active=marked.append),
+            _active_timeline_cameras=lambda: (None, []),
+            _apply_timeline_data_to_canvas=lambda *_args: None,
+        )
+        LiveView._on_filter_apply(page, selected_keys, False)
+        return marked
+
+    def test_a_selection_marks_it(self) -> None:
+        assert self._apply({"motion"}) == [True]
+
+    def test_all_event_types_unmarks_it(self) -> None:
+        assert self._apply(None) == [False]

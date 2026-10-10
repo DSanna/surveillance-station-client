@@ -1763,6 +1763,7 @@ class LiveView(Gtk.Box):
         did."""
         self._event_filter_keys = selected_keys
         self._event_filter_match_all = match_all
+        self.timeline.set_filter_active(selected_keys is not None)
         focus_camera_id, active_camera_ids = self._active_timeline_cameras()
         self._apply_timeline_data_to_canvas(focus_camera_id, active_camera_ids)
 
