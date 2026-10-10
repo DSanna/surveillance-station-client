@@ -48,13 +48,8 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # type: ignore[import-
 from surveillance.api.models import Camera, CameraStatus, Event, PtzPatrol, PtzPreset, Recording
 from surveillance.config import EventTypeHistory, save_config, save_config_now
 from surveillance.services import ptz
-from surveillance.services.event import (
-    list_granular_events,
-    list_presence_and_events,
-    list_recording_presence,
-    merge_intervals,
-)
-from surveillance.services.event_bits import build_filter_options, event_matches_keys
+from surveillance.services.event import list_recording_presence, merge_intervals
+from surveillance.services.event_backend import TypeSignature
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
@@ -665,11 +660,11 @@ class LiveView(Gtk.Box):
         # progress -- see _on_filter_popover_show/_scan_next_camera_
         # for_event_types.
         self._filter_scan_generation: int = 0
-        # Selected event-type filter keys (see services.event_bits) --
+        # Selected event-type filter keys (see services.event_backend) --
         # None means "All Event Types", the same no-filtering
         # convention AdvancedSearchDialog's own event-type filter uses.
         # Session-only (not persisted): only the per-camera scan cache
-        # (AppConfig.event_type_history) survives a restart.
+        # (the event backend's type_history) survives a restart.
         self._event_filter_keys: set[str] | None = None
         self._event_filter_match_all: bool = False
         # Timeline Pause/Play's own state -- distinct from
@@ -1234,7 +1229,7 @@ class LiveView(Gtk.Box):
         generation = self._timeline_data_generation
         self._timeline_fetch_in_flight = True
         run_async(
-            list_presence_and_events(
+            self.app.event_backend.list_presence_and_events(
                 self.app.api, needed, camera_names, int(fetch_start), int(fetch_end)
             ),
             callback=lambda result: self._on_timeline_data_fetched(
@@ -1331,19 +1326,15 @@ class LiveView(Gtk.Box):
 
     def _event_passes_filter(self, ev: Event) -> bool:
         """True unless the Filter-events popover has narrowed things
-        down and this event's decoded type isn't one of the selected
-        keys -- see services.event_bits and _on_filter_apply. Applies
+        down and this event's classified type isn't one of the selected
+        keys -- see services.event_backend and _on_filter_apply. Applies
         equally to the presence bar's own markers and to Previous/Next
         event navigation, so both always agree on what counts."""
         if self._event_filter_keys is None:
             return True
         vendor = self._camera_vendor(ev.camera_id)
-        return event_matches_keys(
-            ev.event_type,
-            ev.reserved,
-            vendor,
-            self._event_filter_keys,
-            self._event_filter_match_all,
+        return self.app.event_backend.matches(
+            ev, vendor, self._event_filter_keys, self._event_filter_match_all
         )
 
     def _on_timeline_prev_event(self, _btn: Gtk.Button) -> None:
@@ -1393,7 +1384,9 @@ class LiveView(Gtk.Box):
         self._event_nav_generation += 1
         generation = self._event_nav_generation
         run_async(
-            list_granular_events(self.app.api, active_camera_ids, camera_names, from_time, to_time),
+            self.app.event_backend.list_events(
+                self.app.api, active_camera_ids, camera_names, from_time, to_time
+            ),
             callback=lambda events, gen=generation, ref=reference: self._on_event_nav_resolved(
                 forward, gen, ref, events
             ),
@@ -1403,7 +1396,7 @@ class LiveView(Gtk.Box):
     def _on_event_nav_resolved(
         self, forward: bool, generation: int, reference: float, events: list[Event]
     ) -> None:
-        """list_granular_events' result for one Previous/Next click.
+        """The event backend's list_events result for one Previous/Next click.
 
         Discarded if a newer click has fired since this lookup started
         (see _event_nav_generation) -- rapid repeated clicking, exactly
@@ -1429,8 +1422,8 @@ class LiveView(Gtk.Box):
         # other genuinely distinct events sitting close by still
         # reachable one at a time. Matched on (camera_id, start_time),
         # not Event.id -- that field is the *parent recording file's*
-        # id (see services.event._decode_camera_events), shared by every
-        # granular event decoded from the same file.
+        # id (see services.event.find_parent_recording), shared by every
+        # granular event within the same file.
         candidates = [
             ev for ev in candidates if (ev.camera_id, ev.start_time) != self._last_event_nav_key
         ]
@@ -1623,13 +1616,13 @@ class LiveView(Gtk.Box):
     def _on_filter_popover_show(self) -> None:
         """Timeline.set_filter_popover_show_callback target -- start (or
         restart) the per-camera history scan the Filter-events checklist
-        is built from. Reuses the exact same EnumInterval-based decode
-        as event markers do (list_granular_events), just scoped one
-        camera at a time and merged into a persisted cache
-        (AppConfig.event_type_history) rather than the presence bar's
-        own short-lived one, so it must never be redone for a camera
-        once known, only brought forward from wherever it was last
-        checked. See AppConfig.event_type_history's own comment for why
+        is built from, through the event backend's list_type_signatures,
+        one camera at a time and merged into a persisted cache (the
+        backend's type_history)
+        rather than the presence bar's own short-lived one, so it must
+        never be redone for a camera once known, only brought forward
+        from wherever it was last checked. See
+        AppConfig.legacy_event_type_history's own comment for why
         this is spread out one camera at a time
         (_scan_next_camera_for_event_types) rather than combined into
         one request.
@@ -1639,10 +1632,13 @@ class LiveView(Gtk.Box):
         _, active_camera_ids = self._active_timeline_cameras()
         self._filter_scan_generation += 1
         generation = self._filter_scan_generation
+        fixed = self.app.event_backend.fixed_filter_options()
+        if fixed is not None:
+            # Every type is known up front: nothing to scan for.
+            self._show_filter_options(fixed)
+            return
         if not active_camera_ids:
-            self.timeline.show_filter_options(
-                [], self._event_filter_keys, self._event_filter_match_all
-            )
+            self._show_filter_options([])
             return
         names = [self._camera_name(cid) for cid in active_camera_ids]
         self.timeline.show_filter_scanning(names)
@@ -1651,10 +1647,10 @@ class LiveView(Gtk.Box):
     def _scan_next_camera_for_event_types(
         self, generation: int, camera_ids: list[int], index: int
     ) -> None:
-        """One EnumInterval request per camera, strictly sequential --
+        """One list_type_signatures request per camera, strictly sequential --
         never combined into one multi-camera request, which is what
         risks a timeout on a wide range (see services.event's own
-        _EVENT_MAP_REQUEST_TIMEOUT comment), not the per-camera cost
+        _ENUM_INTERVAL_REQUEST_TIMEOUT comment), not the per-camera cost
         itself. A camera already in the cache only needs the gap since
         its own checked_until brought forward, not a fresh full scan.
         """
@@ -1664,27 +1660,24 @@ class LiveView(Gtk.Box):
             self._finish_event_type_scan(generation, camera_ids)
             return
         camera_id = camera_ids[index]
-        history = self.app.config.event_type_history.get(camera_id)
+        history = self.app.event_backend.type_history(self.app.config).get(camera_id)
         now = int(time.time())
         from_time = (
             history.checked_until
             if history is not None
             else now - _EVENT_TYPE_SCAN_MAX_LOOKBACK_SECONDS
         )
-        camera_name = self._camera_name(camera_id)
 
-        def _on_scanned(events: list[Event]) -> None:
+        def _on_scanned(signatures: set[TypeSignature]) -> None:
             self._on_camera_event_types_scanned(
-                generation, camera_id, index, camera_ids, now, events
+                generation, camera_id, index, camera_ids, now, signatures
             )
 
         def _on_failed(exc: BaseException) -> None:
             self._on_camera_event_type_scan_failed(generation, camera_id, index, camera_ids, exc)
 
         run_async(
-            list_granular_events(
-                self.app.api, [camera_id], {camera_id: camera_name}, from_time, now
-            ),
+            self.app.event_backend.list_type_signatures(self.app.api, camera_id, from_time, now),
             callback=_on_scanned,
             error_callback=_on_failed,
         )
@@ -1696,13 +1689,14 @@ class LiveView(Gtk.Box):
         index: int,
         camera_ids: list[int],
         cutoff: int,
-        events: list[Event],
+        signatures: set[TypeSignature],
     ) -> None:
         if generation != self._filter_scan_generation:
             return  # popover closed/reopened since this camera's scan started
-        history = self.app.config.event_type_history.setdefault(camera_id, EventTypeHistory())
+        histories = self.app.event_backend.type_history(self.app.config)
+        history = histories.setdefault(camera_id, EventTypeHistory())
         seen = set(history.types)
-        seen.update((ev.event_type, ev.reserved) for ev in events)
+        seen.update(signatures)
         history.types = sorted(seen)
         history.checked_until = cutoff
         save_config(self.app.config)
@@ -1729,16 +1723,24 @@ class LiveView(Gtk.Box):
     def _finish_event_type_scan(self, generation: int, camera_ids: list[int]) -> None:
         if generation != self._filter_scan_generation:
             return
-        occurrences: list[tuple[int, int, str]] = []
+        backend = self.app.event_backend
+        histories = backend.type_history(self.app.config)
+        occurrences: list[tuple[TypeSignature, str]] = []
         for cid in camera_ids:
-            history = self.app.config.event_type_history.get(cid)
+            history = histories.get(cid)
             if history is None:
                 continue
             vendor = self._camera_vendor(cid)
-            occurrences.extend((flag, reserved, vendor) for flag, reserved in history.types)
-        options = build_filter_options(occurrences)
+            occurrences.extend((signature, vendor) for signature in history.types)
+        self._show_filter_options(backend.filter_options(occurrences))
+
+    def _show_filter_options(self, options: list[tuple[str, str, str]]) -> None:
+        supports_match_all = self.app.event_backend.supports_match_all
         self.timeline.show_filter_options(
-            options, self._event_filter_keys, self._event_filter_match_all
+            options,
+            self._event_filter_keys,
+            self._event_filter_match_all and supports_match_all,
+            show_match_all=supports_match_all,
         )
 
     def _on_filter_cancel(self) -> None:

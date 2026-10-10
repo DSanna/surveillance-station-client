@@ -1197,10 +1197,14 @@ class Timeline(Gtk.Box):
         self._event_type_filter.mark_camera_scanned(name)
 
     def show_filter_options(
-        self, options: list[tuple[str, str, str]], selected_keys: set[str] | None, match_all: bool
+        self,
+        options: list[tuple[str, str, str]],
+        selected_keys: set[str] | None,
+        match_all: bool,
+        show_match_all: bool = True,
     ) -> None:
         """Forward to the view -- see EventTypeFilterView.show_options."""
-        self._event_type_filter.show_options(options, selected_keys, match_all)
+        self._event_type_filter.show_options(options, selected_keys, match_all, show_match_all)
 
     def _build_filter_popover(self) -> Gtk.Popover:
         """EventTypeFilterView in a popover-on-a-MenuButton, same shape

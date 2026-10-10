@@ -104,9 +104,11 @@ class ConnectionProfile:
 class EventTypeHistory:
     """One camera's event-type discovery cache for the Live View
     timeline's Filter-events popover (see ui.event_type_filter) --
-    every distinct (event_type flag, reserved) pair ever decoded from
-    RecordingPicker::EnumInterval's event_map for this camera, and how
-    far forward that scan has been brought up to date.
+    every distinct type signature (see services.event_backend) an
+    event backend has ever produced for this camera, and how far
+    forward that scan has been brought up to date. Each backend keeps
+    its own, under its own AppConfig field, since one backend's
+    signatures mean nothing to another.
 
     checked_until alone is enough to resume correctly: a camera present
     here at all has already had its full history scanned once (the
@@ -161,7 +163,7 @@ class AppConfig:
     # Search offers the longer ranges.
     events_search_time_preset: str = "today"
     # Filter keys (e.g. "08", "25:hikvision"), not raw event_map flag
-    # values — see services.event_bits. A config saved before that switch
+    # values — see services.legacy_event_bits. A config saved before that switch
     # has int-typed entries here; _config_from_data() drops them on load
     # rather than misinterpreting them as filter keys.
     events_search_event_types: list[str] = field(default_factory=list)
@@ -173,12 +175,14 @@ class AppConfig:
     snapshots_search_to_time: str = ""
     snapshots_search_time_preset: str = ""  # same values as search_time_preset
     # camera ID -> discovered event types + scan progress, see
-    # EventTypeHistory. Deliberately session/config-persisted rather
-    # than re-scanned every launch: a full-history scan costs real
-    # seconds per camera (~7s/camera, ~90s for a 20-camera NAS if done
-    # all at once), which is why it's never done all at once; see
-    # ui.event_type_filter.
-    event_type_history: dict[int, EventTypeHistory] = field(default_factory=dict)
+    # EventTypeHistory, for LegacyEventBackend. Deliberately
+    # session/config-persisted rather than re-scanned every launch: a
+    # full-history scan costs real seconds per camera (~7s/camera, ~90s
+    # for a 20-camera NAS if done all at once), which is why it's never
+    # done all at once; see ui.event_type_filter. Saved as
+    # legacy_event_type_history, read from there or from the
+    # event_type_history it was saved as before the rename.
+    legacy_event_type_history: dict[int, EventTypeHistory] = field(default_factory=dict)
     # Runtime-tunable constants overridden from the Settings page, keyed by
     # Setting.key (see surveillance.settings_registry): generic, so a new
     # setting added there needs no new AppConfig field of its own.
@@ -231,11 +235,16 @@ PROFILE_STATE_FIELDS = (
     "camera_live_view_stream_profiles",
     "camera_volume",
     "camera_muted",
-    "event_type_history",
+    "legacy_event_type_history",
     "search_camera_ids",
     "events_search_camera_ids",
     "snapshots_search_camera_ids",
 )
+
+# What legacy_event_type_history was saved as before it was renamed.
+# Only ever read: saving writes the current name, so a save after
+# loading drops the old one.
+_OLD_EVENT_TYPE_HISTORY_KEY = "event_type_history"
 
 _FIELD_DEFAULTS: dict[str, Any] = {
     f: AppConfig.__dataclass_fields__[f].default_factory  # type: ignore[misc]
@@ -340,7 +349,12 @@ def _profile_state_from(data: dict[str, Any]) -> dict[str, Any]:
         ),
         "camera_volume": _int_keyed(data.get("camera_volume"), _volume),
         "camera_muted": _int_keyed(data.get("camera_muted"), bool),
-        "event_type_history": _int_keyed(data.get("event_type_history"), _event_type_history),
+        "legacy_event_type_history": {
+            # The current key wins per camera over the old one, as the
+            # one saving writes.
+            **_int_keyed(data.get(_OLD_EVENT_TYPE_HISTORY_KEY), _event_type_history),
+            **_int_keyed(data.get("legacy_event_type_history"), _event_type_history),
+        },
         "search_camera_ids": data.get("search_camera_ids", []),
         "events_search_camera_ids": data.get("events_search_camera_ids", []),
         "snapshots_search_camera_ids": data.get("snapshots_search_camera_ids", []),
@@ -359,12 +373,12 @@ def _profile_state_to(state: dict[str, Any]) -> dict[str, Any]:
         },
         "camera_volume": {str(k): v for k, v in state["camera_volume"].items()},
         "camera_muted": {str(k): v for k, v in state["camera_muted"].items()},
-        "event_type_history": {
+        "legacy_event_type_history": {
             str(cam_id): {
                 "types": [list(pair) for pair in hist.types],
                 "checked_until": hist.checked_until,
             }
-            for cam_id, hist in state["event_type_history"].items()
+            for cam_id, hist in state["legacy_event_type_history"].items()
         },
         "search_camera_ids": state["search_camera_ids"],
         "events_search_camera_ids": state["events_search_camera_ids"],
@@ -399,9 +413,10 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
     # [session]: it goes to the default profile, the one logged into.
     states = {name: _profile_state_from(pdata) for name, pdata in data.get("profiles", {}).items()}
     active = general.get("default_profile", "")
+    state_keys = (*PROFILE_STATE_FIELDS, _OLD_EVENT_TYPE_HISTORY_KEY)
     legacy = {
-        **{key: data[key] for key in PROFILE_STATE_FIELDS if key in data},
-        **{key: session[key] for key in PROFILE_STATE_FIELDS if key in session},
+        **{key: data[key] for key in state_keys if key in data},
+        **{key: session[key] for key in state_keys if key in session},
     }
     if legacy and active and not any(states.get(active, {}).values()):
         states[active] = _profile_state_from(legacy)
