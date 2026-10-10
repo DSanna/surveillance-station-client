@@ -593,6 +593,7 @@ surveillance-station-client/
 │   │   ├── login.py                     login dialog
 │   │   ├── headerbar.py                 header bar controls
 │   │   ├── sidebar.py                   camera list sidebar
+│   │   ├── camera_settings.py           per-camera settings dialog (protocol, direct URL)
 │   │   ├── liveview.py                  live stream grid
 │   │   ├── layouts.py                   grid layout definitions
 │   │   ├── timeline.py                  Live View timeline strip
@@ -620,6 +621,7 @@ surveillance-station-client/
     ├── test_aac.py
     ├── test_advanced_search.py
     ├── test_api_client.py
+    ├── test_camera_settings.py
     ├── test_config.py
     ├── test_date_time_picker.py
     ├── test_event_bits.py
