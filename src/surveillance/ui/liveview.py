@@ -30,9 +30,10 @@ from __future__ import annotations
 import asyncio
 import calendar
 import logging
+import math
 import re
 import time
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -124,12 +125,20 @@ _PRESENCE_DEBOUNCE_MS = 200
 # refresh instead.
 _PRESENCE_LIVE_REFRESH_SEC = 5.0
 
-# Fixed window Previous/Next event searches on either side of the
-# reference position -- same "cheap enough to call fresh per click"
-# precedent as recording.py's own _HISTORY_SEEK_WINDOW, rather than an
-# expanding search: a click that finds nothing just logs and does
-# nothing (see LiveView._seek_to_nearest_event).
-_EVENT_NAV_WINDOW_SECONDS = 7 * 86400
+# How far Previous/Next event search beyond the events the timeline
+# already has, one step at a time: each step only covers time the one
+# before it didn't, and the search stops at the first step with an
+# event in it (see event_nav_search_windows).
+_EVENT_NAV_SEARCH_STEPS = (3600, 86400, 7 * 86400)
+# Previous event's grace period (see event_nav_grace_seconds): this
+# share of the visible timeline, held to these bounds, before speed.
+_EVENT_NAV_GRACE_VIEW_FRACTION = 0.04
+_EVENT_NAV_GRACE_MIN_SECONDS = 10.0
+_EVENT_NAV_GRACE_MAX_SECONDS = 30.0
+# Next event skips events starting this close after the position: a
+# seek lands at or just after the event it targets (DSM rounds forward
+# onto the next servable frame), which must not find it again.
+_EVENT_NAV_NEXT_SKIP_SECONDS = 2.0
 
 # A camera's first-ever event-type scan (see _scan_next_camera_for_
 # event_types) can't ask EnumInterval for literally its entire history
@@ -162,6 +171,98 @@ def order_cameras_focus_first(
             result.insert(0, result.pop(i))
             break
     return result
+
+
+def event_nav_grace_seconds(speed: float, view_span_seconds: float) -> float:
+    """How long after an event's start Previous event still counts as
+    "just arrived" and goes on to the event before it, in recording
+    seconds. Later than this, Previous returns to the start of the event
+    being watched instead.
+
+    A share of the visible timeline, so a wide view skips more, held to
+    [_EVENT_NAV_GRACE_MIN_SECONDS, _EVENT_NAV_GRACE_MAX_SECONDS], then
+    scaled up with speed: at 16x the same viewing time covers far more
+    recording. 1 + ln(speed) grows slower than speed itself and never
+    drops below 1, so slow motion keeps the 1x grace period. Events
+    starting within this of each other also behave as one: Previous
+    skips the whole cluster.
+    """
+    base = min(
+        max(_EVENT_NAV_GRACE_VIEW_FRACTION * view_span_seconds, _EVENT_NAV_GRACE_MIN_SECONDS),
+        _EVENT_NAV_GRACE_MAX_SECONDS,
+    )
+    return base * max(1.0, 1.0 + math.log(speed)) if speed > 0 else base
+
+
+def pick_nav_target(
+    events: Iterable[Event],
+    reference: float,
+    forward: bool,
+    grace_seconds: float,
+    latest_start: float,
+    reverse: bool,
+) -> float | None:
+    """Where Previous/Next event (*forward* False/True) should seek to
+    from *reference*, or None if no event in *events* qualifies.
+
+    Playing forward, an event is entered at its start. Previous goes to
+    the latest start at least *grace_seconds* before *reference* (see
+    event_nav_grace_seconds), Next to the earliest more than
+    _EVENT_NAV_NEXT_SKIP_SECONDS after it. Playing in reverse it's all
+    mirrored: an event is entered at its end, the grace period applies
+    to Next (now against the direction of play) and the short skip to
+    Previous.
+
+    Events starting after *latest_start* never count: a seek that close
+    to wall clock is clamped back to the bridge's near-live floor (see
+    WebSocketBridge._set_history_delta), which could otherwise mean
+    landing on the same clamped position over and over.
+    """
+    anchors = [
+        float(ev.stop_time if reverse and ev.stop_time else ev.start_time)
+        for ev in events
+        if ev.start_time <= latest_start
+    ]
+    if forward:
+        if reverse:  # against the direction of play: the grace period
+            later = [t for t in anchors if t >= reference + grace_seconds]
+        else:
+            later = [t for t in anchors if t > reference + _EVENT_NAV_NEXT_SKIP_SECONDS]
+        return min(later, default=None)
+    if reverse:  # with the direction of play: the short skip
+        earlier = [t for t in anchors if t < reference - _EVENT_NAV_NEXT_SKIP_SECONDS]
+    else:
+        earlier = [t for t in anchors if t <= reference - grace_seconds]
+    return max(earlier, default=None)
+
+
+def event_nav_search_windows(
+    reference: float, forward: bool, covered: tuple[float, float] | None, now: float
+) -> list[tuple[int, int]]:
+    """The (from, to) windows Previous/Next event searches in turn, past
+    whatever *covered* range of events the timeline already has, out to
+    each of _EVENT_NAV_SEARCH_STEPS from *reference* and never past
+    *now*. Each window starts where the one before it ended, so no time
+    is searched twice. *covered* only counts if it contains *reference*.
+    """
+    if covered is not None and not covered[0] <= reference <= covered[1]:
+        covered = None
+    windows: list[tuple[int, int]] = []
+    if forward:
+        edge = covered[1] if covered is not None else reference
+        for step in _EVENT_NAV_SEARCH_STEPS:
+            far = min(reference + step, now)
+            if far > edge:
+                windows.append((int(edge), int(far)))
+                edge = far
+    else:
+        edge = covered[0] if covered is not None else reference
+        for step in _EVENT_NAV_SEARCH_STEPS:
+            far = reference - step
+            if far < edge:
+                windows.append((int(far), int(edge)))
+                edge = far
+    return windows
 
 
 def compute_focus_marker_update(
@@ -206,8 +307,14 @@ def compute_focus_marker_update(
     actual resuming recording or something in between -- and wins over
     the extrapolated guess even if it lands a little behind where that
     guess had gotten to, same as real data always taking priority once
-    it resumes. Outside of an active gap this check is skipped: ordinary
-    playback ticks are already naturally increasing on their own.
+    it resumes. Outside of an active gap this check is skipped.
+
+    Otherwise, as long as nothing else has moved the position, the marker
+    never goes back against the direction of play: slots aren't in step
+    (a few seconds apart is common), so when the furthest one delivers no
+    frame for a second, the next furthest would pull the marker back.
+    LiveView resets that on a direction change the same way as on a
+    jump (see _on_timeline_reverse_selected).
     """
     if current_position != last_set_position:
         gap_started_at = None
@@ -225,7 +332,15 @@ def compute_focus_marker_update(
             best_tick = None
 
     if best_tick is not None:
-        return float(best_tick), None, gap_reference_position
+        position = float(best_tick)
+        if gap_started_at is None and current_position is not None:
+            # Between jumps the marker only moves with the direction of
+            # play: the furthest slot can go quiet for a second, and the
+            # next furthest is often a few seconds behind it.
+            position = (
+                min(position, current_position) if reverse else max(position, current_position)
+            )
+        return position, None, gap_reference_position
 
     if current_position is None:
         return None, gap_started_at, gap_reference_position
@@ -634,21 +749,16 @@ class LiveView(Gtk.Box):
         # of seconds -- leaving the rest of the layout on Live while
         # part of it had gone to History.
         self._slot_seek_generation: dict[int, int] = {}
-        # Bumped per Previous/Next event click so a slower/older lookup
-        # resolving after a newer one (rapid repeated clicking is
-        # exactly what _last_event_nav_key below exists to make
-        # unnecessary) can't undo it -- see _on_event_nav_resolved.
+        # Bumped per Previous/Next event click so a slower/older search
+        # resolving after a newer one can't undo it -- see
+        # _search_event_window.
         self._event_nav_generation: int = 0
+        # Whether a Previous/Next search is running, and so whether the
+        # timeline shows that button busy -- see _set_event_search_busy.
+        self._event_search_running = False
         # One per camera, so its PTZ commands reach the NAS in the order
         # they were sent (see _ptz_in_order).
         self._ptz_locks: dict[int, asyncio.Lock] = {}
-        # (camera_id, start_time) of the event a Previous/Next click
-        # last landed on -- excluded from the next search in either
-        # direction so a seek's landed position sitting a little past
-        # that event (see _on_event_nav_resolved) doesn't just re-find
-        # it, while leaving every other close-by-but-distinct event
-        # still reachable one click at a time.
-        self._last_event_nav_key: tuple[int, int] | None = None
         # Bumped per calendar-popover month view so a slower/older
         # availability fetch resolving after a newer one (fast month
         # navigation) can't apply stale marks to the now-different
@@ -1054,9 +1164,14 @@ class LiveView(Gtk.Box):
         without a live CameraSlot/WebSocketBridge (GTK widgets segfault
         without a display in this test environment).
         """
-        focus_slot = self._slots[self._timeline_focus_slot]
-        if focus_slot._ws_bridge is None or focus_slot._ws_bridge.is_paused:
+        # Only the timeline's own Pause stops the marker: with every slot
+        # frozen, the fallback would otherwise estimate it onwards. Not
+        # the focus slot losing its stream (or never having a bridge, on
+        # a non-WebSocket protocol): the other slots still play, and the
+        # marker follows them.
+        if self._timeline_paused:
             return
+        focus_slot = self._slots[self._timeline_focus_slot]
 
         ticks: list[int | None] = []
         for i in self._active:
@@ -1350,91 +1465,123 @@ class LiveView(Gtk.Box):
         self._seek_to_nearest_event(forward=True)
 
     def _seek_to_nearest_event(self, forward: bool) -> None:
-        """Find the nearest real event before/after the focus slot's
-        current position (or "now" if it's on Live), across every
-        camera in the active layout -- same scope as the presence bar's
-        own layout-accumulated row -- and seek the whole layout there
-        the same way a ruler click does, including dropping Live into
-        History.
+        """Seek the whole layout to the nearest real event before/after
+        the focus slot's current position (or "now" if it's on Live),
+        across every camera in the active layout -- same scope as the
+        presence bar's own layout-accumulated row -- the same way a
+        ruler click does, including dropping Live into History. Which
+        event counts as nearest, and where in it to land: see
+        pick_nav_target and event_nav_grace_seconds.
 
-        A fixed search window rather than an expanding one, same
-        precedent as recording.py's own _HISTORY_SEEK_WINDOW: cheap
-        enough to call fresh per click, and a click with genuinely
-        nothing found just logs and does nothing rather than growing
-        the window indefinitely looking for a needle that isn't there.
-
-        Candidates within MIN_HISTORY_DELTA_SECONDS of wall clock are
-        skipped even when found -- WebSocketBridge would just clamp a
-        seek that close back to its own near-live floor anyway (see
-        _set_history_delta there), which for Next event could otherwise
-        mean landing back on the same clamped position repeatedly.
+        Picked from the events the timeline already has when they hold
+        one, with no request at all. Only past those does it search, in
+        widening steps (event_nav_search_windows), showing the button
+        busy meanwhile. A newer click supersedes a search still running.
         """
         if not self.app.api or not self._active:
             return
         _, active_camera_ids = self._active_timeline_cameras()
         if not active_camera_ids:
             return
-        camera_names = {cid: self._camera_name(cid) for cid in active_camera_ids}
         reference = self._focus_reference_time()
-        if forward:
-            from_time, to_time = int(reference), int(reference + _EVENT_NAV_WINDOW_SECONDS)
-        else:
-            from_time, to_time = int(reference - _EVENT_NAV_WINDOW_SECONDS), int(reference)
-
+        view_start, view_end = self.timeline.canvas.get_view_range()
+        grace = event_nav_grace_seconds(float(self._timeline_speed), view_end - view_start)
         self._event_nav_generation += 1
         generation = self._event_nav_generation
-        run_async(
-            self.app.event_backend.list_events(
-                self.app.api, active_camera_ids, camera_names, from_time, to_time
-            ),
-            callback=lambda events, gen=generation, ref=reference: self._on_event_nav_resolved(
-                forward, gen, ref, events
-            ),
-            error_callback=lambda exc: log.error("Event lookup failed: %s", exc),
+
+        covered = self._cached_event_coverage(active_camera_ids)
+        if covered is not None and covered[0] <= reference <= covered[1]:
+            cached = [
+                ev
+                for cid in active_camera_ids
+                for ev in self._event_cache[cid][2]
+                if self._event_passes_filter(ev)
+            ]
+            target = pick_nav_target(
+                cached,
+                reference,
+                forward,
+                grace,
+                time.time() - MIN_HISTORY_DELTA_SECONDS,
+                self._timeline_reverse,
+            )
+            if target is not None:
+                self._set_event_search_busy(None)
+                self._on_timeline_seek(target)
+                return
+        windows = event_nav_search_windows(reference, forward, covered, time.time())
+        self._set_event_search_busy(forward)
+        self._search_event_window(generation, forward, reference, grace, active_camera_ids, windows)
+
+    def _set_event_search_busy(self, forward: bool | None) -> None:
+        """Show Previous/Next (*forward* False/True) busy on the timeline
+        while it searches, or neither for None. Only touches the timeline
+        when that changes, so this is safe before the timeline exists."""
+        if forward is None and not self._event_search_running:
+            return
+        self._event_search_running = forward is not None
+        self.timeline.set_event_search_busy(forward)
+
+    def _cached_event_coverage(self, camera_ids: list[int]) -> tuple[float, float] | None:
+        """The time range the event cache covers for every one of
+        *camera_ids* at once, or None if any of them has no entry."""
+        entries = [self._event_cache.get(cid) for cid in camera_ids]
+        if not all(entries):
+            return None
+        return (
+            max(entry[0] for entry in entries if entry),
+            min(entry[1] for entry in entries if entry),
         )
 
-    def _on_event_nav_resolved(
-        self, forward: bool, generation: int, reference: float, events: list[Event]
+    def _search_event_window(
+        self,
+        generation: int,
+        forward: bool,
+        reference: float,
+        grace: float,
+        camera_ids: list[int],
+        windows: list[tuple[int, int]],
     ) -> None:
-        """The event backend's list_events result for one Previous/Next click.
-
-        Discarded if a newer click has fired since this lookup started
-        (see _event_nav_generation) -- rapid repeated clicking, exactly
-        the workaround _last_event_nav_key exists to make unnecessary,
-        would otherwise risk a slower/older lookup resolving after a
-        newer one and undoing its progress.
-        """
-        if generation != self._event_nav_generation:
+        """Search the first of *windows* for the event Previous/Next
+        should go to, and the rest in turn while none is found."""
+        if generation != self._event_nav_generation or not self.app.api:
             return
-        now = time.time()
-        if forward:
-            candidates = [ev for ev in events if ev.start_time > reference]
-        else:
-            candidates = [ev for ev in events if ev.start_time < reference]
-        # A seek lands at-or-after the requested target (DSM rounds
-        # forward onto the next servable frame, never back), so a
-        # backward click's own landed position can sit a little past the
-        # event it just found -- close enough that it still passes the
-        # plain `<` filter above and would otherwise get re-selected as
-        # "nearest" on every subsequent Previous click, needing rapid
-        # repeated clicks to actually get past it. Excluding only that
-        # exact (camera, start_time) rather than a time window keeps
-        # other genuinely distinct events sitting close by still
-        # reachable one at a time. Matched on (camera_id, start_time),
-        # not Event.id -- that field is the *parent recording file's*
-        # id (see services.event.find_parent_recording), shared by every
-        # granular event within the same file.
-        candidates = [
-            ev for ev in candidates if (ev.camera_id, ev.start_time) != self._last_event_nav_key
-        ]
-        candidates = [ev for ev in candidates if now - ev.start_time >= MIN_HISTORY_DELTA_SECONDS]
-        candidates = [ev for ev in candidates if self._event_passes_filter(ev)]
-        if not candidates:
+        if not windows:
+            self._set_event_search_busy(None)
             log.info("No %s event found", "next" if forward else "previous")
             return
-        nearest = min(candidates, key=lambda ev: abs(ev.start_time - reference))
-        self._last_event_nav_key = (nearest.camera_id, nearest.start_time)
-        self._on_timeline_seek(nearest.start_time)
+        (from_time, to_time), rest = windows[0], windows[1:]
+        camera_names = {cid: self._camera_name(cid) for cid in camera_ids}
+
+        def _on_listed(events: list[Event]) -> None:
+            if generation != self._event_nav_generation:
+                return  # a newer click owns the search, and the busy indicator
+            target = pick_nav_target(
+                (ev for ev in events if self._event_passes_filter(ev)),
+                reference,
+                forward,
+                grace,
+                time.time() - MIN_HISTORY_DELTA_SECONDS,
+                self._timeline_reverse,
+            )
+            if target is None:
+                self._search_event_window(generation, forward, reference, grace, camera_ids, rest)
+                return
+            self._set_event_search_busy(None)
+            self._on_timeline_seek(target)
+
+        def _on_failed(exc: BaseException) -> None:
+            if generation == self._event_nav_generation:
+                self._set_event_search_busy(None)
+            log.error("Event lookup failed: %s", exc)
+
+        run_async(
+            self.app.event_backend.list_events(
+                self.app.api, camera_ids, camera_names, from_time, to_time
+            ),
+            callback=_on_listed,
+            error_callback=_on_failed,
+        )
 
     # ------------------------------------------------------------------
     # Calendar jump
@@ -1807,6 +1954,13 @@ class LiveView(Gtk.Box):
         generation = self._seek_generation
         for slot_idx in self._active:
             self._slot_seek_generation[slot_idx] = generation
+            # Every slot at once, not as each seek lands: a slot whose
+            # seek is still waiting its turn keeps playing the old
+            # position meanwhile, and its frames would otherwise pull
+            # the shared marker back there (see expect_history_position).
+            bridge = self._slots[slot_idx]._ws_bridge
+            if bridge is not None and bridge.is_history:
+                bridge.expect_history_position(target_unix)
         actions: list[Callable[[], None]] = [
             partial(self._seek_slot_to_time, self._slots[slot_idx], target_unix, generation)
             for slot_idx in self._active
@@ -1949,6 +2103,10 @@ class LiveView(Gtk.Box):
         is what keeps the on-screen marker and a follow-up Forward 10s
         (whose own reference point is this slot's _history_position)
         from drifting past wall clock click by click."""
+        # Where the seek actually landed, which a clamp or the nearest
+        # recording can move away from the target the jump asked for.
+        if slot._ws_bridge is not None:
+            slot._ws_bridge.expect_history_position(position)
         self._set_history_position(slot, position)
         self.timeline.set_history_active(True)
         self._finish_timeline_seek(slot_idx)
@@ -2210,6 +2368,10 @@ class LiveView(Gtk.Box):
         """Timeline's Fwd/Rev toggle — same scope/reasoning as
         _on_timeline_speed_selected."""
         self._timeline_reverse = reverse
+        # Whatever the marker reached going one way says nothing about the
+        # other: let the next tick take the slots' positions as they are,
+        # as after a jump (see compute_focus_marker_update).
+        self._history_gap_last_set_position = None
         for slot_idx in self._active:
             slot = self._slots[slot_idx]
             if slot.camera is None or slot._ws_bridge is None:
@@ -2277,6 +2439,7 @@ class LiveView(Gtk.Box):
         _on_nudge_resolve_timeout and took every slot back into History."""
         self._slot_seek_generation.clear()
         self._event_nav_generation += 1
+        self._set_event_search_busy(None)
         self._pending_nudge_seconds = 0.0
 
     def _reset_playback_speed(self) -> None:

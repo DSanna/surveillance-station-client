@@ -200,6 +200,18 @@
     color: @warning_color;
 }
 
+/* Previous/Next event while searching past the events already on the
+   timeline: a pulse rather than the steady tint above, which means a
+   setting is on, not that something is still happening. */
+@keyframes timeline-searching-pulse {
+    from { opacity: 1; }
+    to { opacity: 0.3; }
+}
+
+.timeline-searching {
+    animation: timeline-searching-pulse 0.6s ease-in-out infinite alternate;
+}
+
 .timeline-clock {
     font-family: monospace;
     font-size: 1.1em;

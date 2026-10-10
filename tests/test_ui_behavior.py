@@ -596,8 +596,8 @@ class TestComputeFocusMarkerUpdate:
         from surveillance.ui.liveview import compute_focus_marker_update
 
         position, _gap_started_at, _ref = compute_focus_marker_update(
-            current_position=1000.0,
-            last_set_position=1000.0,
+            current_position=1100.0,
+            last_set_position=1100.0,
             active_ticks=[1010, None, 1050, 1030],
             gap_started_at=None,
             gap_reference_position=0.0,
@@ -606,6 +606,43 @@ class TestComputeFocusMarkerUpdate:
             reverse=True,
         )
         assert position == 1010.0
+
+    @pytest.mark.parametrize(("reverse", "ticks"), [(False, [1003, None]), (True, [1007, None])])
+    def test_a_slot_falling_quiet_does_not_pull_the_marker_back(
+        self, reverse: bool, ticks: list[int | None]
+    ) -> None:
+        """The slot furthest along has no frame this second; the next one
+        is behind where the marker already is."""
+        from surveillance.ui.liveview import compute_focus_marker_update
+
+        position, _gap_started_at, _ref = compute_focus_marker_update(
+            current_position=1005.0,
+            last_set_position=1005.0,
+            active_ticks=ticks,
+            gap_started_at=None,
+            gap_reference_position=0.0,
+            now=2000.0,
+            speed="1",
+            reverse=reverse,
+        )
+        assert position == 1005.0
+
+    def test_after_a_jump_the_slots_are_taken_as_they_are(self) -> None:
+        """A jump back moved the position (current != last set): the
+        marker follows the slots there even though it's behind."""
+        from surveillance.ui.liveview import compute_focus_marker_update
+
+        position, _gap_started_at, _ref = compute_focus_marker_update(
+            current_position=500.0,
+            last_set_position=1005.0,
+            active_ticks=[501, 502],
+            gap_started_at=None,
+            gap_reference_position=0.0,
+            now=2000.0,
+            speed="1",
+            reverse=False,
+        )
+        assert position == 502.0
 
     def test_a_real_tick_clears_an_in_progress_gap(self) -> None:
         from surveillance.ui.liveview import compute_focus_marker_update

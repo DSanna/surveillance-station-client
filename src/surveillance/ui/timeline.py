@@ -1206,6 +1206,19 @@ class Timeline(Gtk.Box):
         """Forward to the view -- see EventTypeFilterView.show_options."""
         self._event_type_filter.show_options(options, selected_keys, match_all, show_match_all)
 
+    def set_event_search_busy(self, forward: bool | None) -> None:
+        """Pulse Next event (*forward* True) or Previous event (False)
+        while it searches past the events already on the timeline; None
+        stops both."""
+        for button, busy in (
+            (self.prev_event_btn, forward is False),
+            (self.next_event_btn, forward is True),
+        ):
+            if busy:
+                button.add_css_class("timeline-searching")
+            else:
+                button.remove_css_class("timeline-searching")
+
     def set_filter_active(self, active: bool) -> None:
         """Mark the Filter events button while a filter narrows the event
         markers and Previous/Next, so the narrowing isn't forgotten."""

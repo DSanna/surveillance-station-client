@@ -117,9 +117,17 @@ and
 jump to the nearest one on either side of the current position, across
 every camera in the layout; Previous stays available in Live mode
 (dropping into History first, like Back 10s), while Next is
-History-only, like Forward 10s. Events within 10 seconds of wall clock
-are skipped, since a seek that close would just be clamped back to the
-live edge anyway. A calendar button opens a date/time picker, its own
+History-only, like Forward 10s. Shortly after landing on an event,
+Previous goes on to the one before it; once it has been watched for a
+while, Previous returns to its start instead. How long counts as
+shortly grows with how wide the timeline is zoomed (10 to 30 seconds)
+and with the playback speed. Next skips only what a jump has just
+landed on. Playing in reverse it is all mirrored: events are entered at
+their end, and the grace period applies to Next. Events already loaded
+for the timeline are used straight away; past those, the search widens
+step by step (an hour, a day, a week) while the button pulses. Events
+within 10 seconds of wall clock are skipped, since a seek that close
+would just be clamped back to the live edge anyway. A calendar button opens a date/time picker, its own
 days marked and any day without a recording (across the current
 layout) refused, and its
 .B Jump
