@@ -253,6 +253,11 @@ treated as fixed:
   raising a cache size has no effect once this cap is reached first, so
   the two need to move together for a high-bitrate camera or a high
   History playback speed.
+- **Demuxer back buffer cap** limits how much already-played video each
+  player keeps for seeking backwards. Live View never seeks within it, so
+  the small default saves a lot of memory on a full grid (mpv's own
+  default is 50 MiB per player). Raising it only helps the Recordings
+  player's skip-back, which otherwise reads the recording again.
 - **Show stream cache details overlaid on video** draws a small live
   readout (cache depth, target, and effective playback speed) in the
   corner of each video slot, for seeing what the numbers above actually

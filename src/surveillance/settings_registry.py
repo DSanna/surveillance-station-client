@@ -53,7 +53,8 @@ class Setting:
     *get*/*set* read and write the actual live value; *default* is a
     snapshot of the constant's own hardcoded value, captured at import
     time before any persisted override is applied: what "Reset to
-    default" restores.
+    default" restores. *digits* is how many decimals the spinner
+    offers; at 0 it only takes whole numbers.
     """
 
     key: str
@@ -65,6 +66,7 @@ class Setting:
     minimum: float = 0.0
     maximum: float = 100.0
     step: float = 0.1
+    digits: int = 2
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,25 @@ def _player_settings() -> list[Setting]:
             minimum=1.0,
             maximum=512.0,
             step=1.0,
+            digits=0,
+        ),
+        Setting(
+            key="demuxer_max_back_bytes_mib",
+            label="Demuxer back buffer cap (MiB)",
+            tooltip=(
+                "How much already-played video each player keeps for "
+                "seeking backwards. Live View never uses it, so a small "
+                "value saves a lot of memory on a full grid. Larger "
+                "values only help the Recordings player's skip-back, "
+                "which otherwise reads the recording again."
+            ),
+            default=mpv_widget._DEMUXER_MAX_BACK_BYTES_MIB,
+            get=lambda: mpv_widget._DEMUXER_MAX_BACK_BYTES_MIB,
+            set=mpv_widget.set_demuxer_max_back_bytes_mib,
+            minimum=0.0,
+            maximum=512.0,
+            step=1.0,
+            digits=0,
         ),
     ]
 

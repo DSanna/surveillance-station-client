@@ -30,6 +30,8 @@ each Setting's get/set actually round-trips through its live constant.
 
 from __future__ import annotations
 
+import pytest
+
 from surveillance.config import AppConfig
 from surveillance.settings_registry import (
     SECTIONS,
@@ -69,6 +71,7 @@ class TestRegistryShape:
             "cache_seconds_low_latency",
             "cache_high_speed_max_seconds",
             "demuxer_max_bytes_mib",
+            "demuxer_max_back_bytes_mib",
         }
 
     def test_timeline_section_has_the_expected_keys(self) -> None:
@@ -103,6 +106,19 @@ class TestGetSetRoundTrip:
         try:
             setting.set(not original)
             assert setting.get() is (not original)
+        finally:
+            setting.set(original)
+
+    @pytest.mark.parametrize("key", ["demuxer_max_bytes_mib", "demuxer_max_back_bytes_mib"])
+    def test_byte_caps_take_whole_mib_only(self, key: str) -> None:
+        """mpv refuses a size like "2.5MiB", so the spinner shows no
+        decimals and a hand-edited config value is rounded."""
+        setting = _find(key)
+        original = setting.get()
+        try:
+            assert setting.digits == 0
+            setting.set(2.6)
+            assert setting.get() == 3.0
         finally:
             setting.set(original)
 

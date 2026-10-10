@@ -127,7 +127,10 @@ class SettingsView(Gtk.Box):
             upper=setting.maximum,
             step_increment=setting.step,
         )
-        spin = Gtk.SpinButton(adjustment=adjustment, digits=2)
+        spin = Gtk.SpinButton(adjustment=adjustment, digits=setting.digits)
+        # Without snapping, a typed "2.5" keeps its fraction even with
+        # no decimals shown.
+        spin.set_snap_to_ticks(setting.digits == 0)
         spin.set_tooltip_text(setting.tooltip)
         spin.connect("value-changed", self._on_value_changed, setting)
         self._spin_buttons[setting.key] = spin

@@ -208,7 +208,8 @@ View, add, and delete camera licenses. Supports online and offline activation.
 Tune the demuxer cache sizes used for each streaming profile (plain RTSP,
 WebSocket muxed-audio, and silent WebSocket), the extra buffer added
 automatically at high History playback speeds, the shared demuxer byte
-cap, and the speed-times-active-slots budget the Live View timeline's
+cap, the cap on each player's back buffer, and the
+speed-times-active-slots budget the Live View timeline's
 History speed dropdown enforces, plus an on-screen readout of cache
 depth/target/effective speed for diagnosing buffering. Each setting has
 its own reset-to-default button, plus one that resets everything on the
@@ -354,7 +355,8 @@ and
 .B [setting_overrides_bool]
 sections hold every value changed from its default on the
 .B Settings
-page (player cache sizes, the demuxer byte cap, the on-screen cache/speed
+page (player cache sizes, the demuxer byte and back buffer caps, the
+on-screen cache/speed
 readout, and the History speed dropdown's speed-times-slots budget), split
 by value type since TOML distinguishes numbers from booleans. Written by
 the Settings page itself; use its own reset buttons rather than
