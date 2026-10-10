@@ -40,6 +40,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Protocol
 
+from surveillance.services.event_center import EVENT_CENTER_API, EventCenterBackend
 from surveillance.services.legacy_event import LegacyEventBackend
 
 if TYPE_CHECKING:
@@ -49,8 +50,6 @@ if TYPE_CHECKING:
     from surveillance.services.event import EventKind
 
 log = logging.getLogger(__name__)
-
-EVENT_CENTER_API = "SYNO.SurveillanceStation.EventCenter.Event"
 
 # A small, hashable summary of an event's classification -- see EventBackend.
 TypeSignature = tuple[int, int]
@@ -149,14 +148,12 @@ async def select_event_backend(api: SurveillanceAPI) -> EventBackend:
     Picked by whether the NAS offers the Event Center API at all, not by
     its Surveillance Station version number. *api* must be logged in.
     Async so that a backend can ask the NAS what it needs before the
-    pages are built. Only LegacyEventBackend exists so far, so it is used
-    either way.
+    pages are built.
     """
-    has_event_center = api.has_api(EVENT_CENTER_API)
-    backend = LegacyEventBackend()
-    log.info(
-        "Event backend: %s (Event Center API %s)",
-        backend.name,
-        "available" if has_event_center else "not available",
-    )
+    backend: EventBackend
+    if api.has_api(EVENT_CENTER_API):
+        backend = await EventCenterBackend.connect(api)
+    else:
+        backend = LegacyEventBackend()
+    log.info("Event backend: %s", backend.name)
     return backend

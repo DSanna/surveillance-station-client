@@ -197,6 +197,11 @@ class Event:
     # reading these directly. See LEGACY_EVENT_BITMASK.md for what they carry.
     legacy_flag: int = 0
     legacy_reserved: int = 0
+    # EventCenter.Event::List's event_type and object_type, set only by
+    # EventCenterBackend (see services.event_center) and 0 for any other
+    # event. Not event_type above, which is Event::List's own "mode".
+    event_center_type: int = 0
+    object_type: int = 0
 
     @classmethod
     def from_api(cls, data: dict) -> Event:  # type: ignore[type-arg]

@@ -31,6 +31,7 @@ import base64
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1615,14 +1616,233 @@ class TestEventBackend:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("has_event_center", [False, True])
-    async def test_select_is_legacy_until_event_center_exists(
+    async def test_select_by_event_center_api(
         self, api: SurveillanceAPI, has_event_center: bool
     ) -> None:
         from surveillance.api.models import ApiInfo
-        from surveillance.services.event_backend import EVENT_CENTER_API, select_event_backend
+        from surveillance.services.event_backend import select_event_backend
+        from surveillance.services.event_center import EVENT_CENTER_API, EventCenterBackend
         from surveillance.services.legacy_event import LegacyEventBackend
 
         if has_event_center:
             api._api_info[EVENT_CENTER_API] = ApiInfo(path="entry.cgi", max_version=1)
         assert api.has_api(EVENT_CENTER_API) is has_event_center
-        assert isinstance(await select_event_backend(api), LegacyEventBackend)
+        expected = EventCenterBackend if has_event_center else LegacyEventBackend
+        with patch.object(
+            api, "request", new_callable=AsyncMock, return_value={"event_types": "10"}
+        ):
+            assert isinstance(await select_event_backend(api), expected)
+
+
+def _event_center_dispatch(
+    *, enum_interval: dict[str, Any], pages: list[list[dict[str, Any]]] | None = None
+) -> tuple[Any, list[dict[str, Any]]]:
+    """An api.request stand-in answering EnumInterval with *enum_interval*
+    and successive EventCenter List calls with *pages*, then empty pages.
+    Returns it and the list of List params it saw."""
+    remaining = list(pages or [])
+    seen: list[dict[str, Any]] = []
+
+    async def request(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["method"] == "EnumInterval":
+            return enum_interval
+        assert kwargs["method"] == "List"
+        seen.append(kwargs["extra_params"])
+        return {"0": remaining.pop(0) if remaining else []}
+
+    return request, seen
+
+
+class TestEventCenterBackend:
+    def _entry(self, id_: int, start: int, event_type: int = 10, **extra: Any) -> dict[str, Any]:
+        return {
+            "id": id_,
+            "camera_id": 1,
+            "start_time": start,
+            "duration": 12,
+            "event_type": event_type,
+            "object_type": 0,
+            **extra,
+        }
+
+    @pytest.mark.asyncio
+    async def test_lists_and_resolves_events_to_their_recordings(
+        self, api: SurveillanceAPI
+    ) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        t0 = 1700000000
+        enum_interval = {
+            "cameras": [
+                [
+                    {
+                        "camera_id": 1,
+                        "mountId": 7,
+                        "archId": 3,
+                        "event": [
+                            {"id": 555, "start": t0, "stop": t0 + 100},
+                            {"id": 556, "start": t0 + 100, "stop": t0 + 200},
+                        ],
+                    }
+                ]
+            ]
+        }
+        # Newest first over two pages, as List returns them; the oldest
+        # entry predates every recording file and can't be played.
+        pages = [
+            [
+                self._entry(4, t0 + 150, event_type=11, object_type=2, duration=0),
+                self._entry(3, t0 + 50),
+            ],
+            [self._entry(2, t0 + 10, event_type=18), self._entry(1, t0 - 50)],
+        ]
+        request, seen = _event_center_dispatch(enum_interval=enum_interval, pages=pages)
+        with patch.object(api, "request", side_effect=request):
+            presence, events = await EventCenterBackend().list_presence_and_events(
+                api, [1], {1: "Front Door"}, t0 - 100, t0 + 200
+            )
+
+        assert presence == {1: [(t0, t0 + 200)]}
+        assert [(e.id, e.start_time, e.seek_offset) for e in events] == [
+            (556, t0 + 150, 50),
+            (555, t0 + 50, 50),
+            (555, t0 + 10, 10),
+        ]
+        newest = events[0]
+        assert (newest.event_center_type, newest.object_type) == (11, 2)
+        # Still going on (duration 0): never shorter than one bucket.
+        assert newest.stop_time == t0 + 155
+        assert events[1].stop_time == t0 + 62
+        assert (newest.mount_id, newest.arch_id, newest.camera_name) == (7, 3, "Front Door")
+        # The second page starts after the first one's last entry, and
+        # only an empty page ends the paging.
+        offsets = [json.loads(p["start_time_offset"]) for p in seen]
+        assert offsets == [
+            {"0": {"start_time": 0, "id": 0}},
+            {"0": {"start_time": t0 + 50, "id": 3}},
+            {"0": {"start_time": t0 - 50, "id": 1}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_cameras_makes_no_request(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        with patch.object(api, "request", new_callable=AsyncMock) as mock_request:
+            presence, events = await EventCenterBackend().list_presence_and_events(
+                api, [], {}, 1700000000, 1700000100
+            )
+        assert (presence, events) == ({}, [])
+        mock_request.assert_not_called()
+
+    def _event(self, event_type: int, object_type: int = 0) -> Event:
+        return Event(
+            id=1,
+            camera_id=1,
+            camera_name="Cam",
+            event_type=0,
+            start_time=0,
+            event_center_type=event_type,
+            object_type=object_type,
+        )
+
+    def test_classify(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        (person,) = backend.classify(self._event(11, 2), "Reolink")
+        assert (person.key, person.label, person.filter_label) == (
+            "object:people",
+            "People",
+            "Object detection (People)",
+        )
+        (motion,) = backend.classify(self._event(10), "")
+        assert (motion.key, motion.is_motion) == ("motion", True)
+        (unknown,) = backend.classify(self._event(99), "")
+        assert unknown.key == "type:99"
+        assert backend.is_filter_key(unknown.key)
+
+    def test_filter_options_follow_the_event_center_menu_order(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        signatures = [(24, 0), (10, 0), (11, 3), (1, 0), (11, 2), (10, 0)]
+        options = backend.filter_options((s, "") for s in signatures)
+        assert [key for key, _label, _notes in options] == [
+            "object:people",
+            "object:vehicle",
+            "intrusion",
+            "motion",
+            "missing_object",
+        ]
+
+    def test_matches(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        person = self._event(11, 2)
+        assert backend.matches(person, "", ["motion", "object:people"], False)
+        assert not backend.matches(person, "", ["motion"], False)
+        # One type per event, so "all of" two different types never matches.
+        assert not backend.matches(person, "", ["motion", "object:people"], True)
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [("motion", True), ("object:people", True), ("08", False), ("25:hikvision", False)],
+    )
+    def test_is_filter_key(self, key: str, expected: bool) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        assert EventCenterBackend().is_filter_key(key) is expected
+
+    def test_conforms_to_the_protocol(self) -> None:
+        from surveillance.services.event_backend import EventBackend
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend: EventBackend = EventCenterBackend()
+        assert backend.supports_match_all is False
+
+    @pytest.mark.asyncio
+    async def test_connect_lists_only_the_supported_types(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        capability = {"event_types": "24,10,11,1", "object_types": "1,2,3"}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=capability):
+            backend = await EventCenterBackend.connect(api)
+        options = backend.fixed_filter_options()
+        assert options is not None
+        assert [key for key, _label, _notes in options] == [
+            "object",
+            "object:animal",
+            "object:people",
+            "object:vehicle",
+            "intrusion",
+            "motion",
+            "missing_object",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_connect_falls_back_to_every_type(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=OSError("down")):
+            backend = await EventCenterBackend.connect(api)
+        assert backend.fixed_filter_options() == EventCenterBackend().fixed_filter_options()
+
+    def test_fixed_options_list_every_type_in_menu_order(self) -> None:
+        from surveillance.services.event_center import EventCenterBackend
+
+        backend = EventCenterBackend()
+        options = backend.fixed_filter_options()
+        assert options is not None
+        keys = [key for key, _label, _notes in options]
+        assert keys[:6] == [
+            "object",
+            "object:animal",
+            "object:people",
+            "object:vehicle",
+            "object:people_vehicle",
+            "intrusion",
+        ]
+        assert len(keys) == len(set(keys)) == 30
+        assert keys[-1] == "face_recognition"
+        assert all(backend.is_filter_key(key) for key in keys)

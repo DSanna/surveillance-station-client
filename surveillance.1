@@ -130,12 +130,14 @@ zoom, while Back/Forward 10s and Previous/Next event instead just pan
 land off-screen. A
 .B Filter events
 button narrows the presence bar's event markers and Previous/Next
-event navigation down to chosen event types (Any or All of a
-multi-select, decoded per camera brand). Opening it scans each layout
-camera's full recording history for the types it has ever produced (a
-persisted, incrementally-updated cache, so only the first scan and any
-time elapsed since the last one cost real seconds), showing a
-per-camera progress checklist meanwhile. A
+event navigation down to chosen event types. On Surveillance Station 9.3
+and later it lists every event type the NAS supports and matches any of
+the selected ones. Before 9.3 it matches any or all of them, decoded per
+camera brand, and opening it scans each layout camera's full recording
+history for the types it has ever produced (a persisted,
+incrementally-updated cache, so only the first scan and any time elapsed
+since the last one cost real seconds), showing a per-camera progress
+checklist meanwhile. A
 .B Download
 button opens a popup with a camera picker (only cameras currently
 assigned to a slot in the layout, since some may be empty, and
@@ -367,7 +369,9 @@ a list of (event type flag, reserved) pairs, and
 the unix time its recording history has been scanned up to, so a later
 open only scans forward from there rather than repeating the whole
 history. Written automatically; deleting a camera's entry forces a full
-rescan the next time the popover is opened.
+rescan the next time the popover is opened. Not used on Surveillance
+Station 9.3 and later, where the popover lists every event type the NAS
+supports without scanning.
 .PP
 The
 .BR [setting_overrides] ,
