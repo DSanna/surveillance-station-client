@@ -68,12 +68,12 @@ View, add, and delete camera licenses. Online and offline activation.
 <details>
 <summary><b>Settings</b></summary>
 
-Tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, the cap on each player's back buffer, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately, and the speed budget the next time the speed dropdown opens) and persist across restarts.
+Choose which Surveillance Station stream profile Live View plays (see [Live View stream profile](#live-view-stream-profile) below), tune the demuxer cache sizes used for each streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added automatically at high History playback speeds, the shared demuxer byte cap, the cap on each player's back buffer, and the speed&times;slots budget the Live View timeline's History speed dropdown enforces, plus an on-screen readout of cache depth/target/effective speed for diagnosing buffering. Each setting has its own reset-to-default button, plus one that resets everything on the page at once. Changes apply to the next stream that starts (the on-screen readout takes effect immediately, and the speed budget the next time the speed dropdown opens) and persist across restarts.
 </details>
 <details>
 <summary><b>Session Persistence</b></summary>
 
-Grid layout, active page, camera assignments, sidebar and timeline visibility, per-camera volume, mute and stream protocol, and the search filters of each browser page (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
+Grid layout, active page, camera assignments, sidebar and timeline visibility, per-camera volume, mute, stream protocol and Live View stream profile, and the search filters of each browser page (including time presets) are restored on restart. Critical changes are flushed to disk immediately for crash resilience.
 </details>
 <details>
 <summary><b>Two-Factor Authentication</b></summary>
@@ -265,6 +265,10 @@ last_page = "live"             # last active page
 # Same, for the Settings page's on/off toggles.
 # osd_enabled = true
 
+[setting_overrides_choice]
+# Same, for the Settings page's dropdowns.
+# live_view_stream_profile = "low"  # camera (default), high, balanced, low
+
 [profiles.home-nas]
 host = "192.168.1.100"
 port = 5001
@@ -312,24 +316,51 @@ verify_ssl = false
 # muxing in real audio via ffmpeg when the camera's audio codec is PCMU or AAC.
 # "direct" uses the URL from camera_overrides.
 # 5 = "direct"
+
+[profiles.home-nas.camera_live_view_stream_profiles]
+# Live View stream profile per camera ID, for WebSocket streams: high,
+# balanced, low. A camera with no entry follows its Live View setting in
+# Surveillance Station. See "Live View stream profile" below for how this
+# combines with the Settings page.
+# 5 = "high"
 ```
 
 The `[session]` section and each profile's camera assignments are managed
 automatically &mdash; the application restores the grid layout, active page,
 and camera assignments from the previous session on restart.
 
-Settings keyed by camera ID (layouts, direct RTSP URLs, protocols, volume,
-mute, the event-type cache and the cameras picked for searches) are kept per
-profile, under its own `[profiles.<name>]` table, since every NAS numbers its
-cameras from 1. A config from an earlier version kept one shared set at the top
-level and in `[session]`; it is read as the default profile's.
+Settings keyed by camera ID (layouts, direct RTSP URLs, protocols, stream
+profiles, volume, mute, the event-type cache and the cameras picked for
+searches) are kept per profile, under its own `[profiles.<name>]` table, since
+every NAS numbers its cameras from 1. A config from an earlier version kept one
+shared set at the top level and in `[session]`; it is read as the default
+profile's.
 
-Stream protocols and direct RTSP overrides can also be configured from the UI:
-right-click a camera in the sidebar to choose the protocol.
+Stream protocols, direct RTSP overrides and Live View stream profiles can also
+be configured from the UI: right-click a camera in the sidebar for its
+**Camera Settings**.
 
-`[setting_overrides]`/`[setting_overrides_bool]` are written by the
-**Settings** page (Licenses &rarr; Settings &rarr; About in the sidebar), not
-meant for hand-editing &mdash; use the page's own reset buttons instead.
+#### Live View stream profile
+
+Surveillance Station gives each camera up to three stream profiles (High
+quality, Balanced, Low bandwidth), each mapped to one of the camera's streams
+in its Live View settings there. Which one Live View plays is decided in this
+order:
+
+1. **Settings page &rarr; Live View stream profile**, when set to anything but
+   "Use camera settings": every camera uses that profile.
+2. **The camera's own Live View stream profile** in Camera Settings.
+3. **The camera's Live View setting in Surveillance Station**, the default.
+
+This applies to WebSocket streams only. An RTSP stream from Surveillance
+Station always carries the camera's Live View setting there, and a direct URL
+decides its stream itself. A lower profile saves network, decoding and memory,
+which matters most in a 3&times;3 or 4&times;4 grid.
+
+`[setting_overrides]`/`[setting_overrides_bool]`/`[setting_overrides_choice]`
+are written by the **Settings** page (Licenses &rarr; Settings &rarr; About in
+the sidebar), not meant for hand-editing &mdash; use the page's own reset
+buttons instead.
 
 Credentials are **never** stored in the config file. They are kept in the
 system keyring under the service name `surveillance-station`.

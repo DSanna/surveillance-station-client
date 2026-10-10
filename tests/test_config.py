@@ -245,6 +245,32 @@ class TestBoolSettingOverrides:
         assert loaded.setting_overrides_bool == {"osd_enabled": True}
 
 
+class TestChoiceSettingOverrides:
+    """setting_overrides_choice is the text-valued twin, for the Settings
+    page's dropdowns (ChoiceSetting.key -> value)."""
+
+    def test_defaults_to_empty(self) -> None:
+        cfg = _config_from_data({})
+        assert cfg.setting_overrides_choice == {}
+
+    def test_a_non_text_value_is_dropped(self) -> None:
+        cfg = _config_from_data(
+            {"setting_overrides_choice": {"live_view_stream_profile": "low", "other": 3}}
+        )
+        assert cfg.setting_overrides_choice == {"live_view_stream_profile": "low"}
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
+        import surveillance.config as cfg
+
+        monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / "config.toml")  # type: ignore[attr-defined]
+        monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
+
+        config = AppConfig()
+        config.setting_overrides_choice["live_view_stream_profile"] = "low"
+        _write_config(config)
+        assert load_config().setting_overrides_choice == {"live_view_stream_profile": "low"}
+
+
 class TestEventsSearchEventTypesMigration:
     """events_search_event_types switched from raw int flag values to
     string filter keys (see services.event_bits) — a config saved before
@@ -375,10 +401,13 @@ class TestPerProfileCameraSettings:
         monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)  # type: ignore[attr-defined]
         config = self._two_profiles()
         config.camera_protocols[5] = "direct"
+        config.camera_live_view_stream_profiles[5] = "low"
         _write_config(config)
 
         data = tomllib.loads((tmp_path / "config.toml").read_text())
         assert data["profiles"]["home"]["camera_protocols"] == {"5": "direct"}
+        assert data["profiles"]["home"]["camera_live_view_stream_profiles"] == {"5": "low"}
+        assert load_config().camera_live_view_stream_profiles == {5: "low"}
         assert "camera_protocols" not in data
         assert "camera_protocols" not in data["profiles"]["office"]
 

@@ -40,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from surveillance.services import live
 from surveillance.ui import mpv_widget, timeline
 
 if TYPE_CHECKING:
@@ -84,12 +85,49 @@ class BoolSetting:
 
 
 @dataclass(frozen=True)
+class ChoiceSetting:
+    """One user-configurable choice among fixed values, rendered as a
+    dropdown. *options* maps each value to its label, in display order."""
+
+    key: str
+    label: str
+    tooltip: str
+    default: str
+    options: dict[str, str]
+    get: Callable[[], str]
+    set: Callable[[str], None]
+
+
+@dataclass(frozen=True)
 class SettingSection:
     """A named group of settings, e.g. "Media player settings"."""
 
     title: str
     settings: list[Setting] = field(default_factory=list)
     bool_settings: list[BoolSetting] = field(default_factory=list)
+    choice_settings: list[ChoiceSetting] = field(default_factory=list)
+
+
+def _live_view_choice_settings() -> list[ChoiceSetting]:
+    return [
+        ChoiceSetting(
+            key="live_view_stream_profile",
+            label="Live View stream profile",
+            tooltip=(
+                "Which Surveillance Station stream profile Live View plays "
+                'for each camera. "Use camera settings" follows '
+                "each camera's own choice in Camera Settings (right-click "
+                "it in the sidebar), and otherwise its Live View setting "
+                "in Surveillance Station. Any other value applies to every "
+                "camera. WebSocket streams only: RTSP always uses the "
+                "camera's Live View setting in Surveillance Station."
+            ),
+            default=live.StreamProfile.CAMERA,
+            options={str(k): v for k, v in live.STREAM_PROFILE_LABELS.items()},
+            get=live.app_stream_profile,
+            set=live.set_app_stream_profile,
+        ),
+    ]
 
 
 def _player_settings() -> list[Setting]:
@@ -233,6 +271,7 @@ def _timeline_settings() -> list[Setting]:
 
 
 SECTIONS: list[SettingSection] = [
+    SettingSection(title="Live View settings", choice_settings=_live_view_choice_settings()),
     SettingSection(
         title="Media player settings",
         settings=_player_settings(),
@@ -244,9 +283,10 @@ SECTIONS: list[SettingSection] = [
 
 def apply_persisted_settings(config: AppConfig) -> None:
     """Push every persisted override in *config.setting_overrides* /
-    *config.setting_overrides_bool* onto its live constant. Called once
-    at startup, before any stream can start, so a saved value is in
-    effect from the very first camera played."""
+    *config.setting_overrides_bool* / *config.setting_overrides_choice*
+    onto its live constant. Called once at startup, before any stream
+    can start, so a saved value is in effect from the very first camera
+    played."""
     for section in SECTIONS:
         for setting in section.settings:
             if setting.key in config.setting_overrides:
@@ -254,6 +294,9 @@ def apply_persisted_settings(config: AppConfig) -> None:
         for bool_setting in section.bool_settings:
             if bool_setting.key in config.setting_overrides_bool:
                 bool_setting.set(config.setting_overrides_bool[bool_setting.key])
+        for choice_setting in section.choice_settings:
+            if choice_setting.key in config.setting_overrides_choice:
+                choice_setting.set(config.setting_overrides_choice[choice_setting.key])
 
 
 def update_setting(config: AppConfig, setting: Setting, value: float) -> None:
@@ -266,6 +309,12 @@ def update_bool_setting(config: AppConfig, setting: BoolSetting, value: bool) ->
     """Apply and persist a new value for one on/off setting."""
     setting.set(value)
     config.setting_overrides_bool[setting.key] = value
+
+
+def update_choice_setting(config: AppConfig, setting: ChoiceSetting, value: str) -> None:
+    """Apply and persist a new value for one dropdown setting."""
+    setting.set(value)
+    config.setting_overrides_choice[setting.key] = value
 
 
 def reset_setting(config: AppConfig, setting: Setting) -> None:
@@ -287,6 +336,13 @@ def reset_bool_setting(config: AppConfig, setting: BoolSetting) -> None:
     config.setting_overrides_bool.pop(setting.key, None)
 
 
+def reset_choice_setting(config: AppConfig, setting: ChoiceSetting) -> None:
+    """Apply one dropdown setting's default and drop its override, for
+    the same reason as reset_setting."""
+    setting.set(setting.default)
+    config.setting_overrides_choice.pop(setting.key, None)
+
+
 def reset_all_settings(config: AppConfig) -> None:
     """Reset every registered setting to its default and persist that."""
     for section in SECTIONS:
@@ -294,3 +350,5 @@ def reset_all_settings(config: AppConfig) -> None:
             reset_setting(config, setting)
         for bool_setting in section.bool_settings:
             reset_bool_setting(config, bool_setting)
+        for choice_setting in section.choice_settings:
+            reset_choice_setting(config, choice_setting)

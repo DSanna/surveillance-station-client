@@ -39,7 +39,13 @@ from gi.repository import Gtk  # type: ignore[import-untyped]
 
 from surveillance.api.models import Camera
 from surveillance.config import save_config_now
-from surveillance.services.live import PROTOCOL_LABELS
+from surveillance.services.live import (
+    PROTOCOL_LABELS,
+    STREAM_PROFILE_LABELS,
+    WEBSOCKET_PROTOCOLS,
+    StreamProfile,
+    app_stream_profile,
+)
 
 if TYPE_CHECKING:
     from surveillance.app import SurveillanceApp
@@ -65,7 +71,8 @@ def validate_rtsp_url(url: str) -> str | None:
 
 
 class CameraSettingsDialog(Gtk.Window):
-    """Choose a camera's streaming protocol, and its direct URL."""
+    """Choose a camera's streaming protocol, its direct URL, and the
+    stream profile a WebSocket stream asks for."""
 
     def __init__(self, window: MainWindow, cam: Camera) -> None:
         super().__init__(transient_for=window, modal=True)
@@ -125,6 +132,31 @@ class CameraSettingsDialog(Gtk.Window):
         self._error_label.set_visible(False)
         box.append(self._error_label)
 
+        box.append(Gtk.Separator())
+
+        # Live View stream profile, for a WebSocket stream only
+        self._profile_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        profile_label = Gtk.Label(label="Live View stream profile")
+        profile_label.set_xalign(0)
+        profile_label.set_hexpand(True)
+        self._profile_row.append(profile_label)
+        self._profiles = list(STREAM_PROFILE_LABELS)
+        self._profile_dropdown = Gtk.DropDown.new_from_strings(list(STREAM_PROFILE_LABELS.values()))
+        current_profile = self.app.config.camera_live_view_stream_profiles.get(
+            cam.id, StreamProfile.CAMERA
+        )
+        if current_profile in self._profiles:
+            self._profile_dropdown.set_selected(self._profiles.index(current_profile))
+        self._profile_row.append(self._profile_dropdown)
+        box.append(self._profile_row)
+
+        self._profile_note = Gtk.Label()
+        self._profile_note.set_xalign(0)
+        self._profile_note.set_wrap(True)
+        self._profile_note.add_css_class("dim-label")
+        box.append(self._profile_note)
+        self._update_profile_row(current_proto)
+
         for proto_key, radio in self._radios.items():
             radio.connect("toggled", self._on_radio_toggled, proto_key)
 
@@ -149,6 +181,33 @@ class CameraSettingsDialog(Gtk.Window):
         if radio.get_active():
             self._url_box.set_sensitive(key == "direct")
             self._error_label.set_visible(False)
+            self._update_profile_row(key)
+
+    def _update_profile_row(self, protocol: str) -> None:
+        """Offer the stream profile only where it can apply, and say why
+        not otherwise."""
+        forced = app_stream_profile()
+        note = ""
+        if protocol == "direct":
+            note = (
+                "Live View stream profile is not available with a direct URL: "
+                "the URL decides the stream."
+            )
+        elif protocol not in WEBSOCKET_PROTOCOLS:
+            note = (
+                "Live View stream profile is not available when using "
+                f"{PROTOCOL_LABELS[protocol]}. The stream always uses the camera's "
+                "Live View setting in Surveillance Station."
+            )
+        elif forced is not StreamProfile.CAMERA:
+            note = (
+                f"Overridden by the Live View stream profile on the Settings page "
+                f"({STREAM_PROFILE_LABELS[forced]})."
+            )
+        self._profile_row.set_visible(protocol in WEBSOCKET_PROTOCOLS)
+        self._profile_dropdown.set_sensitive(forced is StreamProfile.CAMERA)
+        self._profile_note.set_label(note)
+        self._profile_note.set_visible(bool(note))
 
     def _on_apply(self, _btn: Gtk.Button) -> None:
         cam = self.cam
@@ -181,6 +240,13 @@ class CameraSettingsDialog(Gtk.Window):
             config.camera_overrides[cam.id] = url
         else:
             config.camera_overrides.pop(cam.id, None)
+
+        # Save stream profile, kept even while the protocol can't use it
+        profile = self._profiles[self._profile_dropdown.get_selected()]
+        if profile is StreamProfile.CAMERA:
+            config.camera_live_view_stream_profiles.pop(cam.id, None)
+        else:
+            config.camera_live_view_stream_profiles[cam.id] = str(profile)
 
         save_config_now(config)
         self.close()

@@ -205,8 +205,10 @@ logins.
 View, add, and delete camera licenses. Supports online and offline activation.
 .TP
 .B Settings
-Tune the demuxer cache sizes used for each streaming profile (plain RTSP,
-WebSocket muxed-audio, and silent WebSocket), the extra buffer added
+Choose which Surveillance Station stream profile Live View plays (see
+.B camera_live_view_stream_profiles
+under CONFIGURATION), tune the demuxer cache sizes used for each
+streaming profile (plain RTSP, WebSocket muxed-audio, and silent WebSocket), the extra buffer added
 automatically at high History playback speeds, the shared demuxer byte
 cap, the cap on each player's back buffer, and the
 speed-times-active-slots budget the Live View timeline's
@@ -326,7 +328,23 @@ When set to
 the URL from
 .B camera_overrides
 is used instead of Synology's RTSP proxy.
-These settings can be configured by right-clicking a camera in the sidebar.
+.PP
+The
+.B camera_live_view_stream_profiles
+section selects the Surveillance Station stream profile per camera
+(high, balanced, low) for a WebSocket stream; a camera with no entry
+follows its Live View setting in Surveillance Station. The Settings
+page's
+.B Live View stream profile
+overrides every camera's entry unless it is set to
+.BR "Use camera settings" ,
+its default. An RTSP stream always carries the camera's Live View
+setting in Surveillance Station, and a direct URL decides its stream
+itself.
+.PP
+These settings can be configured from
+.B Camera Settings
+by right-clicking a camera in the sidebar.
 .PP
 The
 .B camera_volume
@@ -350,15 +368,16 @@ history. Written automatically; deleting a camera's entry forces a full
 rescan the next time the popover is opened.
 .PP
 The
-.B [setting_overrides]
-and
+.BR [setting_overrides] ,
 .B [setting_overrides_bool]
+and
+.B [setting_overrides_choice]
 sections hold every value changed from its default on the
 .B Settings
-page (player cache sizes, the demuxer byte and back buffer caps, the
-on-screen cache/speed
+page (the Live View stream profile, player cache sizes, the demuxer byte
+and back buffer caps, the on-screen cache/speed
 readout, and the History speed dropdown's speed-times-slots budget), split
-by value type since TOML distinguishes numbers from booleans. Written by
+by value type since TOML distinguishes numbers, booleans and text. Written by
 the Settings page itself; use its own reset buttons rather than
 hand-editing these.
 .SH KEYBOARD SHORTCUTS

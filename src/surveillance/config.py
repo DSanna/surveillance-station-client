@@ -141,6 +141,10 @@ class AppConfig:
     snapshot_dir: str = ""
     camera_overrides: dict[int, str] = field(default_factory=dict)
     camera_protocols: dict[int, str] = field(default_factory=dict)
+    # Camera ID -> StreamProfile value ("high", "balanced", "low"); a
+    # camera with no entry follows its Live View setting in Surveillance
+    # Station. The app-wide setting overrides it (services.live).
+    camera_live_view_stream_profiles: dict[int, str] = field(default_factory=dict)
     camera_volume: dict[int, int] = field(default_factory=dict)
     camera_muted: dict[int, bool] = field(default_factory=dict)
     search_camera_ids: list[int] = field(default_factory=list)
@@ -183,6 +187,9 @@ class AppConfig:
     # overridden value); kept apart from setting_overrides since TOML
     # (and this dataclass) distinguishes bool from float.
     setting_overrides_bool: dict[str, bool] = field(default_factory=dict)
+    # Same, for the Settings page's dropdowns (ChoiceSetting.key ->
+    # overridden value).
+    setting_overrides_choice: dict[str, str] = field(default_factory=dict)
     # The profile whose camera-keyed settings are the ones held in the
     # fields above, and every other profile's, waiting their turn (see
     # PROFILE_STATE_FIELDS and activate_profile).
@@ -214,13 +221,14 @@ class AppConfig:
 
 
 # Settings keyed by camera ID. Every NAS numbers its cameras from 1, so
-# shared between profiles one NAS's direct RTSP URL, protocol, volume
-# or layout landed on another's camera of the same number. Each profile
+# shared between profiles one NAS's direct RTSP URL, protocol, stream
+# profile, volume or layout landed on another's camera of the same number. Each profile
 # keeps its own, written under its [profiles.<name>] table.
 PROFILE_STATE_FIELDS = (
     "layout_cameras",
     "camera_overrides",
     "camera_protocols",
+    "camera_live_view_stream_profiles",
     "camera_volume",
     "camera_muted",
     "event_type_history",
@@ -327,6 +335,9 @@ def _profile_state_from(data: dict[str, Any]) -> dict[str, Any]:
         "layout_cameras": data.get("layout_cameras", {}),
         "camera_overrides": _int_keyed(data.get("camera_overrides"), str),
         "camera_protocols": _int_keyed(data.get("camera_protocols"), str),
+        "camera_live_view_stream_profiles": _int_keyed(
+            data.get("camera_live_view_stream_profiles"), str
+        ),
         "camera_volume": _int_keyed(data.get("camera_volume"), _volume),
         "camera_muted": _int_keyed(data.get("camera_muted"), bool),
         "event_type_history": _int_keyed(data.get("event_type_history"), _event_type_history),
@@ -343,6 +354,9 @@ def _profile_state_to(state: dict[str, Any]) -> dict[str, Any]:
         "layout_cameras": state["layout_cameras"],
         "camera_overrides": {str(k): v for k, v in state["camera_overrides"].items()},
         "camera_protocols": {str(k): v for k, v in state["camera_protocols"].items()},
+        "camera_live_view_stream_profiles": {
+            str(k): v for k, v in state["camera_live_view_stream_profiles"].items()
+        },
         "camera_volume": {str(k): v for k, v in state["camera_volume"].items()},
         "camera_muted": {str(k): v for k, v in state["camera_muted"].items()},
         "event_type_history": {
@@ -405,6 +419,13 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         with contextlib.suppress(ValueError, TypeError):
             setting_overrides_bool[str(key)] = bool(value)
 
+    # setting_overrides_choice: maps ChoiceSetting.key (str) -> overridden value
+    setting_overrides_choice: dict[str, str] = {
+        str(key): value
+        for key, value in data.get("setting_overrides_choice", {}).items()
+        if isinstance(value, str)
+    }
+
     return AppConfig(
         **active_state,
         active_profile=active,
@@ -438,6 +459,7 @@ def _config_from_data(data: dict[str, Any]) -> AppConfig:
         snapshots_search_time_preset=session.get("snapshots_search_time_preset", ""),
         setting_overrides=setting_overrides,
         setting_overrides_bool=setting_overrides_bool,
+        setting_overrides_choice=setting_overrides_choice,
     )
 
 
@@ -508,6 +530,7 @@ def _write_config(config: AppConfig) -> None:
         },
         "setting_overrides": dict(config.setting_overrides),
         "setting_overrides_bool": dict(config.setting_overrides_bool),
+        "setting_overrides_choice": dict(config.setting_overrides_choice),
         "profiles": {},
     }
 

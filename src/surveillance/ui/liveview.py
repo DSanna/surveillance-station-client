@@ -58,6 +58,7 @@ from surveillance.services.event_bits import build_filter_options, event_matches
 from surveillance.services.live import (
     AUDIO_PROTOCOLS,
     OFFLINE_PLACEHOLDER_URL,
+    StreamProfile,
     get_history_view_path,
     get_live_view_path,
 )
@@ -2900,11 +2901,20 @@ class LiveView(Gtk.Box):
         api = self.app.api
         protocol = self.app.config.camera_protocols.get(camera.id, "auto")
         override = self.app.config.camera_overrides.get(camera.id, "")
+        camera_stream_profile = self.app.config.camera_live_view_stream_profiles.get(
+            camera.id, StreamProfile.CAMERA
+        )
 
         cam_id = camera.id
 
         async def _get_url() -> tuple[int, int, str]:
-            url = await get_live_view_path(api, camera.id, protocol=protocol, override_url=override)
+            url = await get_live_view_path(
+                api,
+                camera.id,
+                protocol=protocol,
+                override_url=override,
+                camera_stream_profile=camera_stream_profile,
+            )
             return slot_idx, cam_id, url
 
         run_async(

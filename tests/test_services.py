@@ -119,9 +119,54 @@ class TestLiveService:
     async def test_get_live_view_path_auto_websocket(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_live_view_path
 
-        url = await get_live_view_path(api, 1)
+        info = {"cameras": [{"id": 1, "defLiveProfile": 2}]}
+        with patch.object(api, "request", new_callable=AsyncMock, return_value=info) as req:
+            url = await get_live_view_path(api, 1)
         assert url.startswith("wss://")
         assert "id=1" in url
+        # No override anywhere: the camera's own Live View setting.
+        assert url.endswith("&profile=2")
+        assert req.await_args is not None
+        assert req.await_args.kwargs["extra_params"]["streamInfo"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_a_camera_override_needs_no_lookup(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_live_view_path
+
+        with patch.object(api, "request", new_callable=AsyncMock) as req:
+            url = await get_live_view_path(api, 1, camera_stream_profile="high")
+        assert url.endswith("&profile=0")
+        req.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_app_wide_profile_beats_the_camera_override(
+        self, api: SurveillanceAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.services import live
+
+        monkeypatch.setattr(live, "_APP_STREAM_PROFILE", live.StreamProfile.LOW)
+        with patch.object(api, "request", new_callable=AsyncMock):
+            url = await live.get_live_view_path(api, 1, camera_stream_profile="high")
+        assert url.endswith("&profile=2")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_balanced_when_dsm_does_not_say(self, api: SurveillanceAPI) -> None:
+        from surveillance.services.live import get_live_view_path
+
+        with patch.object(api, "request", new_callable=AsyncMock, side_effect=RuntimeError):
+            url = await get_live_view_path(api, 1)
+        assert url.endswith("&profile=1")
+
+    def test_an_unknown_app_wide_value_means_camera_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surveillance.services import live
+
+        monkeypatch.setattr(live, "_APP_STREAM_PROFILE", live.StreamProfile.HIGH)
+        live.set_app_stream_profile("ultra")
+        assert live.app_stream_profile() is live.StreamProfile.CAMERA
+        assert live.effective_stream_profile("bogus") is live.StreamProfile.CAMERA
+        assert live.effective_stream_profile("low") is live.StreamProfile.LOW
 
     def test_get_history_view_path(self, api: SurveillanceAPI) -> None:
         from surveillance.services.live import get_history_view_path
